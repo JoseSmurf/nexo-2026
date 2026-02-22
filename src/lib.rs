@@ -245,3 +245,27 @@ pub fn evaluate_with_config(
     let hash = audit_hash(&trace);
     (final_decision, trace, hash)
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn approves_safe_transaction() {
+        let server_time = 1_736_986_900_000;
+
+        let tx = TransactionIntent::new(
+            "user_normal",
+            50_000,   // valor baixo
+            false,    // não é PEP
+            true,     // KYC ativo
+            server_time - 60_000,
+            server_time,
+            1_000,    // risco baixo
+            false,
+        ).unwrap();
+
+        let (decision, _trace, _hash) = evaluate(&tx);
+
+        assert_eq!(decision, Decision::Approved);
+    }
+}
