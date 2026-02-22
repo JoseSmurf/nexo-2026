@@ -261,11 +261,12 @@ mod tests {
             server_time - 60_000,
             server_time,
             1_000,    // risco baixo
-            false,
+            true,     // UI hash válido ✅
         ).unwrap();
 
-        let (decision, _trace, _hash) = evaluate(&tx);
+        let (final_decision, _trace, _hash) = evaluate(&tx);
 
-        assert_eq!(decision, Decision::Approved);
+        assert_eq!(final_decision, FinalDecision::Approved);
     }
+}
 }
