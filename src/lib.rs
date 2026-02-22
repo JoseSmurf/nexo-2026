@@ -269,4 +269,3 @@ mod tests {
         assert_eq!(final_decision, FinalDecision::Approved);
     }
 }
-}
