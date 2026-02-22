@@ -1,0 +1,21 @@
+[package]
+name = "syntax-engine"
+version = "1.6.1"
+edition = "2021"
+description = "Deterministic decision engine with cryptographic audit trail (BLAKE3)"
+license = "MIT"
+repository = "https://github.com/JoseSmurf/nexo-2026"
+keywords = ["aml", "audit", "deterministic", "security", "compliance"]
+
+[lib]
+name = "syntax_engine"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+blake3 = "1.5"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
