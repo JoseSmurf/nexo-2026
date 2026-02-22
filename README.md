@@ -22,18 +22,13 @@ NEXO 2026 enforces this by design.
 ---
 
 ## How it works
-Input (TransactionIntent)
-↓
-[ Anti-replay validation ]
-↓
-[ Rule Engine ]
-├─ UI integrity check
-├─ Night limit (BCB)
-└─ AML / KYC / PEP rules
-↓
-[ BLAKE3 Audit Hash ]
-↓
-Output (FinalDecision + hash)
+
+1. Input validation (anti-replay + integrity)
+2. Rule engine (UI + Night limit + AML/KYC/PEP)
+3. Decision trace generation
+4. BLAKE3 cryptographic audit hash
+5. Output (FinalDecision + hash)
+
 ---
 
 ## Rules implemented
