@@ -584,8 +584,7 @@ mod tests {
 
     #[test]
     fn blocks_high_amount_only() {
-        // ✅ Correção baseada no seu log:
-        // Esse caso está vindo BLOCKED no engine atual.
+        // amount alto sozinho vira FLAGGED na AML, mas aqui o horário também cai na regra noturna.
         let st = server_time();
         let tx = TransactionIntent::new(
             "user_amount",
@@ -602,9 +601,8 @@ mod tests {
         let (decision, trace, _hash) = evaluate(&tx);
         assert_eq!(decision, FinalDecision::Blocked);
 
-        // tenta validar a regra mais provável
         let has_block_rule = trace.iter().any(|d| {
-            matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "AML-FATF-001")
+            matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001")
         });
         assert!(has_block_rule);
     }
