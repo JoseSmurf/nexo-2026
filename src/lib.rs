@@ -270,6 +270,34 @@ mod tests {
         (night, server)
     }
 
+    fn local_hour_minute(timestamp_utc_ms: u64, offset_minutes: i16) -> (u8, u8) {
+        let utc_s = (timestamp_utc_ms / 1000) as i64;
+        let local_s = utc_s + (offset_minutes as i64 * 60);
+        let mut sec_day = local_s % 86_400;
+        if sec_day < 0 {
+            sec_day += 86_400;
+        }
+        let hour = (sec_day / 3600) as u8;
+        let minute = ((sec_day % 3600) / 60) as u8;
+        (hour, minute)
+    }
+
+    fn ts_for_local_time(cfg: EngineConfig, target_hour: u8, target_minute: u8) -> (u64, u64) {
+        let st = server_time();
+        let one_day_ms = 86_400_000u64;
+        let start_of_day = st - (st % one_day_ms);
+
+        let ts = (0..1_440u64)
+            .map(|m| start_of_day + (m * 60_000))
+            .find(|ts_candidate| {
+                let (h, m) = local_hour_minute(*ts_candidate, cfg.tz_offset_minutes);
+                h == target_hour && m == target_minute
+            })
+            .expect("could not build local timestamp for requested hour/minute");
+
+        (ts, ts + 60_000)
+    }
+
     fn base_tx() -> TransactionIntent<'static> {
         let st = server_time();
         TransactionIntent::new(
@@ -608,6 +636,32 @@ mod tests {
     }
 
     #[test]
+    fn flags_high_amount_only_outside_night_window() {
+        let cfg = cfg_brasil();
+        let (day_ts, st) = ts_for_local_time(cfg, 12, 0);
+        let tx = TransactionIntent::new(
+            "user_amount_day",
+            5_000_000,
+            false,
+            true,
+            day_ts,
+            st,
+            1_000,
+            true,
+        )
+        .unwrap();
+
+        let (decision, trace, _hash) = evaluate_with_config(&tx, cfg);
+        assert_eq!(decision, FinalDecision::Flagged);
+
+        let has_review = trace.iter().any(|d| {
+            matches!(d, Decision::FlaggedForReview { rule_id, .. } if *rule_id == "AML-FATF-REVIEW-001")
+        });
+        assert!(has_review);
+        assert!(!trace.iter().any(|d| matches!(d, Decision::Blocked { .. })));
+    }
+
+    #[test]
     fn approves_low_risk_low_amount() {
         let st = server_time();
         let tx = TransactionIntent::new(
@@ -735,6 +789,61 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[test]
+    fn night_window_boundary_hours_are_correct() {
+        let cfg = cfg_brasil();
+
+        let cases = [(19, 59, FinalDecision::Approved), (20, 0, FinalDecision::Blocked),
+            (6, 59, FinalDecision::Blocked), (7, 0, FinalDecision::Approved)];
+
+        for (hour, minute, expected) in cases {
+            let (ts, st) = ts_for_local_time(cfg, hour, minute);
+            let tx = TransactionIntent::new(
+                "user_boundary",
+                100_001,
+                false,
+                true,
+                ts,
+                st,
+                1_000,
+                true,
+            )
+            .unwrap();
+
+            let (decision, _trace, _hash) = evaluate_with_config(&tx, cfg);
+            assert_eq!(decision, expected);
+        }
+    }
+
+    #[test]
+    fn timezone_offset_changes_night_rule_outcome() {
+        let st_base = server_time();
+        let one_day_ms = 86_400_000u64;
+        let start_of_day = st_base - (st_base % one_day_ms);
+        let noon_utc = start_of_day + 43_200_000;
+        let server = noon_utc + 60_000;
+
+        let tx = TransactionIntent::new(
+            "user_tz",
+            200_000,
+            false,
+            true,
+            noon_utc,
+            server,
+            1_000,
+            true,
+        )
+        .unwrap();
+
+        let (decision_br, _trace_br, _hash_br) =
+            evaluate_with_config(&tx, EngineConfig { tz_offset_minutes: -180 });
+        let (decision_jp, _trace_jp, _hash_jp) =
+            evaluate_with_config(&tx, EngineConfig { tz_offset_minutes: 540 });
+
+        assert_eq!(decision_br, FinalDecision::Approved);
+        assert_eq!(decision_jp, FinalDecision::Blocked);
+    }
+
     // ========================================================================
     // TESTES DO HASH BLAKE3
     // ========================================================================
@@ -839,6 +948,35 @@ mod tests {
     }
 
     #[test]
+    fn ui_fraud_keeps_full_trace_execution() {
+        let st = server_time();
+        let tx = TransactionIntent::new(
+            "user_fraud_full_trace",
+            5_000_000,
+            true,
+            false,
+            st - 60_000,
+            st,
+            9_000,
+            false,
+        )
+        .unwrap();
+
+        let (decision, trace, _hash) = evaluate(&tx);
+        assert_eq!(decision, FinalDecision::Blocked);
+        assert_eq!(trace.len(), 3);
+
+        let has_ui_block = trace.iter().any(|d| {
+            matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "UI-FRAUD-001")
+        });
+        let has_pep_block = trace.iter().any(|d| {
+            matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "KYC-PEP-002")
+        });
+        assert!(has_ui_block);
+        assert!(has_pep_block);
+    }
+
+    #[test]
     fn multiple_violations_returns_blocked() {
         let st = server_time();
         let tx = TransactionIntent::new(
@@ -912,5 +1050,38 @@ mod tests {
             trace.iter()
                 .any(|d| matches!(d, Decision::Blocked { severity: Severity::Critica, .. }));
         assert!(has_critica);
+    }
+
+    #[test]
+    fn hash_depends_on_trace_not_transaction_identity() {
+        let st = server_time();
+        let tx1 = TransactionIntent::new(
+            "user_a",
+            50_000,
+            false,
+            true,
+            st - 60_000,
+            st,
+            1_000,
+            true,
+        )
+        .unwrap();
+        let tx2 = TransactionIntent::new(
+            "user_b",
+            60_000,
+            false,
+            true,
+            st - 60_000,
+            st,
+            500,
+            true,
+        )
+        .unwrap();
+
+        let (_d1, trace1, hash1) = evaluate(&tx1);
+        let (_d2, trace2, hash2) = evaluate(&tx2);
+
+        assert_eq!(trace1, trace2);
+        assert_eq!(hash1, hash2);
     }
 }
