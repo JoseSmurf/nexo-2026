@@ -2,6 +2,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use http_body_util::BodyExt;
+use serde_json::json;
 use tower::util::ServiceExt;
 
 fn bench_http_evaluate(c: &mut Criterion) {
@@ -9,26 +10,29 @@ fn bench_http_evaluate(c: &mut Criterion) {
     let mut group = c.benchmark_group("http_evaluate");
 
     let payloads = [
-        (
-            "approved",
-            r#"{"user_id":"bench_ok","amount_cents":50000,"is_pep":false,"has_active_kyc":true,"timestamp_utc_ms":1736986840000,"risk_bps":1000,"ui_hash_valid":true}"#,
-        ),
-        (
-            "blocked",
-            r#"{"user_id":"bench_block","amount_cents":150000,"is_pep":true,"has_active_kyc":false,"timestamp_utc_ms":1736986840000,"risk_bps":4500,"ui_hash_valid":true}"#,
-        ),
+        ("approved", "bench_ok", 50_000u64, false, true, 1_000u16),
+        ("blocked", "bench_block", 150_000u64, true, false, 4_500u16),
     ];
 
-    for (name, payload) in payloads {
-        let payload = payload.to_owned();
-        let app = syntax_engine::api::app();
-        group.bench_with_input(BenchmarkId::new("scenario", name), &payload, |b, payload| {
+    for (name, user_id, amount_cents, is_pep, has_active_kyc, risk_bps) in payloads {
+        let state = syntax_engine::api::AppState::for_bench();
+        let app = syntax_engine::api::app_with_state(state);
+        group.bench_function(BenchmarkId::new("scenario", name), |b| {
             b.iter(|| {
+                let payload = json!({
+                    "user_id": user_id,
+                    "amount_cents": amount_cents,
+                    "is_pep": is_pep,
+                    "has_active_kyc": has_active_kyc,
+                    "timestamp_utc_ms": now_utc_ms(),
+                    "risk_bps": risk_bps,
+                    "ui_hash_valid": true
+                });
                 let req = Request::builder()
                     .method("POST")
                     .uri("/evaluate")
                     .header("content-type", "application/json")
-                    .body(Body::from(payload.clone()))
+                    .body(Body::from(payload.to_string()))
                     .expect("request");
 
                 let body = rt.block_on(async {
@@ -51,3 +55,11 @@ fn bench_http_evaluate(c: &mut Criterion) {
 
 criterion_group!(benches, bench_http_evaluate);
 criterion_main!(benches);
+
+fn now_utc_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before unix epoch")
+        .as_millis() as u64
+}

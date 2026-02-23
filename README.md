@@ -74,9 +74,43 @@ No async in core, no float for money
 Status
 Core engine: stable
 Rules: BCB + AML/FATF + KYC/PEP
-API layer (HTTP): planned
+API layer (HTTP): active
 License
 MIT
+
+## API Endpoints
+
+- `POST /evaluate`
+- `GET /healthz`
+- `GET /readyz`
+- `GET /metrics`
+- `GET /audit/recent?limit=50`
+
+Rule profiles (versioned, via env):
+
+- `NEXO_PROFILE=br_default_v1` (default)
+- `NEXO_PROFILE=us_default_v1`
+- `NEXO_PROFILE=eu_default_v1`
+
+## Latency & Load
+
+Run endpoint benchmarks:
+
+```bash
+cargo bench --bench engine_bench --bench http_bench
+```
+
+Run concurrent load test with p50/p95/p99:
+
+```bash
+cargo run --release --bin load_test
+```
+
+Enforce performance budget (also in CI):
+
+```bash
+cargo run --release --bin perf_budget
+```
 
 ## Julia PLCA Bridge
 

@@ -24,29 +24,43 @@ fn build_tx(
 }
 
 fn bench_evaluate(c: &mut Criterion) {
-    let cfg = EngineConfig { tz_offset_minutes: -180 };
+    let cfg = EngineConfig {
+        tz_offset_minutes: -180,
+    };
     let mut group = c.benchmark_group("evaluate");
 
     let approved = build_tx(50_000, false, true, 1_000, true);
-    group.bench_with_input(BenchmarkId::new("scenario", "approved"), &approved, |b, tx| {
-        b.iter(|| {
-            black_box(evaluate_with_config(black_box(tx), black_box(cfg)));
-        })
-    });
+    group.bench_with_input(
+        BenchmarkId::new("scenario", "approved"),
+        &approved,
+        |b, tx| {
+            b.iter(|| {
+                black_box(evaluate_with_config(black_box(tx), black_box(cfg)));
+            })
+        },
+    );
 
     let flagged = build_tx(5_000_000, false, true, 1_000, true);
-    group.bench_with_input(BenchmarkId::new("scenario", "flagged"), &flagged, |b, tx| {
-        b.iter(|| {
-            black_box(evaluate_with_config(black_box(tx), black_box(cfg)));
-        })
-    });
+    group.bench_with_input(
+        BenchmarkId::new("scenario", "flagged"),
+        &flagged,
+        |b, tx| {
+            b.iter(|| {
+                black_box(evaluate_with_config(black_box(tx), black_box(cfg)));
+            })
+        },
+    );
 
     let blocked = build_tx(5_000_000, true, false, 9_000, false);
-    group.bench_with_input(BenchmarkId::new("scenario", "blocked"), &blocked, |b, tx| {
-        b.iter(|| {
-            black_box(evaluate_with_config(black_box(tx), black_box(cfg)));
-        })
-    });
+    group.bench_with_input(
+        BenchmarkId::new("scenario", "blocked"),
+        &blocked,
+        |b, tx| {
+            b.iter(|| {
+                black_box(evaluate_with_config(black_box(tx), black_box(cfg)));
+            })
+        },
+    );
 
     group.finish();
 }

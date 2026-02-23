@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 pub mod api;
+pub mod audit_store;
+pub mod profile;
+pub mod telemetry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Severity {
@@ -58,7 +61,9 @@ pub struct EngineConfig {
 
 impl Default for EngineConfig {
     fn default() -> Self {
-        Self { tz_offset_minutes: -180 }
+        Self {
+            tz_offset_minutes: -180,
+        }
     }
 }
 
@@ -195,14 +200,26 @@ pub fn audit_hash(trace: &[Decision]) -> String {
     for d in trace {
         match *d {
             Decision::Approved => hash_field(&mut h, b"D:A", &[]),
-            Decision::FlaggedForReview { rule_id, reason, severity, measured, threshold } => {
+            Decision::FlaggedForReview {
+                rule_id,
+                reason,
+                severity,
+                measured,
+                threshold,
+            } => {
                 hash_field(&mut h, b"D:F", rule_id.as_bytes());
                 hash_field(&mut h, b"R", reason.as_bytes());
                 h.update(&[severity.rank()]);
                 h.update(&measured.to_le_bytes());
                 h.update(&threshold.to_le_bytes());
             }
-            Decision::Blocked { rule_id, reason, severity, measured, threshold } => {
+            Decision::Blocked {
+                rule_id,
+                reason,
+                severity,
+                measured,
+                threshold,
+            } => {
                 hash_field(&mut h, b"D:B", rule_id.as_bytes());
                 hash_field(&mut h, b"R", reason.as_bytes());
                 h.update(&[severity.rank()]);
@@ -215,7 +232,7 @@ pub fn audit_hash(trace: &[Decision]) -> String {
     h.finalize().to_hex().to_string()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FinalDecision {
     Approved,
     Flagged,
@@ -238,7 +255,10 @@ pub fn evaluate_with_config(
 
     let final_decision = if trace.iter().any(|d| matches!(d, Decision::Blocked { .. })) {
         FinalDecision::Blocked
-    } else if trace.iter().any(|d| matches!(d, Decision::FlaggedForReview { .. })) {
+    } else if trace
+        .iter()
+        .any(|d| matches!(d, Decision::FlaggedForReview { .. }))
+    {
         FinalDecision::Flagged
     } else {
         FinalDecision::Approved
@@ -260,7 +280,9 @@ mod tests {
     }
 
     fn cfg_brasil() -> EngineConfig {
-        EngineConfig { tz_offset_minutes: -180 }
+        EngineConfig {
+            tz_offset_minutes: -180,
+        }
     }
 
     fn night_ts() -> (u64, u64) {
@@ -360,9 +382,9 @@ mod tests {
         let (decision, trace, _hash) = evaluate(&tx);
         assert_eq!(decision, FinalDecision::Blocked);
 
-        let has_ui_block = trace.iter().any(|d| {
-            matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "UI-FRAUD-001")
-        });
+        let has_ui_block = trace
+            .iter()
+            .any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "UI-FRAUD-001"));
         assert!(has_ui_block);
     }
 
@@ -402,15 +424,15 @@ mod tests {
         assert_ne!(hash_valid, hash_invalid);
 
         // trace inválido TEM UI-FRAUD-001
-        let has_ui = trace_invalid.iter().any(|d| {
-            matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "UI-FRAUD-001")
-        });
+        let has_ui = trace_invalid
+            .iter()
+            .any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "UI-FRAUD-001"));
         assert!(has_ui);
 
         // trace válido NÃO TEM UI-FRAUD-001
-        let no_ui = !trace_valid.iter().any(|d| {
-            matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "UI-FRAUD-001")
-        });
+        let no_ui = !trace_valid
+            .iter()
+            .any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "UI-FRAUD-001"));
         assert!(no_ui);
     }
 
@@ -421,41 +443,24 @@ mod tests {
     #[test]
     fn blocks_night_limit_exceeded() {
         let (night, st) = night_ts();
-        let tx = TransactionIntent::new(
-            "user_night",
-            200_000,
-            false,
-            true,
-            night,
-            st,
-            1_000,
-            true,
-        )
-        .unwrap();
+        let tx = TransactionIntent::new("user_night", 200_000, false, true, night, st, 1_000, true)
+            .unwrap();
 
         let (decision, trace, _hash) = evaluate_with_config(&tx, cfg_brasil());
         assert_eq!(decision, FinalDecision::Blocked);
 
-        let has_rule = trace.iter().any(|d| {
-            matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001")
-        });
+        let has_rule = trace
+            .iter()
+            .any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001"));
         assert!(has_rule);
     }
 
     #[test]
     fn approves_night_below_limit() {
         let (night, st) = night_ts();
-        let tx = TransactionIntent::new(
-            "user_night_ok",
-            50_000,
-            false,
-            true,
-            night,
-            st,
-            1_000,
-            true,
-        )
-        .unwrap();
+        let tx =
+            TransactionIntent::new("user_night_ok", 50_000, false, true, night, st, 1_000, true)
+                .unwrap();
 
         let (decision, trace, _hash) = evaluate_with_config(&tx, cfg_brasil());
         assert_eq!(decision, FinalDecision::Approved);
@@ -469,17 +474,8 @@ mod tests {
     #[test]
     fn approves_exactly_at_night_limit() {
         let (night, st) = night_ts();
-        let tx = TransactionIntent::new(
-            "user_exact",
-            100_000,
-            false,
-            true,
-            night,
-            st,
-            1_000,
-            true,
-        )
-        .unwrap();
+        let tx = TransactionIntent::new("user_exact", 100_000, false, true, night, st, 1_000, true)
+            .unwrap();
 
         let (decision, trace, _hash) = evaluate_with_config(&tx, cfg_brasil());
         assert_eq!(decision, FinalDecision::Approved);
@@ -508,9 +504,9 @@ mod tests {
         let (decision, trace, _hash) = evaluate_with_config(&tx, cfg_brasil());
         assert_eq!(decision, FinalDecision::Blocked);
 
-        let has_rule = trace.iter().any(|d| {
-            matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001")
-        });
+        let has_rule = trace
+            .iter()
+            .any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001"));
         assert!(has_rule);
     }
 
@@ -536,9 +532,9 @@ mod tests {
         let (decision, trace, _hash) = evaluate(&tx);
         assert_eq!(decision, FinalDecision::Blocked);
 
-        let has_pep_block = trace.iter().any(|d| {
-            matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "KYC-PEP-002")
-        });
+        let has_pep_block = trace
+            .iter()
+            .any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "KYC-PEP-002"));
         assert!(has_pep_block);
     }
 
@@ -579,9 +575,9 @@ mod tests {
         let (decision, trace, _hash) = evaluate(&tx);
         assert_eq!(decision, FinalDecision::Blocked);
 
-        let has_aml_block = trace.iter().any(|d| {
-            matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "AML-FATF-001")
-        });
+        let has_aml_block = trace
+            .iter()
+            .any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "AML-FATF-001"));
         assert!(has_aml_block);
     }
 
@@ -631,9 +627,9 @@ mod tests {
         let (decision, trace, _hash) = evaluate(&tx);
         assert_eq!(decision, FinalDecision::Blocked);
 
-        let has_block_rule = trace.iter().any(|d| {
-            matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001")
-        });
+        let has_block_rule = trace
+            .iter()
+            .any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001"));
         assert!(has_block_rule);
     }
 
@@ -700,9 +696,9 @@ mod tests {
         let (decision, trace, _hash) = evaluate(&tx);
         assert_eq!(decision, FinalDecision::Blocked);
 
-        let has_pep = trace.iter().any(|d| {
-            matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "KYC-PEP-002")
-        });
+        let has_pep = trace
+            .iter()
+            .any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "KYC-PEP-002"));
         assert!(has_pep);
     }
 
@@ -713,16 +709,8 @@ mod tests {
     #[test]
     fn rejects_zero_amount() {
         let st = server_time();
-        let result = TransactionIntent::new(
-            "user_zero",
-            0,
-            false,
-            true,
-            st - 60_000,
-            st,
-            1_000,
-            true,
-        );
+        let result =
+            TransactionIntent::new("user_zero", 0, false, true, st - 60_000, st, 1_000, true);
         assert!(result.is_err());
     }
 
@@ -795,22 +783,18 @@ mod tests {
     fn night_window_boundary_hours_are_correct() {
         let cfg = cfg_brasil();
 
-        let cases = [(19, 59, FinalDecision::Approved), (20, 0, FinalDecision::Blocked),
-            (6, 59, FinalDecision::Blocked), (7, 0, FinalDecision::Approved)];
+        let cases = [
+            (19, 59, FinalDecision::Approved),
+            (20, 0, FinalDecision::Blocked),
+            (6, 59, FinalDecision::Blocked),
+            (7, 0, FinalDecision::Approved),
+        ];
 
         for (hour, minute, expected) in cases {
             let (ts, st) = ts_for_local_time(cfg, hour, minute);
-            let tx = TransactionIntent::new(
-                "user_boundary",
-                100_001,
-                false,
-                true,
-                ts,
-                st,
-                1_000,
-                true,
-            )
-            .unwrap();
+            let tx =
+                TransactionIntent::new("user_boundary", 100_001, false, true, ts, st, 1_000, true)
+                    .unwrap();
 
             let (decision, _trace, _hash) = evaluate_with_config(&tx, cfg);
             assert_eq!(decision, expected);
@@ -826,21 +810,22 @@ mod tests {
         let server = noon_utc + 60_000;
 
         let tx = TransactionIntent::new(
-            "user_tz",
-            200_000,
-            false,
-            true,
-            noon_utc,
-            server,
-            1_000,
-            true,
+            "user_tz", 200_000, false, true, noon_utc, server, 1_000, true,
         )
         .unwrap();
 
-        let (decision_br, _trace_br, _hash_br) =
-            evaluate_with_config(&tx, EngineConfig { tz_offset_minutes: -180 });
-        let (decision_jp, _trace_jp, _hash_jp) =
-            evaluate_with_config(&tx, EngineConfig { tz_offset_minutes: 540 });
+        let (decision_br, _trace_br, _hash_br) = evaluate_with_config(
+            &tx,
+            EngineConfig {
+                tz_offset_minutes: -180,
+            },
+        );
+        let (decision_jp, _trace_jp, _hash_jp) = evaluate_with_config(
+            &tx,
+            EngineConfig {
+                tz_offset_minutes: 540,
+            },
+        );
 
         assert_eq!(decision_br, FinalDecision::Approved);
         assert_eq!(decision_jp, FinalDecision::Blocked);
@@ -892,17 +877,9 @@ mod tests {
     fn hash_changes_when_amount_changes() {
         let st = server_time();
 
-        let tx1 = TransactionIntent::new(
-            "user_a",
-            50_000,
-            false,
-            true,
-            st - 60_000,
-            st,
-            1_000,
-            true,
-        )
-        .unwrap();
+        let tx1 =
+            TransactionIntent::new("user_a", 50_000, false, true, st - 60_000, st, 1_000, true)
+                .unwrap();
 
         let tx2 = TransactionIntent::new(
             "user_a",
@@ -943,9 +920,9 @@ mod tests {
         let (decision, trace, _hash) = evaluate(&tx);
         assert_eq!(decision, FinalDecision::Blocked);
 
-        let has_ui_block = trace.iter().any(|d| {
-            matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "UI-FRAUD-001")
-        });
+        let has_ui_block = trace
+            .iter()
+            .any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "UI-FRAUD-001"));
         assert!(has_ui_block);
     }
 
@@ -968,12 +945,12 @@ mod tests {
         assert_eq!(decision, FinalDecision::Blocked);
         assert_eq!(trace.len(), 3);
 
-        let has_ui_block = trace.iter().any(|d| {
-            matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "UI-FRAUD-001")
-        });
-        let has_pep_block = trace.iter().any(|d| {
-            matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "KYC-PEP-002")
-        });
+        let has_ui_block = trace
+            .iter()
+            .any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "UI-FRAUD-001"));
+        let has_pep_block = trace
+            .iter()
+            .any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "KYC-PEP-002"));
         assert!(has_ui_block);
         assert!(has_pep_block);
     }
@@ -1025,9 +1002,15 @@ mod tests {
 
         let (_decision, trace, _hash) = evaluate(&tx);
 
-        let has_critica =
-            trace.iter()
-                .any(|d| matches!(d, Decision::Blocked { severity: Severity::Critica, .. }));
+        let has_critica = trace.iter().any(|d| {
+            matches!(
+                d,
+                Decision::Blocked {
+                    severity: Severity::Critica,
+                    ..
+                }
+            )
+        });
         assert!(has_critica);
     }
 
@@ -1048,37 +1031,26 @@ mod tests {
 
         let (_decision, trace, _hash) = evaluate(&tx);
 
-        let has_critica =
-            trace.iter()
-                .any(|d| matches!(d, Decision::Blocked { severity: Severity::Critica, .. }));
+        let has_critica = trace.iter().any(|d| {
+            matches!(
+                d,
+                Decision::Blocked {
+                    severity: Severity::Critica,
+                    ..
+                }
+            )
+        });
         assert!(has_critica);
     }
 
     #[test]
     fn hash_depends_on_trace_not_transaction_identity() {
         let st = server_time();
-        let tx1 = TransactionIntent::new(
-            "user_a",
-            50_000,
-            false,
-            true,
-            st - 60_000,
-            st,
-            1_000,
-            true,
-        )
-        .unwrap();
-        let tx2 = TransactionIntent::new(
-            "user_b",
-            60_000,
-            false,
-            true,
-            st - 60_000,
-            st,
-            500,
-            true,
-        )
-        .unwrap();
+        let tx1 =
+            TransactionIntent::new("user_a", 50_000, false, true, st - 60_000, st, 1_000, true)
+                .unwrap();
+        let tx2 = TransactionIntent::new("user_b", 60_000, false, true, st - 60_000, st, 500, true)
+            .unwrap();
 
         let (_d1, trace1, hash1) = evaluate(&tx1);
         let (_d2, trace2, hash2) = evaluate(&tx2);
