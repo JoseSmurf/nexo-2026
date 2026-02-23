@@ -1,23 +1,13 @@
-use syntax_engine::{evaluate, TransactionIntent};
+mod api;
 
-fn main() {
-    let server_time = 1_736_986_900_000;
+#[tokio::main]
+async fn main() {
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
+        .await
+        .expect("failed to bind 0.0.0.0:3000");
 
-    let tx = TransactionIntent::new(
-        "user_pep",
-        150_000,
-        true,
-        false,
-        server_time - 60_000,
-        server_time,
-        4_500,
-        true,
-    )
-    .expect("invalid transaction");
-
-    let (decision, trace, hash) = evaluate(&tx);
-
-    println!("Final decision: {:?}", decision);
-    println!("Trace: {:?}", trace);
-    println!("Audit hash: {}", hash);
+    println!("HTTP server running on http://0.0.0.0:3000");
+    axum::serve(listener, api::app())
+        .await
+        .expect("server error");
 }

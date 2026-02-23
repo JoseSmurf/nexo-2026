@@ -19,7 +19,7 @@ impl Severity {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Decision {
     Approved,
     FlaggedForReview {
@@ -213,7 +213,7 @@ pub fn audit_hash(trace: &[Decision]) -> String {
     h.finalize().to_hex().to_string()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum FinalDecision {
     Approved,
     Flagged,
