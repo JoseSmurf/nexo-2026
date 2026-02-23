@@ -249,23 +249,427 @@ pub fn evaluate_with_config(
 mod tests {
     use super::*;
 
+    // ========================================================================
+    // HELPERS
+    // ========================================================================
+
+    fn server_time() -> u64 {
+        1_736_986_900_000
+    }
+
+    fn cfg_brasil() -> EngineConfig {
+        EngineConfig { tz_offset_minutes: -180 }
+    }
+
+    fn night_ts() -> (u64, u64) {
+        let st = server_time();
+        let one_day_ms = 86_400_000u64;
+        let start_of_day = st - (st % one_day_ms);
+        let night = start_of_day + 82_800_000; // 23h UTC = 20h local (UTC-3)
+        let server = night + 60_000;
+        (night, server)
+    }
+
+    fn base_tx() -> TransactionIntent<'static> {
+        let st = server_time();
+        TransactionIntent::new(
+            "user_normal",
+            50_000,
+            false,
+            true,
+            st - 60_000,
+            st,
+            1_000,
+            true,
+        ).unwrap()
+    }
+
+    // ========================================================================
+    // CONTRATO DO ENGINE — 1 teste dedicado para trace.len()
+    // ========================================================================
+
+    #[test]
+    fn engine_executes_expected_number_of_rules() {
+        let tx = base_tx();
+        let (_decision, trace, _hash) = evaluate(&tx);
+        assert_eq!(trace.len(), 3);
+    }
+
+    // ========================================================================
+    // TESTES BÁSICOS
+    // ========================================================================
+
     #[test]
     fn approves_safe_transaction() {
-        let server_time = 1_736_986_900_000;
+        let tx = base_tx();
+        let (decision, trace, _hash) = evaluate(&tx);
+        assert_eq!(decision, FinalDecision::Approved);
+        assert!(trace.iter().all(|d| matches!(d, Decision::Approved)));
+    }
 
+    // ========================================================================
+    // TESTES DE UI INTEGRITY
+    // ========================================================================
+
+    #[test]
+    fn blocks_invalid_ui_hash() {
+        let st = server_time();
         let tx = TransactionIntent::new(
-            "user_normal",
-            50_000,   // valor baixo
-            false,    // não é PEP
-            true,     // KYC ativo
-            server_time - 60_000,
-            server_time,
-            1_000,    // risco baixo
-            true,     // UI hash válido ✅
+            "user_fraud", 50_000, false, true,
+            st - 60_000, st, 1_000, false,
+        ).unwrap();
+        let (decision, trace, _hash) = evaluate(&tx);
+        assert_eq!(decision, FinalDecision::Blocked);
+        let has_ui_block = trace.iter().any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "UI-FRAUD-001"));
+        assert!(has_ui_block);
+    }
+
+    #[test]
+    fn hash_changes_when_ui_hash_changes() {
+        let st = server_time();
+
+        let tx_valid = TransactionIntent::new(
+            "user_normal", 50_000, false, true,
+            st - 60_000, st, 1_000, true,
         ).unwrap();
 
-        let (final_decision, _trace, _hash) = evaluate(&tx);
+        let tx_invalid = TransactionIntent::new(
+            "user_normal", 50_000, false, true,
+            st - 60_000, st, 1_000, false, // só muda ui_hash_valid
+        ).unwrap();
 
-        assert_eq!(final_decision, FinalDecision::Approved);
+        let (_d, trace_valid, hash_valid) = evaluate(&tx_valid);
+        let (_d, trace_invalid, hash_invalid) = evaluate(&tx_invalid);
+
+        // hash mudou
+        assert_ne!(hash_valid, hash_invalid);
+
+        // trace inválido TEM UI-FRAUD-001
+        let has_ui = trace_invalid.iter().any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "UI-FRAUD-001"));
+        assert!(has_ui);
+
+        // trace válido NÃO TEM UI-FRAUD-001
+        let no_ui = !trace_valid.iter().any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "UI-FRAUD-001"));
+        assert!(no_ui);
     }
-}
+
+    // ========================================================================
+    // TESTES DE LIMITE NOTURNO
+    // ========================================================================
+
+    #[test]
+    fn blocks_night_limit_exceeded() {
+        let (night, st) = night_ts();
+        let tx = TransactionIntent::new(
+            "user_night", 200_000, false, true,
+            night, st, 1_000, true,
+        ).unwrap();
+        let (decision, trace, _hash) = evaluate_with_config(&tx, cfg_brasil());
+        assert_eq!(decision, FinalDecision::Blocked);
+        let has_rule = trace.iter().any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001"));
+        assert!(has_rule);
+    }
+
+    #[test]
+    fn approves_night_below_limit() {
+        let (night, st) = night_ts();
+        let tx = TransactionIntent::new(
+            "user_night_ok", 50_000, false, true,
+            night, st, 1_000, true,
+        ).unwrap();
+        let (decision, trace, _hash) = evaluate_with_config(&tx, cfg_brasil());
+        assert_eq!(decision, FinalDecision::Approved);
+        assert!(trace.iter().all(|d| !matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001")));
+    }
+
+    #[test]
+    fn approves_exactly_at_night_limit() {
+        let (night, st) = night_ts();
+        let tx = TransactionIntent::new(
+            "user_exact", 100_000, false, true,
+            night, st, 1_000, true,
+        ).unwrap();
+        let (decision, trace, _hash) = evaluate_with_config(&tx, cfg_brasil());
+        assert_eq!(decision, FinalDecision::Approved);
+        assert!(trace.iter().all(|d| !matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001")));
+    }
+
+    #[test]
+    fn blocks_one_cent_above_night_limit() {
+        let (night, st) = night_ts();
+        let tx = TransactionIntent::new(
+            "user_one_cent", 100_001, false, true,
+            night, st, 1_000, true,
+        ).unwrap();
+        let (decision, trace, _hash) = evaluate_with_config(&tx, cfg_brasil());
+        assert_eq!(decision, FinalDecision::Blocked);
+        let has_rule = trace.iter().any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001"));
+        assert!(has_rule);
+    }
+
+    // ========================================================================
+    // TESTES AML / KYC / PEP
+    // ========================================================================
+
+    #[test]
+    fn blocks_pep_without_kyc() {
+        let st = server_time();
+        let tx = TransactionIntent::new(
+            "user_pep", 50_000, true, false,
+            st - 60_000, st, 1_000, true,
+        ).unwrap();
+        let (decision, trace, _hash) = evaluate(&tx);
+        assert_eq!(decision, FinalDecision::Blocked);
+        let has_pep_block = trace.iter().any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "KYC-PEP-002"));
+        assert!(has_pep_block);
+    }
+
+    #[test]
+    fn approves_pep_with_kyc() {
+        let st = server_time();
+        let tx = TransactionIntent::new(
+            "user_pep_ok", 50_000, true, true,
+            st - 60_000, st, 1_000, true,
+        ).unwrap();
+        let (decision, _trace, _hash) = evaluate(&tx);
+        assert_eq!(decision, FinalDecision::Approved);
+    }
+
+    #[test]
+    fn blocks_high_risk_and_high_amount() {
+        let st = server_time();
+        let tx = TransactionIntent::new(
+            "user_aml", 5_000_000, false, true,
+            st - 60_000, st, 9_000, true,
+        ).unwrap();
+        let (decision, trace, _hash) = evaluate(&tx);
+        assert_eq!(decision, FinalDecision::Blocked);
+        let has_aml_block = trace.iter().any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "AML-FATF-001"));
+        assert!(has_aml_block);
+    }
+
+    #[test]
+    fn flags_high_risk_only() {
+        let st = server_time();
+        let tx = TransactionIntent::new(
+            "user_risk", 50_000, false, true,
+            st - 60_000, st, 9_000, true,
+        ).unwrap();
+        let (decision, trace, _hash) = evaluate(&tx);
+        assert_eq!(decision, FinalDecision::Flagged);
+        let has_review = trace.iter().any(|d| matches!(d, Decision::FlaggedForReview { rule_id, .. } if *rule_id == "AML-FATF-REVIEW-001"));
+        assert!(has_review);
+        assert!(!trace.iter().any(|d| matches!(d, Decision::Blocked { .. })));
+    }
+
+    #[test]
+    fn flags_high_amount_only() {
+        let st = server_time();
+        let tx = TransactionIntent::new(
+            "user_amount", 5_000_000, false, true,
+            st - 60_000, st, 1_000, true,
+        ).unwrap();
+        let (decision, trace, _hash) = evaluate(&tx);
+        assert_eq!(decision, FinalDecision::Flagged);
+        let has_review = trace.iter().any(|d| matches!(d, Decision::FlaggedForReview { rule_id, .. } if *rule_id == "AML-FATF-REVIEW-001"));
+        assert!(has_review);
+        assert!(!trace.iter().any(|d| matches!(d, Decision::Blocked { .. })));
+    }
+
+    #[test]
+    fn approves_low_risk_low_amount() {
+        let st = server_time();
+        let tx = TransactionIntent::new(
+            "user_safe", 50_000, false, true,
+            st - 60_000, st, 1_000, true,
+        ).unwrap();
+        let (decision, _trace, _hash) = evaluate(&tx);
+        assert_eq!(decision, FinalDecision::Approved);
+    }
+
+    #[test]
+    fn pep_without_kyc_blocks_regardless_of_risk() {
+        let st = server_time();
+        let tx = TransactionIntent::new(
+            "user_pep_low", 1_000, true, false,
+            st - 60_000, st, 100, true,
+        ).unwrap();
+        let (decision, trace, _hash) = evaluate(&tx);
+        assert_eq!(decision, FinalDecision::Blocked);
+        let has_pep = trace.iter().any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "KYC-PEP-002"));
+        assert!(has_pep);
+    }
+
+    // ========================================================================
+    // TESTES ANTI-REPLAY
+    // ========================================================================
+
+    #[test]
+    fn rejects_zero_amount() {
+        let st = server_time();
+        let result = TransactionIntent::new(
+            "user_zero", 0, false, true,
+            st - 60_000, st, 1_000, true,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_future_timestamp() {
+        let st = server_time();
+        let result = TransactionIntent::new(
+            "user_future", 50_000, false, true,
+            st + 999_999, st, 1_000, true,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_replay_timestamp() {
+        let st = server_time();
+        let result = TransactionIntent::new(
+            "user_replay", 50_000, false, true,
+            st - 999_999, st, 1_000, true,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_risk_bps() {
+        let st = server_time();
+        let result = TransactionIntent::new(
+            "user_risk", 50_000, false, true,
+            st - 60_000, st, 10_000, true,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn accepts_timestamp_at_max_drift() {
+        let st = server_time();
+        let max_drift = 5 * 60 * 1000;
+        let result = TransactionIntent::new(
+            "user_drift", 50_000, false, true,
+            st - max_drift, st, 1_000, true,
+        );
+        assert!(result.is_ok());
+    }
+
+    // ========================================================================
+    // TESTES DO HASH BLAKE3
+    // ========================================================================
+
+    #[test]
+    fn hash_is_deterministic() {
+        let tx = base_tx();
+        let (_d1, _t1, hash1) = evaluate(&tx);
+        let (_d2, _t2, hash2) = evaluate(&tx);
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn hash_is_not_empty() {
+        let tx = base_tx();
+        let (_d, _t, hash) = evaluate(&tx);
+        assert!(!hash.is_empty());
+        assert_eq!(hash.len(), 64); // BLAKE3 hex = 64 caracteres
+    }
+
+    #[test]
+    fn hash_differs_approved_vs_blocked() {
+        let st = server_time();
+        let tx_ok = base_tx();
+        let (_d, _t, hash_ok) = evaluate(&tx_ok);
+
+        let tx_blocked = TransactionIntent::new(
+            "user_pep", 50_000, true, false,
+            st - 60_000, st, 1_000, true,
+        ).unwrap();
+        let (_d, _t, hash_blocked) = evaluate(&tx_blocked);
+        assert_ne!(hash_ok, hash_blocked);
+    }
+
+    #[test]
+    fn hash_changes_when_amount_changes() {
+        let st = server_time();
+        let tx1 = TransactionIntent::new(
+            "user_a", 50_000, false, true,
+            st - 60_000, st, 1_000, true,
+        ).unwrap();
+        let tx2 = TransactionIntent::new(
+            "user_a", 5_000_000, false, true,
+            st - 60_000, st, 1_000, true,
+        ).unwrap();
+        let (_d1, _t1, hash1) = evaluate(&tx1);
+        let (_d2, _t2, hash2) = evaluate(&tx2);
+        assert_ne!(hash1, hash2);
+    }
+
+    // ========================================================================
+    // TESTES DE COMBINAÇÕES
+    // ========================================================================
+
+    #[test]
+    fn ui_fraud_overrides_everything() {
+        let st = server_time();
+        let tx = TransactionIntent::new(
+            "user_fraud", 50_000, true, false,
+            st - 60_000, st, 9_000, false,
+        ).unwrap();
+        let (decision, trace, _hash) = evaluate(&tx);
+        assert_eq!(decision, FinalDecision::Blocked);
+        let has_ui_block = trace.iter().any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "UI-FRAUD-001"));
+        assert!(has_ui_block);
+    }
+
+    #[test]
+    fn multiple_violations_returns_blocked() {
+        let st = server_time();
+        let tx = TransactionIntent::new(
+            "user_multi", 5_000_000, true, false,
+            st - 60_000, st, 9_000, true,
+        ).unwrap();
+        let (decision, _trace, _hash) = evaluate(&tx);
+        assert_eq!(decision, FinalDecision::Blocked);
+    }
+
+    // ========================================================================
+    // TESTES DE SEVERIDADE
+    // ========================================================================
+
+    #[test]
+    fn severity_rank_order_is_correct() {
+        assert!(Severity::Critica.rank() > Severity::Grave.rank());
+        assert!(Severity::Grave.rank() > Severity::Alta.rank());
+        assert!(Severity::Alta.rank() > Severity::Baixa.rank());
+    }
+
+    #[test]
+    fn ui_fraud_has_critica_severity() {
+        let st = server_time();
+        let tx = TransactionIntent::new(
+            "user_fraud", 50_000, false, true,
+            st - 60_000, st, 1_000, false,
+        ).unwrap();
+        let (_decision, trace, _hash) = evaluate(&tx);
+        let has_critica = trace.iter().any(|d| {
+            matches!(d, Decision::Blocked { severity: Severity::Critica, .. })
+        });
+        assert!(has_critica);
+    }
+
+    #[test]
+    fn aml_double_block_has_critica_severity() {
+        let st = server_time();
+        let tx = TransactionIntent::new(
+            "user_aml", 5_000_000, false, true,
+            st - 60_000, st, 9_000, true,
+        ).unwrap();
+        let (_decision, trace, _hash) = evaluate(&tx);
+        let has_critica = trace.iter().any(|d| {
+            matches!(d, Decision::Blocked { severity: Severity::Critica, .. })
+        });
+        assert!(has_critica);
+    }
+             }
+             
