@@ -22,3 +22,10 @@ jobs:
       run: cargo test --verbose
     - name: Enforce perf budget
       run: cargo run --release --bin perf_budget
+    - name: Continuous load test
+      run: |
+        NEXO_LOAD_REQUESTS=600 \
+        NEXO_LOAD_CONCURRENCY=60 \
+        NEXO_LOAD_MAX_P95_US=400 \
+        NEXO_LOAD_MAX_P99_US=1200 \
+        cargo run --release --bin load_test

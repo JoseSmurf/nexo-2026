@@ -85,6 +85,7 @@ MIT
 - `GET /readyz`
 - `GET /metrics`
 - `GET /audit/recent?limit=50`
+- `GET /security/status`
 
 Rule profiles (versioned, via env):
 
@@ -92,7 +93,7 @@ Rule profiles (versioned, via env):
 - `NEXO_PROFILE=us_default_v1`
 - `NEXO_PROFILE=eu_default_v1`
 
-## Security (HMAC + Anti-Replay + Key Rotation)
+## Security (Formal HMAC-BLAKE3 + Anti-Replay + Rotation + Rate Limit)
 
 `POST /evaluate` now requires signed headers:
 
@@ -103,16 +104,18 @@ Rule profiles (versioned, via env):
 
 Server validation order:
 
-1. Signature validation with active key (`NEXO_HMAC_SECRET`)
-2. Fallback validation with previous key (`NEXO_HMAC_SECRET_PREV`, optional)
-3. Timestamp window check (60s)
-4. Replay check in memory cache (DashMap, TTL 120s)
+1. Strict `X-Key-Id` check (must match active or previous id)
+2. Formal HMAC-BLAKE3 verification (timing-safe compare)
+3. Timestamp window check (default 60s)
+4. Replay check in-memory (DashMap TTL cache, default 120s)
+5. Rate limit check (per IP and per `user_id`)
 
 Status codes:
 
 - `401` invalid/missing signature
 - `408` expired timestamp window
 - `409` replayed `X-Request-Id`
+- `429` rate limit exceeded
 
 Required environment:
 
@@ -120,6 +123,12 @@ Required environment:
 - `NEXO_HMAC_SECRET_PREV` (optional rotation window)
 - `NEXO_HMAC_KEY_ID` (optional, default `active`)
 - `NEXO_HMAC_KEY_ID_PREV` (optional, default `previous`)
+- `NEXO_AUTH_WINDOW_MS` (optional, default `60000`)
+- `NEXO_REPLAY_TTL_MS` (optional, default `120000`)
+- `NEXO_REPLAY_MAX_KEYS` (optional, default `100000`)
+- `NEXO_RATE_LIMIT_WINDOW_MS` (optional, default `60000`)
+- `NEXO_RATE_LIMIT_IP` (optional, default `600`)
+- `NEXO_RATE_LIMIT_USER` (optional, default `300`)
 
 Rotation flow:
 
@@ -128,17 +137,32 @@ Rotation flow:
 3. Update Julia `X-Key-Id` to the active key id
 4. Remove previous key after clients are migrated
 
+Response authenticity:
+
+- `X-Response-Signature`
+- `X-Response-Key-Id`
+
 ## Latency & Load
 
 Run endpoint benchmarks:
 
 ```bash
-cargo bench --bench engine_bench --bench http_bench
+cargo bench --bench engine_bench --bench http_bench --bench security_bench
 ```
 
 Run concurrent load test with p50/p95/p99:
 
 ```bash
+cargo run --release --bin load_test
+```
+
+CI load gate example:
+
+```bash
+NEXO_LOAD_REQUESTS=600 \
+NEXO_LOAD_CONCURRENCY=60 \
+NEXO_LOAD_MAX_P95_US=400 \
+NEXO_LOAD_MAX_P99_US=1200 \
 cargo run --release --bin load_test
 ```
 
@@ -153,7 +177,7 @@ cargo run --release --bin perf_budget
 There is a Julia bridge at `julia/plca_bridge.jl` that:
 - computes PLCA score with `Rational{Int64}` and `BigFloat`
 - converts to deterministic `risk_bps` (`0..9999`)
-- signs payload with BLAKE3 (`Blake3Hash.jl`) and sends authenticated request headers
+- signs payload with formal HMAC-BLAKE3 (`Blake3Hash.jl`) and sends authenticated request headers
 
 Quick run:
 

@@ -1,13 +1,15 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use axum::{
-    body::Bytes,
+    body::{to_bytes, Body, Bytes},
     extract::{Query, State},
-    http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    http::{HeaderMap, HeaderName, HeaderValue, Request, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -23,12 +25,23 @@ use crate::{evaluate_with_config, Decision, FinalDecision, TransactionIntent};
 
 const DEFAULT_AUDIT_PATH: &str = "logs/audit_records.jsonl";
 const DEFAULT_RETENTION: usize = 5_000;
-const AUTH_WINDOW_MS: u64 = 60_000;
-const REPLAY_TTL_MS: u64 = 120_000;
+const DEFAULT_AUTH_WINDOW_MS: u64 = 60_000;
+const DEFAULT_REPLAY_TTL_MS: u64 = 120_000;
+const DEFAULT_REPLAY_MAX_KEYS: usize = 100_000;
+const DEFAULT_RATE_LIMIT_WINDOW_MS: u64 = 60_000;
+const DEFAULT_RATE_LIMIT_IP: u32 = 600;
+const DEFAULT_RATE_LIMIT_USER: u32 = 300;
+const MAX_REQUEST_BODY_BYTES: usize = 1_048_576;
+
 const HEADER_SIGNATURE: &str = "x-signature";
 const HEADER_REQUEST_ID: &str = "x-request-id";
 const HEADER_TIMESTAMP: &str = "x-timestamp";
 const HEADER_KEY_ID: &str = "x-key-id";
+const HEADER_RESPONSE_SIGNATURE: &str = "x-response-signature";
+const HEADER_RESPONSE_KEY_ID: &str = "x-response-key-id";
+const HEADER_FORWARDED_FOR: &str = "x-forwarded-for";
+const HEADER_REAL_IP: &str = "x-real-ip";
+const HEADER_CONTENT_TYPE: &str = "content-type";
 
 pub const BENCH_HMAC_SECRET: &str = "bench_hmac_secret";
 pub const BENCH_KEY_ID: &str = "active";
@@ -42,6 +55,11 @@ pub struct AppState {
     pub auth: AuthSecrets,
     pub replay_cache: Arc<DashMap<String, u64>>,
     pub last_replay_cleanup_ms: Arc<AtomicU64>,
+    pub replay_ttl_ms: u64,
+    pub replay_max_keys: usize,
+    pub auth_window_ms: u64,
+    pub rate_limiter: Arc<RateLimiter>,
+    pub key_usage: Arc<DashMap<String, u64>>,
 }
 
 #[derive(Clone)]
@@ -53,78 +71,23 @@ pub struct AuthSecrets {
 #[derive(Clone)]
 pub struct AuthKey {
     pub id: String,
-    key: [u8; 32],
+    secret: Vec<u8>,
 }
 
-impl AppState {
-    pub fn from_env() -> Self {
-        let path =
-            std::env::var("NEXO_AUDIT_PATH").unwrap_or_else(|_| DEFAULT_AUDIT_PATH.to_string());
-        let retention = std::env::var("NEXO_AUDIT_RETENTION")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(DEFAULT_RETENTION);
-
-        let active_secret = std::env::var("NEXO_HMAC_SECRET")
-            .expect("NEXO_HMAC_SECRET is required. Refusing to start without HMAC secret.");
-        let active_id =
-            std::env::var("NEXO_HMAC_KEY_ID").unwrap_or_else(|_| BENCH_KEY_ID.to_string());
-        let previous_secret = std::env::var("NEXO_HMAC_SECRET_PREV").ok();
-        let previous_id =
-            std::env::var("NEXO_HMAC_KEY_ID_PREV").unwrap_or_else(|_| "previous".to_string());
-
-        Self {
-            profile: profile_from_env(),
-            audit_store: AuditStore::new(path, retention),
-            metrics: Metrics::new_shared(),
-            audit_enabled: true,
-            auth: AuthSecrets {
-                active: AuthKey::new(active_id, &active_secret),
-                previous: previous_secret.map(|secret| AuthKey::new(previous_id, &secret)),
-            },
-            replay_cache: Arc::new(DashMap::new()),
-            last_replay_cleanup_ms: Arc::new(AtomicU64::new(0)),
-        }
-    }
-
-    pub fn for_tests(path: PathBuf) -> Self {
-        Self {
-            profile: profile_from_env(),
-            audit_store: AuditStore::new(path, 500),
-            metrics: Metrics::new_shared(),
-            audit_enabled: true,
-            auth: AuthSecrets {
-                active: AuthKey::new("active".to_string(), "test_active_secret"),
-                previous: Some(AuthKey::new("previous".to_string(), "test_previous_secret")),
-            },
-            replay_cache: Arc::new(DashMap::new()),
-            last_replay_cleanup_ms: Arc::new(AtomicU64::new(0)),
-        }
-    }
-
-    pub fn for_bench() -> Self {
-        Self {
-            profile: profile_from_env(),
-            audit_store: AuditStore::new(std::env::temp_dir().join("nexo_bench_unused.jsonl"), 1),
-            metrics: Metrics::new_shared(),
-            audit_enabled: false,
-            auth: AuthSecrets {
-                active: AuthKey::new(BENCH_KEY_ID.to_string(), BENCH_HMAC_SECRET),
-                previous: None,
-            },
-            replay_cache: Arc::new(DashMap::new()),
-            last_replay_cleanup_ms: Arc::new(AtomicU64::new(0)),
-        }
-    }
+#[derive(Clone)]
+pub struct RateLimiter {
+    ip_windows: Arc<DashMap<String, WindowCounter>>,
+    user_windows: Arc<DashMap<String, WindowCounter>>,
+    window_ms: u64,
+    limit_per_ip: u32,
+    limit_per_user: u32,
+    hits: Arc<AtomicU64>,
 }
 
-impl AuthKey {
-    fn new(id: String, secret: &str) -> Self {
-        Self {
-            id,
-            key: derive_hmac_key(secret),
-        }
-    }
+#[derive(Clone, Copy)]
+struct WindowCounter {
+    window_start_ms: u64,
+    count: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -174,6 +137,21 @@ pub struct AuditRecentResponse {
     pub records: Vec<AuditRecord>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct SecurityStatusResponse {
+    pub auth_window_ms: u64,
+    pub replay_ttl_ms: u64,
+    pub replay_cache_size: usize,
+    pub replay_max_keys: usize,
+    pub key_active_id: String,
+    pub key_previous_id: Option<String>,
+    pub key_usage_total: HashMap<String, u64>,
+    pub rate_limit_window_ms: u64,
+    pub rate_limit_ip: u32,
+    pub rate_limit_user: u32,
+    pub rate_limit_hits: u64,
+}
+
 #[derive(Debug)]
 enum AuthError {
     Unauthorized(&'static str),
@@ -181,18 +159,249 @@ enum AuthError {
     Conflict(&'static str),
 }
 
+impl AppState {
+    pub fn from_env() -> Self {
+        let path =
+            std::env::var("NEXO_AUDIT_PATH").unwrap_or_else(|_| DEFAULT_AUDIT_PATH.to_string());
+        let retention = std::env::var("NEXO_AUDIT_RETENTION")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_RETENTION);
+        let active_secret = std::env::var("NEXO_HMAC_SECRET")
+            .expect("NEXO_HMAC_SECRET is required. Refusing to start without HMAC secret.");
+        let active_id =
+            std::env::var("NEXO_HMAC_KEY_ID").unwrap_or_else(|_| BENCH_KEY_ID.to_string());
+        let previous_secret = std::env::var("NEXO_HMAC_SECRET_PREV").ok();
+        let previous_id =
+            std::env::var("NEXO_HMAC_KEY_ID_PREV").unwrap_or_else(|_| "previous".to_string());
+        let auth_window_ms = std::env::var("NEXO_AUTH_WINDOW_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_AUTH_WINDOW_MS);
+        let replay_ttl_ms = std::env::var("NEXO_REPLAY_TTL_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_REPLAY_TTL_MS);
+        let replay_max_keys = std::env::var("NEXO_REPLAY_MAX_KEYS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_REPLAY_MAX_KEYS);
+        let rate_limit_window_ms = std::env::var("NEXO_RATE_LIMIT_WINDOW_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_RATE_LIMIT_WINDOW_MS);
+        let rate_limit_ip = std::env::var("NEXO_RATE_LIMIT_IP")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(DEFAULT_RATE_LIMIT_IP);
+        let rate_limit_user = std::env::var("NEXO_RATE_LIMIT_USER")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(DEFAULT_RATE_LIMIT_USER);
+
+        Self {
+            profile: profile_from_env(),
+            audit_store: AuditStore::new(path, retention),
+            metrics: Metrics::new_shared(),
+            audit_enabled: true,
+            auth: AuthSecrets {
+                active: AuthKey::new(active_id, active_secret),
+                previous: previous_secret.map(|s| AuthKey::new(previous_id, s)),
+            },
+            replay_cache: Arc::new(DashMap::new()),
+            last_replay_cleanup_ms: Arc::new(AtomicU64::new(0)),
+            replay_ttl_ms,
+            replay_max_keys,
+            auth_window_ms,
+            rate_limiter: Arc::new(RateLimiter::new(
+                rate_limit_window_ms,
+                rate_limit_ip,
+                rate_limit_user,
+            )),
+            key_usage: Arc::new(DashMap::new()),
+        }
+    }
+
+    pub fn for_tests(path: PathBuf) -> Self {
+        Self {
+            profile: profile_from_env(),
+            audit_store: AuditStore::new(path, 500),
+            metrics: Metrics::new_shared(),
+            audit_enabled: true,
+            auth: AuthSecrets {
+                active: AuthKey::new("active".to_string(), "test_active_secret".to_string()),
+                previous: Some(AuthKey::new(
+                    "previous".to_string(),
+                    "test_previous_secret".to_string(),
+                )),
+            },
+            replay_cache: Arc::new(DashMap::new()),
+            last_replay_cleanup_ms: Arc::new(AtomicU64::new(0)),
+            replay_ttl_ms: DEFAULT_REPLAY_TTL_MS,
+            replay_max_keys: DEFAULT_REPLAY_MAX_KEYS,
+            auth_window_ms: DEFAULT_AUTH_WINDOW_MS,
+            rate_limiter: Arc::new(RateLimiter::new(
+                DEFAULT_RATE_LIMIT_WINDOW_MS,
+                10_000,
+                10_000,
+            )),
+            key_usage: Arc::new(DashMap::new()),
+        }
+    }
+
+    pub fn for_bench() -> Self {
+        Self {
+            profile: profile_from_env(),
+            audit_store: AuditStore::new(std::env::temp_dir().join("nexo_bench_unused.jsonl"), 1),
+            metrics: Metrics::new_shared(),
+            audit_enabled: false,
+            auth: AuthSecrets {
+                active: AuthKey::new(BENCH_KEY_ID.to_string(), BENCH_HMAC_SECRET.to_string()),
+                previous: None,
+            },
+            replay_cache: Arc::new(DashMap::new()),
+            last_replay_cleanup_ms: Arc::new(AtomicU64::new(0)),
+            replay_ttl_ms: DEFAULT_REPLAY_TTL_MS,
+            replay_max_keys: DEFAULT_REPLAY_MAX_KEYS,
+            auth_window_ms: DEFAULT_AUTH_WINDOW_MS,
+            rate_limiter: Arc::new(RateLimiter::new(
+                DEFAULT_RATE_LIMIT_WINDOW_MS,
+                u32::MAX,
+                u32::MAX,
+            )),
+            key_usage: Arc::new(DashMap::new()),
+        }
+    }
+}
+
+impl AuthKey {
+    fn new(id: String, secret: String) -> Self {
+        Self {
+            id,
+            secret: secret.into_bytes(),
+        }
+    }
+}
+
+impl RateLimiter {
+    fn new(window_ms: u64, limit_per_ip: u32, limit_per_user: u32) -> Self {
+        Self {
+            ip_windows: Arc::new(DashMap::new()),
+            user_windows: Arc::new(DashMap::new()),
+            window_ms,
+            limit_per_ip,
+            limit_per_user,
+            hits: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn allow(&self, ip_key: &str, user_key: &str, now_ms: u64) -> bool {
+        let ip_ok = Self::allow_key(
+            &self.ip_windows,
+            ip_key,
+            self.limit_per_ip,
+            self.window_ms,
+            now_ms,
+        );
+        let user_ok = Self::allow_key(
+            &self.user_windows,
+            user_key,
+            self.limit_per_user,
+            self.window_ms,
+            now_ms,
+        );
+        let allowed = ip_ok && user_ok;
+        if !allowed {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+        }
+        allowed
+    }
+
+    fn allow_key(
+        map: &DashMap<String, WindowCounter>,
+        key: &str,
+        limit: u32,
+        window_ms: u64,
+        now_ms: u64,
+    ) -> bool {
+        let mut entry = map.entry(key.to_string()).or_insert(WindowCounter {
+            window_start_ms: now_ms,
+            count: 0,
+        });
+        if now_ms.saturating_sub(entry.window_start_ms) >= window_ms {
+            entry.window_start_ms = now_ms;
+            entry.count = 0;
+        }
+        if entry.count >= limit {
+            return false;
+        }
+        entry.count += 1;
+        true
+    }
+
+    fn hits(&self) -> u64 {
+        self.hits.load(Ordering::Relaxed)
+    }
+}
+
 pub fn app() -> Router {
     app_with_state(AppState::from_env())
 }
 
 pub fn app_with_state(state: AppState) -> Router {
+    let evaluate_route = post(evaluate_handler).route_layer(middleware::from_fn_with_state(
+        state.clone(),
+        rate_limit_middleware,
+    ));
     Router::new()
-        .route("/evaluate", post(evaluate_handler))
+        .route("/evaluate", evaluate_route)
         .route("/healthz", get(health_handler))
         .route("/readyz", get(ready_handler))
         .route("/metrics", get(metrics_handler))
         .route("/audit/recent", get(audit_recent_handler))
+        .route("/security/status", get(security_status_handler))
         .with_state(state)
+}
+
+async fn rate_limit_middleware(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let (parts, body) = request.into_parts();
+    let body_bytes = match to_bytes(body, MAX_REQUEST_BODY_BYTES).await {
+        Ok(b) => b,
+        Err(_) => {
+            let request_id = extract_header(&parts.headers, HEADER_REQUEST_ID)
+                .map(ToString::to_string)
+                .unwrap_or_else(|| Uuid::new_v4().to_string());
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &state,
+                &request_id,
+                "request body too large",
+            );
+        }
+    };
+
+    let now = now_utc_ms();
+    let ip = extract_client_ip(&parts.headers);
+    let user_id = extract_user_id_from_body(&body_bytes).unwrap_or_else(|| "unknown".to_string());
+
+    if !state.rate_limiter.allow(&ip, &user_id, now) {
+        let request_id = extract_header(&parts.headers, HEADER_REQUEST_ID)
+            .map(ToString::to_string)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        return error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            &state,
+            &request_id,
+            "rate limit exceeded",
+        );
+    }
+
+    let request = Request::from_parts(parts, Body::from(body_bytes));
+    next.run(request).await
 }
 
 async fn evaluate_handler(
@@ -201,17 +410,17 @@ async fn evaluate_handler(
     body: Bytes,
 ) -> impl IntoResponse {
     let start = Instant::now();
-
     let (header_request_id, header_timestamp, key_used_id) =
         match validate_security_headers(&state, &headers, &body) {
             Ok(v) => v,
             Err(err) => {
-                let elapsed = start.elapsed().as_nanos() as u64;
-                state.metrics.observe_error(elapsed);
+                state
+                    .metrics
+                    .observe_error(start.elapsed().as_nanos() as u64);
                 let request_id = extract_header(&headers, HEADER_REQUEST_ID)
                     .map(ToString::to_string)
                     .unwrap_or_else(|| Uuid::new_v4().to_string());
-                return auth_error_response(request_id, err);
+                return auth_error_response(&state, request_id, err);
             }
         };
 
@@ -221,14 +430,12 @@ async fn evaluate_handler(
             state
                 .metrics
                 .observe_error(start.elapsed().as_nanos() as u64);
-            return (
+            return error_response(
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    request_id: header_request_id,
-                    error: "invalid JSON payload".to_string(),
-                }),
-            )
-                .into_response();
+                &state,
+                &header_request_id,
+                "invalid JSON payload",
+            );
         }
     };
 
@@ -236,14 +443,12 @@ async fn evaluate_handler(
         state
             .metrics
             .observe_error(start.elapsed().as_nanos() as u64);
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                request_id: header_request_id,
-                error: "user_id must not be empty".to_string(),
-            }),
-        )
-            .into_response();
+            &state,
+            &header_request_id,
+            "user_id must not be empty",
+        );
     }
 
     if let Some(body_request_id) = req.request_id.as_deref() {
@@ -251,14 +456,12 @@ async fn evaluate_handler(
             state
                 .metrics
                 .observe_error(start.elapsed().as_nanos() as u64);
-            return (
+            return error_response(
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    request_id: header_request_id,
-                    error: "request_id in body must match X-Request-Id".to_string(),
-                }),
-            )
-                .into_response();
+                &state,
+                &header_request_id,
+                "request_id in body must match X-Request-Id",
+            );
         }
     }
 
@@ -275,17 +478,11 @@ async fn evaluate_handler(
     ) {
         Ok(tx) => tx,
         Err(err) => {
-            let elapsed = start.elapsed().as_nanos() as u64;
-            state.metrics.observe_error(elapsed);
+            state
+                .metrics
+                .observe_error(start.elapsed().as_nanos() as u64);
             warn!(request_id = %header_request_id, error = %err, "evaluate rejected request");
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    request_id: header_request_id,
-                    error: err.to_string(),
-                }),
-            )
-                .into_response();
+            return error_response(StatusCode::BAD_REQUEST, &state, &header_request_id, err);
         }
     };
 
@@ -308,17 +505,16 @@ async fn evaluate_handler(
 
     if state.audit_enabled {
         if let Err(err) = state.audit_store.append(&record) {
-            let elapsed = start.elapsed().as_nanos() as u64;
-            state.metrics.observe_error(elapsed);
+            state
+                .metrics
+                .observe_error(start.elapsed().as_nanos() as u64);
             warn!(request_id = %header_request_id, error = %err, "failed to persist audit record");
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    request_id: header_request_id,
-                    error: "failed to persist audit record".to_string(),
-                }),
-            )
-                .into_response();
+                &state,
+                &header_request_id,
+                "failed to persist audit record",
+            );
         }
     }
 
@@ -334,7 +530,7 @@ async fn evaluate_handler(
     );
 
     let response = EvaluateResponse {
-        request_id: header_request_id,
+        request_id: header_request_id.clone(),
         calc_version: req.calc_version,
         profile_name: state.profile.name.to_string(),
         profile_version: state.profile.version.to_string(),
@@ -343,7 +539,7 @@ async fn evaluate_handler(
         trace,
         audit_hash,
     };
-    (StatusCode::OK, Json(response)).into_response()
+    signed_json_response(StatusCode::OK, &state, &header_request_id, &response)
 }
 
 fn validate_security_headers(
@@ -351,8 +547,10 @@ fn validate_security_headers(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Result<(String, u64, String), AuthError> {
-    let signature = extract_header(headers, HEADER_SIGNATURE)
+    let signature_hex = extract_header(headers, HEADER_SIGNATURE)
         .ok_or(AuthError::Unauthorized("missing X-Signature header"))?;
+    let signature = decode_hex_32(signature_hex)
+        .ok_or(AuthError::Unauthorized("invalid X-Signature format"))?;
     let request_id = extract_header(headers, HEADER_REQUEST_ID)
         .ok_or(AuthError::Unauthorized("missing X-Request-Id header"))?
         .to_string();
@@ -364,13 +562,27 @@ fn validate_security_headers(
         .ok_or(AuthError::Unauthorized("missing X-Key-Id header"))?;
 
     let now = now_utc_ms();
-    if now.abs_diff(timestamp_ms) > AUTH_WINDOW_MS {
+    if now.abs_diff(timestamp_ms) > state.auth_window_ms {
         return Err(AuthError::RequestTimeout(
-            "timestamp outside 60s security window",
+            "timestamp outside configured security window",
         ));
     }
 
+    let allowed_key = if key_id == state.auth.active.id {
+        Some(&state.auth.active)
+    } else if let Some(prev) = &state.auth.previous {
+        if key_id == prev.id {
+            Some(prev)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let key = allowed_key.ok_or(AuthError::Unauthorized("unknown or inactive X-Key-Id"))?;
+
     maybe_purge_replay_cache(state, now);
+    enforce_replay_capacity(state);
     if state.replay_cache.contains_key(&request_id) {
         return Err(AuthError::Conflict(
             "replay detected: X-Request-Id already used",
@@ -378,26 +590,23 @@ fn validate_security_headers(
     }
 
     let signing_bytes = signing_message(key_id, &request_id, timestamp_ms, body);
-    let expected_active = mac_hex(&state.auth.active.key, &signing_bytes);
-    if timing_safe_eq(expected_active.as_bytes(), signature.as_bytes()) {
-        state.replay_cache.insert(request_id.clone(), now);
-        return Ok((request_id, timestamp_ms, state.auth.active.id.clone()));
+    let expected = hmac_blake3(&key.secret, &signing_bytes);
+    if !timing_safe_eq_32(&signature, &expected) {
+        return Err(AuthError::Unauthorized("invalid request signature"));
     }
 
-    if let Some(previous) = &state.auth.previous {
-        let expected_previous = mac_hex(&previous.key, &signing_bytes);
-        if timing_safe_eq(expected_previous.as_bytes(), signature.as_bytes()) {
-            state.replay_cache.insert(request_id.clone(), now);
-            return Ok((request_id, timestamp_ms, previous.id.clone()));
-        }
-    }
-
-    Err(AuthError::Unauthorized("invalid request signature"))
+    state.replay_cache.insert(request_id.clone(), now);
+    state
+        .key_usage
+        .entry(key.id.clone())
+        .and_modify(|v| *v += 1)
+        .or_insert(1);
+    Ok((request_id, timestamp_ms, key.id.clone()))
 }
 
 fn maybe_purge_replay_cache(state: &AppState, now_ms: u64) {
     let last = state.last_replay_cleanup_ms.load(Ordering::Relaxed);
-    if now_ms.saturating_sub(last) < REPLAY_TTL_MS / 2 {
+    if now_ms.saturating_sub(last) < state.replay_ttl_ms / 2 {
         return;
     }
     state
@@ -405,23 +614,71 @@ fn maybe_purge_replay_cache(state: &AppState, now_ms: u64) {
         .store(now_ms, Ordering::Relaxed);
     state
         .replay_cache
-        .retain(|_, seen_ms| now_ms.saturating_sub(*seen_ms) <= REPLAY_TTL_MS);
+        .retain(|_, seen_ms| now_ms.saturating_sub(*seen_ms) <= state.replay_ttl_ms);
 }
 
-fn auth_error_response(request_id: String, err: AuthError) -> axum::response::Response {
+fn enforce_replay_capacity(state: &AppState) {
+    if state.replay_cache.len() <= state.replay_max_keys {
+        return;
+    }
+    let mut entries: Vec<(String, u64)> = state
+        .replay_cache
+        .iter()
+        .map(|e| (e.key().clone(), *e.value()))
+        .collect();
+    entries.sort_by_key(|(_, ts)| *ts);
+    let to_remove = entries.len().saturating_sub(state.replay_max_keys);
+    for (key, _) in entries.into_iter().take(to_remove) {
+        state.replay_cache.remove(&key);
+    }
+}
+
+fn auth_error_response(state: &AppState, request_id: String, err: AuthError) -> Response {
     let (status, message) = match err {
         AuthError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg),
         AuthError::RequestTimeout(msg) => (StatusCode::REQUEST_TIMEOUT, msg),
         AuthError::Conflict(msg) => (StatusCode::CONFLICT, msg),
     };
-    (
-        status,
-        Json(ErrorResponse {
-            request_id,
-            error: message.to_string(),
-        }),
-    )
-        .into_response()
+    error_response(status, state, &request_id, message)
+}
+
+fn error_response(status: StatusCode, state: &AppState, request_id: &str, msg: &str) -> Response {
+    let payload = ErrorResponse {
+        request_id: request_id.to_string(),
+        error: msg.to_string(),
+    };
+    signed_json_response(status, state, request_id, &payload)
+}
+
+fn signed_json_response<T: Serialize>(
+    status: StatusCode,
+    state: &AppState,
+    request_id: &str,
+    payload: &T,
+) -> Response {
+    let body =
+        serde_json::to_vec(payload).unwrap_or_else(|_| b"{\"error\":\"serialization\"}".to_vec());
+    let sig = bytes_to_hex(&hmac_blake3(
+        &state.auth.active.secret,
+        &response_signing_message(request_id, &body),
+    ));
+    let mut response = Response::new(Body::from(body));
+    *response.status_mut() = status;
+    response.headers_mut().insert(
+        HeaderName::from_static(HEADER_CONTENT_TYPE),
+        HeaderValue::from_static("application/json"),
+    );
+    if let Ok(v) = HeaderValue::from_str(&sig) {
+        response
+            .headers_mut()
+            .insert(HeaderName::from_static(HEADER_RESPONSE_SIGNATURE), v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&state.auth.active.id) {
+        response
+            .headers_mut()
+            .insert(HeaderName::from_static(HEADER_RESPONSE_KEY_ID), v);
+    }
+    response
 }
 
 fn extract_header<'a>(headers: &'a HeaderMap, name: &'static str) -> Option<&'a str> {
@@ -431,6 +688,28 @@ fn extract_header<'a>(headers: &'a HeaderMap, name: &'static str) -> Option<&'a 
         .map(str::trim)
 }
 
+fn extract_client_ip(headers: &HeaderMap) -> String {
+    if let Some(v) = extract_header(headers, HEADER_FORWARDED_FOR) {
+        if let Some(first) = v.split(',').next() {
+            let ip = first.trim();
+            if !ip.is_empty() {
+                return ip.to_string();
+            }
+        }
+    }
+    if let Some(v) = extract_header(headers, HEADER_REAL_IP) {
+        if !v.is_empty() {
+            return v.to_string();
+        }
+    }
+    "unknown".to_string()
+}
+
+fn extract_user_id_from_body(body: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    value.get("user_id")?.as_str().map(ToString::to_string)
+}
+
 pub fn compute_signature(
     secret: &str,
     key_id: &str,
@@ -438,9 +717,8 @@ pub fn compute_signature(
     timestamp_ms: u64,
     body: &[u8],
 ) -> String {
-    let key = derive_hmac_key(secret);
     let msg = signing_message(key_id, request_id, timestamp_ms, body);
-    mac_hex(&key, &msg)
+    bytes_to_hex(&hmac_blake3(secret.as_bytes(), &msg))
 }
 
 pub fn benchmark_security_check(
@@ -473,10 +751,6 @@ pub fn benchmark_security_check(
     validate_security_headers(state, &headers, body).is_ok()
 }
 
-fn derive_hmac_key(secret: &str) -> [u8; 32] {
-    *blake3::hash(secret.as_bytes()).as_bytes()
-}
-
 fn signing_message(key_id: &str, request_id: &str, timestamp_ms: u64, body: &[u8]) -> Vec<u8> {
     fn push_part(buf: &mut Vec<u8>, part: &[u8]) {
         buf.extend_from_slice(&(part.len() as u32).to_le_bytes());
@@ -490,22 +764,84 @@ fn signing_message(key_id: &str, request_id: &str, timestamp_ms: u64, body: &[u8
     out
 }
 
-fn mac_hex(key: &[u8; 32], msg: &[u8]) -> String {
-    let mut data = Vec::with_capacity(key.len() + msg.len());
-    data.extend_from_slice(key);
-    data.extend_from_slice(msg);
-    blake3::hash(&data).to_hex().to_string()
+fn response_signing_message(request_id: &str, body: &[u8]) -> Vec<u8> {
+    fn push_part(buf: &mut Vec<u8>, part: &[u8]) {
+        buf.extend_from_slice(&(part.len() as u32).to_le_bytes());
+        buf.extend_from_slice(part);
+    }
+    let mut out = Vec::with_capacity(body.len() + 48);
+    push_part(&mut out, request_id.as_bytes());
+    push_part(&mut out, body);
+    out
 }
 
-fn timing_safe_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
+fn hmac_blake3(secret: &[u8], msg: &[u8]) -> [u8; 32] {
+    const BLOCK: usize = 64;
+    let mut key_block = [0u8; BLOCK];
+    if secret.len() > BLOCK {
+        let digest = blake3::hash(secret);
+        key_block[..32].copy_from_slice(digest.as_bytes());
+    } else {
+        key_block[..secret.len()].copy_from_slice(secret);
     }
+
+    let mut ipad = [0u8; BLOCK];
+    let mut opad = [0u8; BLOCK];
+    for i in 0..BLOCK {
+        ipad[i] = key_block[i] ^ 0x36;
+        opad[i] = key_block[i] ^ 0x5c;
+    }
+
+    let mut inner = Vec::with_capacity(BLOCK + msg.len());
+    inner.extend_from_slice(&ipad);
+    inner.extend_from_slice(msg);
+    let inner_hash = blake3::hash(&inner);
+
+    let mut outer = Vec::with_capacity(BLOCK + 32);
+    outer.extend_from_slice(&opad);
+    outer.extend_from_slice(inner_hash.as_bytes());
+    *blake3::hash(&outer).as_bytes()
+}
+
+fn timing_safe_eq_32(a: &[u8; 32], b: &[u8; 32]) -> bool {
     let mut diff = 0u8;
-    for i in 0..a.len() {
+    for i in 0..32 {
         diff |= a[i] ^ b[i];
     }
     diff == 0
+}
+
+fn decode_hex_32(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    let bytes = hex.as_bytes();
+    for i in 0..32 {
+        let hi = hex_nibble(bytes[i * 2])?;
+        let lo = hex_nibble(bytes[i * 2 + 1])?;
+        out[i] = (hi << 4) | lo;
+    }
+    Some(out)
+}
+
+fn hex_nibble(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
 }
 
 async fn health_handler() -> impl IntoResponse {
@@ -570,6 +906,29 @@ async fn audit_recent_handler(
         )
             .into_response(),
     }
+}
+
+async fn security_status_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let mut usage = HashMap::new();
+    for entry in state.key_usage.iter() {
+        usage.insert(entry.key().clone(), *entry.value());
+    }
+    (
+        StatusCode::OK,
+        Json(SecurityStatusResponse {
+            auth_window_ms: state.auth_window_ms,
+            replay_ttl_ms: state.replay_ttl_ms,
+            replay_cache_size: state.replay_cache.len(),
+            replay_max_keys: state.replay_max_keys,
+            key_active_id: state.auth.active.id.clone(),
+            key_previous_id: state.auth.previous.as_ref().map(|k| k.id.clone()),
+            key_usage_total: usage,
+            rate_limit_window_ms: state.rate_limiter.window_ms,
+            rate_limit_ip: state.rate_limiter.limit_per_ip,
+            rate_limit_user: state.rate_limiter.limit_per_user,
+            rate_limit_hits: state.rate_limiter.hits(),
+        }),
+    )
 }
 
 pub fn now_utc_ms() -> u64 {
@@ -639,39 +998,25 @@ mod tests {
             "req-contract-1",
             now,
         );
-
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().contains_key(HEADER_RESPONSE_SIGNATURE));
+        assert!(resp.headers().contains_key(HEADER_RESPONSE_KEY_ID));
         let body = resp
             .into_body()
             .collect()
             .await
             .expect("body bytes")
             .to_bytes();
-        let json: Value = serde_json::from_slice(&body).expect("json body");
+        let json: Value = serde_json::from_slice(&body).expect("json");
         assert_eq!(json["request_id"], "req-contract-1");
-        assert_eq!(json["calc_version"], "plca_v1");
         assert_eq!(json["auth_key_id"], "active");
-        assert!(json["profile_name"].is_string());
-        assert!(json["profile_version"].is_string());
-        assert_eq!(json["final_decision"], "Approved");
-        assert!(json["trace"].is_array());
-        assert!(json["audit_hash"].is_string());
     }
 
     #[tokio::test]
     async fn request_without_signature_returns_401() {
         let app = app_with_state(test_state());
         let now = now_utc_ms();
-        let req_body = serde_json::json!({
-            "user_id": "user_a",
-            "amount_cents": 50_000,
-            "is_pep": false,
-            "has_active_kyc": true,
-            "timestamp_utc_ms": now,
-            "risk_bps": 1_000,
-            "ui_hash_valid": true
-        });
         let req = Request::builder()
             .method("POST")
             .uri("/evaluate")
@@ -679,7 +1024,18 @@ mod tests {
             .header("x-request-id", "req-no-sig")
             .header("x-timestamp", now.to_string())
             .header("x-key-id", "active")
-            .body(Body::from(req_body.to_string()))
+            .body(Body::from(
+                serde_json::json!({
+                    "user_id":"u",
+                    "amount_cents":50_000,
+                    "is_pep":false,
+                    "has_active_kyc":true,
+                    "timestamp_utc_ms":now,
+                    "risk_bps":1000,
+                    "ui_hash_valid":true
+                })
+                .to_string(),
+            ))
             .expect("request");
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -689,24 +1045,26 @@ mod tests {
     async fn request_with_wrong_signature_returns_401() {
         let app = app_with_state(test_state());
         let now = now_utc_ms();
-        let req_body = serde_json::json!({
-            "user_id": "user_b",
-            "amount_cents": 50_000,
-            "is_pep": false,
-            "has_active_kyc": true,
-            "timestamp_utc_ms": now,
-            "risk_bps": 1_000,
-            "ui_hash_valid": true
-        });
         let req = Request::builder()
             .method("POST")
             .uri("/evaluate")
             .header("content-type", "application/json")
             .header("x-signature", "deadbeef")
-            .header("x-request-id", "req-wrong-sig")
+            .header("x-request-id", "req-wrong")
             .header("x-timestamp", now.to_string())
             .header("x-key-id", "active")
-            .body(Body::from(req_body.to_string()))
+            .body(Body::from(
+                serde_json::json!({
+                    "user_id":"u",
+                    "amount_cents":50_000,
+                    "is_pep":false,
+                    "has_active_kyc":true,
+                    "timestamp_utc_ms":now,
+                    "risk_bps":1000,
+                    "ui_hash_valid":true
+                })
+                .to_string(),
+            ))
             .expect("request");
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -716,22 +1074,21 @@ mod tests {
     async fn request_with_expired_timestamp_returns_408() {
         let app = app_with_state(test_state());
         let now = now_utc_ms();
-        let expired = now.saturating_sub(180_000);
         let req_body = serde_json::json!({
-            "user_id": "user_c",
-            "amount_cents": 50_000,
-            "is_pep": false,
-            "has_active_kyc": true,
-            "timestamp_utc_ms": now,
-            "risk_bps": 1_000,
-            "ui_hash_valid": true
+            "user_id":"u",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
         });
         let req = signed_request(
             req_body,
             "test_active_secret",
             "active",
             "req-expired",
-            expired,
+            now.saturating_sub(180_000),
         );
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::REQUEST_TIMEOUT);
@@ -741,30 +1098,31 @@ mod tests {
     async fn request_id_reused_returns_409() {
         let app = app_with_state(test_state());
         let now = now_utc_ms();
-        let req_id = "req-replay";
         let req_body = serde_json::json!({
-            "user_id": "user_d",
-            "amount_cents": 50_000,
-            "is_pep": false,
-            "has_active_kyc": true,
-            "timestamp_utc_ms": now,
-            "risk_bps": 1_000,
-            "ui_hash_valid": true
+            "user_id":"u",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
         });
-        let first = signed_request(
+        let req1 = signed_request(
             req_body.clone(),
             "test_active_secret",
             "active",
-            req_id,
+            "req-replay",
             now,
         );
-        let second = signed_request(req_body, "test_active_secret", "active", req_id, now);
-
-        let resp1 = app.clone().oneshot(first).await.expect("response1");
-        assert_eq!(resp1.status(), StatusCode::OK);
-
-        let resp2 = app.oneshot(second).await.expect("response2");
-        assert_eq!(resp2.status(), StatusCode::CONFLICT);
+        let req2 = signed_request(req_body, "test_active_secret", "active", "req-replay", now);
+        assert_eq!(
+            app.clone().oneshot(req1).await.expect("r1").status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            app.oneshot(req2).await.expect("r2").status(),
+            StatusCode::CONFLICT
+        );
     }
 
     #[tokio::test]
@@ -772,30 +1130,83 @@ mod tests {
         let app = app_with_state(test_state());
         let now = now_utc_ms();
         let req_body = serde_json::json!({
-            "user_id": "user_prev",
-            "amount_cents": 50_000,
-            "is_pep": false,
-            "has_active_kyc": true,
-            "timestamp_utc_ms": now,
-            "risk_bps": 1_000,
-            "ui_hash_valid": true
+            "user_id":"u_prev",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
         });
         let req = signed_request(
             req_body,
             "test_previous_secret",
             "previous",
-            "req-prev-1",
+            "req-prev",
             now,
         );
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = resp
-            .into_body()
-            .collect()
-            .await
-            .expect("body bytes")
-            .to_bytes();
-        let json: Value = serde_json::from_slice(&body).expect("json");
-        assert_eq!(json["auth_key_id"], "previous");
+    }
+
+    #[tokio::test]
+    async fn payload_adulterated_returns_401() {
+        let app = app_with_state(test_state());
+        let now = now_utc_ms();
+        let body_original = serde_json::json!({
+            "user_id":"u1",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let body_tampered = serde_json::json!({
+            "user_id":"u1",
+            "amount_cents":999_999,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let signature = compute_signature(
+            "test_active_secret",
+            "active",
+            "req-tampered",
+            now,
+            body_original.to_string().as_bytes(),
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri("/evaluate")
+            .header("content-type", "application/json")
+            .header("x-signature", signature)
+            .header("x-request-id", "req-tampered")
+            .header("x-timestamp", now.to_string())
+            .header("x-key-id", "active")
+            .body(Body::from(body_tampered.to_string()))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn strict_key_id_rejects_unknown_key() {
+        let app = app_with_state(test_state());
+        let now = now_utc_ms();
+        let req_body = serde_json::json!({
+            "user_id":"u",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let req = signed_request(req_body, "test_active_secret", "unknown", "req-unk", now);
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }

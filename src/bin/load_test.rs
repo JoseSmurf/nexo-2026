@@ -22,6 +22,12 @@ async fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(200);
+    let max_p95_us: Option<f64> = std::env::var("NEXO_LOAD_MAX_P95_US")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    let max_p99_us: Option<f64> = std::env::var("NEXO_LOAD_MAX_P99_US")
+        .ok()
+        .and_then(|v| v.parse().ok());
 
     let state = syntax_engine::api::AppState::for_bench();
     let app = syntax_engine::api::app_with_state(state);
@@ -92,6 +98,19 @@ async fn main() {
     println!("load_test total_requests={total_requests} concurrency={concurrency}");
     println!("ok_responses={ok}/{}", total_requests);
     println!("latency_us avg={avg:.2} p50={p50:.2} p95={p95:.2} p99={p99:.2}");
+
+    if let Some(max) = max_p95_us {
+        if p95 > max {
+            eprintln!("p95 budget exceeded: {p95:.2}us > {max:.2}us");
+            std::process::exit(1);
+        }
+    }
+    if let Some(max) = max_p99_us {
+        if p99 > max {
+            eprintln!("p99 budget exceeded: {p99:.2}us > {max:.2}us");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn chrono_like_now_ms() -> u64 {

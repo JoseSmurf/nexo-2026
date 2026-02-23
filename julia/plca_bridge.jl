@@ -5,7 +5,7 @@ using UUIDs
 using Blake3Hash
 
 const API_URL = get(ENV, "NEXO_API_URL", "http://127.0.0.1:3000/evaluate")
-const NEXO_KEY_ID = get(ENV, "NEXO_KEY_ID", "active")
+const NEXO_KEY_ID = get(ENV, "NEXO_HMAC_KEY_ID", "active")
 
 const PESO_UTILIDADE  = 2//1
 const PESO_PROBLEMA   = 3//5
@@ -101,18 +101,29 @@ function signing_message(key_id::String, request_id::String, timestamp_ms::UInt6
     return out
 end
 
-function derive_hmac_key(secret::String)::Vector{UInt8}
+function blake3_digest(data::Vector{UInt8})::Vector{UInt8}
     ctx = Blake3Ctx()
-    update!(ctx, Vector{UInt8}(codeunits(secret)))
+    update!(ctx, data)
     digest(ctx)
 end
 
 function hmac_blake3(body::String, secret::String, key_id::String, request_id::String, timestamp_ms::UInt64)::String
-    key = derive_hmac_key(secret)
+    block_size = 64
+    key = Vector{UInt8}(codeunits(secret))
+    if length(key) > block_size
+        key = blake3_digest(key)
+    end
+    if length(key) < block_size
+        key = vcat(key, zeros(UInt8, block_size - length(key)))
+    end
+
+    ipad = UInt8[(key[i] ⊻ 0x36) for i in 1:block_size]
+    opad = UInt8[(key[i] ⊻ 0x5c) for i in 1:block_size]
+
     msg = signing_message(key_id, request_id, timestamp_ms, body)
-    ctx = Blake3Ctx()
-    update!(ctx, vcat(key, msg))
-    bytes2hex(digest(ctx))
+    inner = blake3_digest(vcat(ipad, msg))
+    outer = blake3_digest(vcat(opad, inner))
+    bytes2hex(outer)
 end
 
 function post_evaluate(payload::Dict{String, Any}, request_id::String, timestamp_ms::UInt64; api_url::String=API_URL)

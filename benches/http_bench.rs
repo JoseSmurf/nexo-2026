@@ -15,7 +15,7 @@ fn bench_http_evaluate(c: &mut Criterion) {
         ("blocked", "bench_block", 150_000u64, true, false, 4_500u16),
     ];
 
-    for (name, user_id, amount_cents, is_pep, has_active_kyc, risk_bps) in payloads {
+    for (name, user_id_prefix, amount_cents, is_pep, has_active_kyc, risk_bps) in payloads {
         let state = syntax_engine::api::AppState::for_bench();
         let app = syntax_engine::api::app_with_state(state);
         let seq = Cell::new(0u64);
@@ -24,6 +24,7 @@ fn bench_http_evaluate(c: &mut Criterion) {
                 let next = seq.get().wrapping_add(1);
                 seq.set(next);
                 let request_id = format!("bench-{}-{}-{}", name, now_utc_ms(), next);
+                let user_id = format!("{}-{}", user_id_prefix, next);
                 let timestamp = now_utc_ms();
                 let payload = json!({
                     "user_id": user_id,
