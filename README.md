@@ -77,3 +77,18 @@ Rules: BCB + AML/FATF + KYC/PEP
 API layer (HTTP): planned
 License
 MIT
+
+## Julia PLCA Bridge
+
+There is a Julia bridge at `julia/plca_bridge.jl` that:
+- computes PLCA score with `Rational{Int64}` and `BigFloat`
+- converts to deterministic `risk_bps` (`0..9999`)
+- sends payload to Rust API `POST /evaluate`
+
+Quick run:
+
+```bash
+julia --project=./julia -e 'using Pkg; Pkg.instantiate()'
+cargo run
+julia --project=./julia julia/plca_bridge.jl
+```
