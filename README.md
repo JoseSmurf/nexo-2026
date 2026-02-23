@@ -92,6 +92,42 @@ Rule profiles (versioned, via env):
 - `NEXO_PROFILE=us_default_v1`
 - `NEXO_PROFILE=eu_default_v1`
 
+## Security (HMAC + Anti-Replay + Key Rotation)
+
+`POST /evaluate` now requires signed headers:
+
+- `X-Signature`
+- `X-Request-Id` (UUID v4)
+- `X-Timestamp` (unix ms)
+- `X-Key-Id`
+
+Server validation order:
+
+1. Signature validation with active key (`NEXO_HMAC_SECRET`)
+2. Fallback validation with previous key (`NEXO_HMAC_SECRET_PREV`, optional)
+3. Timestamp window check (60s)
+4. Replay check in memory cache (DashMap, TTL 120s)
+
+Status codes:
+
+- `401` invalid/missing signature
+- `408` expired timestamp window
+- `409` replayed `X-Request-Id`
+
+Required environment:
+
+- `NEXO_HMAC_SECRET` (required, startup panic if missing)
+- `NEXO_HMAC_SECRET_PREV` (optional rotation window)
+- `NEXO_HMAC_KEY_ID` (optional, default `active`)
+- `NEXO_HMAC_KEY_ID_PREV` (optional, default `previous`)
+
+Rotation flow:
+
+1. Deploy new active key in `NEXO_HMAC_SECRET`
+2. Move previous active to `NEXO_HMAC_SECRET_PREV`
+3. Update Julia `X-Key-Id` to the active key id
+4. Remove previous key after clients are migrated
+
 ## Latency & Load
 
 Run endpoint benchmarks:
@@ -117,12 +153,12 @@ cargo run --release --bin perf_budget
 There is a Julia bridge at `julia/plca_bridge.jl` that:
 - computes PLCA score with `Rational{Int64}` and `BigFloat`
 - converts to deterministic `risk_bps` (`0..9999`)
-- sends payload to Rust API `POST /evaluate`
+- signs payload with BLAKE3 (`Blake3Hash.jl`) and sends authenticated request headers
 
 Quick run:
 
 ```bash
 julia --project=./julia -e 'using Pkg; Pkg.instantiate()'
-cargo run
-julia --project=./julia julia/plca_bridge.jl
+NEXO_HMAC_SECRET='change-me' cargo run
+NEXO_HMAC_SECRET='change-me' julia --project=./julia julia/plca_bridge.jl
 ```

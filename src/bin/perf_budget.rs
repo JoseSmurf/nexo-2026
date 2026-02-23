@@ -44,21 +44,35 @@ fn main() {
     let http_start = Instant::now();
     rt.block_on(async {
         for i in 0..http_iterations {
+            let timestamp = now_ms();
+            let request_id = format!("perf-{i}");
             let req_body = serde_json::json!({
                 "user_id": "perf_user",
                 "amount_cents": 50_000,
                 "is_pep": false,
                 "has_active_kyc": true,
-                "timestamp_utc_ms": now_ms(),
+                "timestamp_utc_ms": timestamp,
                 "risk_bps": 1_000,
                 "ui_hash_valid": true,
-                "request_id": format!("perf-{i}")
+                "request_id": request_id
             });
+            let body_str = req_body.to_string();
+            let signature = syntax_engine::api::compute_signature(
+                syntax_engine::api::BENCH_HMAC_SECRET,
+                syntax_engine::api::BENCH_KEY_ID,
+                &request_id,
+                timestamp,
+                body_str.as_bytes(),
+            );
             let req = Request::builder()
                 .method("POST")
                 .uri("/evaluate")
                 .header("content-type", "application/json")
-                .body(Body::from(req_body.to_string()))
+                .header("x-signature", signature)
+                .header("x-request-id", request_id)
+                .header("x-timestamp", timestamp.to_string())
+                .header("x-key-id", syntax_engine::api::BENCH_KEY_ID)
+                .body(Body::from(body_str))
                 .expect("request");
             let resp = app.clone().oneshot(req).await.expect("response");
             assert!(resp.status().is_success());

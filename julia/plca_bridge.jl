@@ -1,8 +1,11 @@
 using Dates
 using HTTP
 using JSON3
+using UUIDs
+using Blake3Hash
 
 const API_URL = get(ENV, "NEXO_API_URL", "http://127.0.0.1:3000/evaluate")
+const NEXO_KEY_ID = get(ENV, "NEXO_KEY_ID", "active")
 
 const PESO_UTILIDADE  = 2//1
 const PESO_PROBLEMA   = 3//5
@@ -63,6 +66,7 @@ function build_evaluate_request(
     risk_bps = score_to_risk_bps(score)
     now_ms = UInt64(round(Dates.datetime2unix(now(UTC)) * 1000))
 
+    request_id = string(uuid4())
     payload = Dict(
         "user_id" => p.user_id,
         "amount_cents" => amount_cents,
@@ -71,13 +75,59 @@ function build_evaluate_request(
         "timestamp_utc_ms" => now_ms,
         "risk_bps" => Int(risk_bps),
         "ui_hash_valid" => ui_hash_valid,
+        "request_id" => request_id,
     )
-    return payload, score, risk_bps
+    return payload, score, risk_bps, request_id, now_ms
 end
 
-function post_evaluate(payload::Dict{String, Any}; api_url::String=API_URL)
+function u32le(n::UInt32)
+    UInt8[
+        UInt8((n >> 0) & 0xff),
+        UInt8((n >> 8) & 0xff),
+        UInt8((n >> 16) & 0xff),
+        UInt8((n >> 24) & 0xff),
+    ]
+end
+
+function signing_message(key_id::String, request_id::String, timestamp_ms::UInt64, body::String)::Vector{UInt8}
+    out = UInt8[]
+    for part in (Vector{UInt8}(codeunits(key_id)),
+                 Vector{UInt8}(codeunits(request_id)),
+                 Vector{UInt8}(codeunits(string(timestamp_ms))),
+                 Vector{UInt8}(codeunits(body)))
+        append!(out, u32le(UInt32(length(part))))
+        append!(out, part)
+    end
+    return out
+end
+
+function derive_hmac_key(secret::String)::Vector{UInt8}
+    ctx = Blake3Ctx()
+    update!(ctx, Vector{UInt8}(codeunits(secret)))
+    digest(ctx)
+end
+
+function hmac_blake3(body::String, secret::String, key_id::String, request_id::String, timestamp_ms::UInt64)::String
+    key = derive_hmac_key(secret)
+    msg = signing_message(key_id, request_id, timestamp_ms, body)
+    ctx = Blake3Ctx()
+    update!(ctx, vcat(key, msg))
+    bytes2hex(digest(ctx))
+end
+
+function post_evaluate(payload::Dict{String, Any}, request_id::String, timestamp_ms::UInt64; api_url::String=API_URL)
+    secret = get(ENV, "NEXO_HMAC_SECRET", "")
+    isempty(secret) && error("NEXO_HMAC_SECRET is required")
     body = JSON3.write(payload)
-    resp = HTTP.request("POST", api_url, ["Content-Type" => "application/json"], body)
+    signature = hmac_blake3(body, secret, NEXO_KEY_ID, request_id, timestamp_ms)
+    headers = [
+        "Content-Type" => "application/json",
+        "X-Signature" => signature,
+        "X-Request-Id" => request_id,
+        "X-Timestamp" => string(timestamp_ms),
+        "X-Key-Id" => NEXO_KEY_ID,
+    ]
+    resp = HTTP.request("POST", api_url, headers, body)
     return resp.status, String(resp.body)
 end
 
@@ -87,13 +137,13 @@ function main()
     @assert score_to_risk_bps(BigFloat(20)) == 9_999
 
     input = PlcaInput("julia_bridge_user", 8, 7, 9, 4)
-    payload, score, risk_bps = build_evaluate_request(input; amount_cents=UInt64(150_000))
+    payload, score, risk_bps, request_id, timestamp_ms = build_evaluate_request(input; amount_cents=UInt64(150_000))
 
     println("PLCA score (BigFloat): ", score)
     println("risk_bps (UInt16): ", risk_bps)
     println("POST ", API_URL)
 
-    status, body = post_evaluate(payload)
+    status, body = post_evaluate(payload, request_id, timestamp_ms)
     println("HTTP status: ", status)
     println("Response: ", body)
 end

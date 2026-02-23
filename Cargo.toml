@@ -21,6 +21,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 tower = { version = "0.5", features = ["util"] }
+dashmap = "6.1"
 
 [dev-dependencies]
 criterion = "0.5"
@@ -32,6 +33,10 @@ harness = false
 
 [[bench]]
 name = "http_bench"
+harness = false
+
+[[bench]]
+name = "security_bench"
 harness = false
 
 [profile.release]
