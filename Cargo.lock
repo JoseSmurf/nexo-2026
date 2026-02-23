@@ -783,8 +783,10 @@ dependencies = [
  "axum",
  "blake3",
  "criterion",
+ "http-body-util",
  "serde",
  "tokio",
+ "tower",
 ]
 
 [[package]]

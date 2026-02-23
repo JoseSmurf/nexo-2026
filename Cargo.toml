@@ -19,9 +19,15 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 
 [dev-dependencies]
 criterion = "0.5"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
 
 [[bench]]
 name = "engine_bench"
+harness = false
+
+[[bench]]
+name = "http_bench"
 harness = false
 
 [profile.release]

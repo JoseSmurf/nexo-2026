@@ -1,7 +1,7 @@
 use axum::{extract::Json, http::StatusCode, response::IntoResponse, routing::post, Router};
 use serde::{Deserialize, Serialize};
 
-use syntax_engine::{evaluate_with_config, Decision, EngineConfig, FinalDecision, TransactionIntent};
+use crate::{evaluate_with_config, Decision, EngineConfig, FinalDecision, TransactionIntent};
 
 #[derive(Debug, Deserialize)]
 pub struct EvaluateRequest {

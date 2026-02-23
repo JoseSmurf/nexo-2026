@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub mod api;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Severity {
     Baixa,
