@@ -45,6 +45,7 @@ pub fn verifyLine(alloc: std.mem.Allocator, line: []const u8) schema.VerifyResul
         .array => |a| a,
         else => return .SchemaInvalid,
     };
+    if (trace_arr.items.len == 0) return .SchemaInvalid;
 
     _ = schema.getString(root_obj, "request_id") orelse return .SchemaInvalid;
     _ = schema.getString(root_obj, "final_decision") orelse return .SchemaInvalid;
@@ -127,4 +128,67 @@ test "verifyLine rejects schema drift" {
 
     const result = verifyLine(std.testing.allocator, line);
     try std.testing.expectEqual(schema.VerifyResult.SchemaInvalid, result);
+}
+
+test "verifyLine rejects empty trace array as schema invalid" {
+    const line =
+        \\{"request_id":"empty-trace-001","final_decision":"Approved","trace":[],"audit_hash":"bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3"}
+    ;
+
+    const result = verifyLine(std.testing.allocator, line);
+    try std.testing.expectEqual(schema.VerifyResult.SchemaInvalid, result);
+}
+
+test "verifyLine rejects uppercase audit hash as schema invalid" {
+    const line =
+        \\{"request_id":"d1b13dbd-8ce2-41ea-a2d7-c5294e320fcb","calc_version":null,"profile_name":"br_default_v1","profile_version":"2026.02","timestamp_utc_ms":1771845406862,"user_id":"julia_bridge_user","amount_cents":150000,"risk_bps":9999,"final_decision":"Flagged","trace":["Approved","Approved",{"FlaggedForReview":{"measured":150000,"reason":"Transaction requires AML review.","rule_id":"AML-FATF-REVIEW-001","severity":"Alta","threshold":5000000}}],"audit_hash":"BF5CFDA1E218837D2F8A597F8011B4096A38E8578DB23EF6AEEEDE292B4649F3"}
+    ;
+
+    const result = verifyLine(std.testing.allocator, line);
+    try std.testing.expectEqual(schema.VerifyResult.SchemaInvalid, result);
+}
+
+test "verifyLine accepts blocked fixture line" {
+    const line =
+        \\{"request_id":"blocked-fixture-001","calc_version":null,"profile_name":"br_default_v1","profile_version":"2026.02","timestamp_utc_ms":1772149279575,"user_id":"zig_fixture_user","amount_cents":150000,"risk_bps":1000,"final_decision":"Blocked","trace":[{"Blocked":{"measured":1,"reason":"UI integrity verification failed.","rule_id":"UI-FRAUD-001","severity":"Critica","threshold":0}},{"Blocked":{"measured":150000,"reason":"Night transaction limit exceeded.","rule_id":"BCB-NIGHT-001","severity":"Grave","threshold":100000}},"Approved"],"audit_hash":"7f7be4cc47bcb2659ce6b2c857cb64886c433d2c17a6951ab33c6986d47e7131"}
+    ;
+
+    const result = verifyLine(std.testing.allocator, line);
+    try std.testing.expectEqual(schema.VerifyResult.Ok, result);
+}
+
+test "verifyLine detects tampering on blocked fixture line" {
+    const line =
+        \\{"request_id":"blocked-fixture-001","calc_version":null,"profile_name":"br_default_v1","profile_version":"2026.02","timestamp_utc_ms":1772149279575,"user_id":"zig_fixture_user","amount_cents":150000,"risk_bps":1000,"final_decision":"Blocked","trace":[{"Blocked":{"measured":1,"reason":"UI integrity verification failed.","rule_id":"UI-FRAUD-001","severity":"Critica","threshold":0}},{"Blocked":{"measured":150001,"reason":"Night transaction limit exceeded.","rule_id":"BCB-NIGHT-001","severity":"Grave","threshold":100000}},"Approved"],"audit_hash":"7f7be4cc47bcb2659ce6b2c857cb64886c433d2c17a6951ab33c6986d47e7131"}
+    ;
+
+    const result = verifyLine(std.testing.allocator, line);
+    try std.testing.expectEqual(schema.VerifyResult.Tampering, result);
+}
+
+test "verifyLine rejects missing final_decision" {
+    const line =
+        \\{"request_id":"missing-final-001","trace":["Approved"],"audit_hash":"bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3"}
+    ;
+
+    const result = verifyLine(std.testing.allocator, line);
+    try std.testing.expectEqual(schema.VerifyResult.SchemaInvalid, result);
+}
+
+test "verifyLine rejects missing request_id" {
+    const line =
+        \\{"final_decision":"Approved","trace":["Approved"],"audit_hash":"bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3"}
+    ;
+
+    const result = verifyLine(std.testing.allocator, line);
+    try std.testing.expectEqual(schema.VerifyResult.SchemaInvalid, result);
+}
+
+test "verifyLine currently ignores final_decision mismatch when hash matches trace" {
+    const line =
+        \\{"request_id":"blocked-fixture-001","calc_version":null,"profile_name":"br_default_v1","profile_version":"2026.02","timestamp_utc_ms":1772149279575,"user_id":"zig_fixture_user","amount_cents":150000,"risk_bps":1000,"final_decision":"Approved","trace":[{"Blocked":{"measured":1,"reason":"UI integrity verification failed.","rule_id":"UI-FRAUD-001","severity":"Critica","threshold":0}},{"Blocked":{"measured":150000,"reason":"Night transaction limit exceeded.","rule_id":"BCB-NIGHT-001","severity":"Grave","threshold":100000}},"Approved"],"audit_hash":"7f7be4cc47bcb2659ce6b2c857cb64886c433d2c17a6951ab33c6986d47e7131"}
+    ;
+
+    const result = verifyLine(std.testing.allocator, line);
+    try std.testing.expectEqual(schema.VerifyResult.Ok, result);
 }
