@@ -87,6 +87,63 @@ MIT
 - `GET /audit/recent?limit=50`
 - `GET /security/status`
 
+## Audit Contract (Fixed Schema)
+
+`logs/audit_records.jsonl` uses one JSON object per line with this exact schema:
+
+```json
+{
+  "request_id": "uuid-v4",
+  "calc_version": "string|null",
+  "profile_name": "string",
+  "profile_version": "string",
+  "timestamp_utc_ms": 1771845406862,
+  "user_id": "string",
+  "amount_cents": 150000,
+  "risk_bps": 9999,
+  "final_decision": "Approved|Flagged|Blocked",
+  "trace": [
+    "Approved",
+    {
+      "FlaggedForReview": {
+        "rule_id": "string",
+        "reason": "string",
+        "severity": "Baixa|Alta|Grave|Critica",
+        "measured": 150000,
+        "threshold": 5000000
+      }
+    },
+    {
+      "Blocked": {
+        "rule_id": "string",
+        "reason": "string",
+        "severity": "Baixa|Alta|Grave|Critica",
+        "measured": 1,
+        "threshold": 0
+      }
+    }
+  ],
+  "audit_hash": "64-char-lowercase-hex-blake3"
+}
+```
+
+`audit_hash` is computed from `trace` only, with fixed domain tag `schema=trace_v4`:
+
+1. `hash_field("schema", "trace_v4")`
+2. For each trace entry:
+3. `"Approved"` => `hash_field("D:A", "")`
+4. `"FlaggedForReview"` => `hash_field("D:F", rule_id)`, `hash_field("R", reason)`, `severity_rank (u8)`, `measured (u64 LE)`, `threshold (u64 LE)`
+5. `"Blocked"` => `hash_field("D:B", rule_id)`, `hash_field("R", reason)`, `severity_rank (u8)`, `measured (u64 LE)`, `threshold (u64 LE)`
+
+`hash_field(tag, data)` format:
+
+- `u32_le(tag_len)` + `tag_bytes`
+- `u32_le(data_len)` + `data_bytes`
+
+Severity rank mapping:
+
+- `Baixa=0`, `Alta=1`, `Grave=2`, `Critica=3`
+
 Rule profiles (versioned, via env):
 
 - `NEXO_PROFILE=br_default_v1` (default)
@@ -171,6 +228,26 @@ Enforce performance budget (also in CI):
 ```bash
 cargo run --release --bin perf_budget
 ```
+
+## Offline Audit Verification (Zig)
+
+Offline verifier (no Rust runtime, no HTTP, no hot path dependency):
+
+```bash
+# Verify a real line from runtime log
+zig run tools/zig/audit_verify.zig -- logs/audit_records.jsonl 1
+
+# Verify the pinned fixture used in CI
+zig run tools/zig/audit_verify.zig -- fixtures/audit_sample.jsonl 1
+```
+
+Expected output includes:
+
+- `stored=...`
+- `calc=...`
+- `match=true`
+
+CI runs this verifier with Zig pinned to `0.11.0`.
 
 ## Julia PLCA Bridge
 

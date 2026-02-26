@@ -16,10 +16,16 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Setup Zig 0.11.0 (offline audit verifier)
+      uses: mlugg/setup-zig@v1
+      with:
+        version: 0.11.0
     - name: Build
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
+    - name: Verify audit hash offline (Zig)
+      run: zig run tools/zig/audit_verify.zig -- fixtures/audit_sample.jsonl 1
     - name: Enforce perf budget
       run: cargo run --release --bin perf_budget
     - name: Continuous load test
