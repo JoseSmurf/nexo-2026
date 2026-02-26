@@ -79,6 +79,9 @@ impl<'a> TransactionIntent<'a> {
         risk_bps: u16,
         ui_hash_valid: bool,
     ) -> Result<Self, &'static str> {
+        if user_id.trim().is_empty() {
+            return Err("REJECTED: empty user_id");
+        }
         if amount_cents == 0 {
             return Err("REJECTED: zero amount");
         }
@@ -248,6 +251,8 @@ pub fn evaluate_with_config(
     tx: &TransactionIntent,
     cfg: EngineConfig,
 ) -> (FinalDecision, Vec<Decision>, String) {
+    // Contract: trace order is fixed and versioned by audit_hash(schema=trace_v4).
+    // Reordering rules here changes forensic hashes and must be treated as breaking.
     let trace = vec![
         rule_ui_integrity(tx),
         rule_night_limit(tx, cfg),
@@ -680,6 +685,72 @@ mod tests {
     }
 
     #[test]
+    fn approves_aml_near_risk_limit_without_night_block() {
+        let cfg = cfg_brasil();
+        let (day_ts, st) = ts_for_local_time(cfg, 12, 0);
+        let tx = TransactionIntent::new(
+            "user_near_risk",
+            50_000,
+            false,
+            true,
+            day_ts,
+            st,
+            8_999,
+            true,
+        )
+        .unwrap();
+
+        let (decision, trace, _hash) = evaluate_with_config(&tx, cfg);
+        assert_eq!(decision, FinalDecision::Approved);
+        assert!(!trace
+            .iter()
+            .any(|d| matches!(d, Decision::FlaggedForReview { rule_id, .. } if *rule_id == "AML-FATF-REVIEW-001")));
+    }
+
+    #[test]
+    fn approves_aml_near_amount_limit_without_night_block() {
+        let cfg = cfg_brasil();
+        let (day_ts, st) = ts_for_local_time(cfg, 12, 0);
+        let tx = TransactionIntent::new(
+            "user_near_amount",
+            4_999_999,
+            false,
+            true,
+            day_ts,
+            st,
+            1_000,
+            true,
+        )
+        .unwrap();
+
+        let (decision, trace, _hash) = evaluate_with_config(&tx, cfg);
+        assert_eq!(decision, FinalDecision::Approved);
+        assert!(!trace
+            .iter()
+            .any(|d| matches!(d, Decision::FlaggedForReview { rule_id, .. } if *rule_id == "AML-FATF-REVIEW-001")));
+    }
+
+    #[test]
+    fn approves_non_pep_without_kyc_when_other_signals_are_safe() {
+        let cfg = cfg_brasil();
+        let (day_ts, st) = ts_for_local_time(cfg, 12, 0);
+        let tx = TransactionIntent::new(
+            "user_non_pep_no_kyc",
+            50_000,
+            false,
+            false,
+            day_ts,
+            st,
+            1_000,
+            true,
+        )
+        .unwrap();
+
+        let (decision, _trace, _hash) = evaluate_with_config(&tx, cfg);
+        assert_eq!(decision, FinalDecision::Approved);
+    }
+
+    #[test]
     fn pep_without_kyc_blocks_regardless_of_risk() {
         let st = server_time();
         let tx = TransactionIntent::new(
@@ -712,6 +783,13 @@ mod tests {
         let st = server_time();
         let result =
             TransactionIntent::new("user_zero", 0, false, true, st - 60_000, st, 1_000, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_empty_user_id() {
+        let st = server_time();
+        let result = TransactionIntent::new("", 50_000, false, true, st - 60_000, st, 1_000, true);
         assert!(result.is_err());
     }
 
@@ -764,6 +842,22 @@ mod tests {
     }
 
     #[test]
+    fn accepts_max_valid_risk_bps_9999() {
+        let st = server_time();
+        let result = TransactionIntent::new(
+            "user_risk_ok",
+            50_000,
+            false,
+            true,
+            st - 60_000,
+            st,
+            9_999,
+            true,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn accepts_timestamp_at_max_drift() {
         let st = server_time();
         let max_drift = 5 * 60 * 1000;
@@ -773,6 +867,23 @@ mod tests {
             false,
             true,
             st - max_drift,
+            st,
+            1_000,
+            true,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn accepts_future_timestamp_at_max_drift() {
+        let st = server_time();
+        let max_drift = 5 * 60 * 1000;
+        let result = TransactionIntent::new(
+            "user_drift_future",
+            50_000,
+            false,
+            true,
+            st + max_drift,
             st,
             1_000,
             true,
