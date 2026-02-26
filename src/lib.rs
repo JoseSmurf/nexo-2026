@@ -68,6 +68,7 @@ impl Default for EngineConfig {
 }
 
 impl<'a> TransactionIntent<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         user_id: &'a str,
         amount_cents: u64,

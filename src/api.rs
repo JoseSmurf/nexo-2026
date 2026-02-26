@@ -570,14 +570,12 @@ fn validate_security_headers(
 
     let allowed_key = if key_id == state.auth.active.id {
         Some(&state.auth.active)
-    } else if let Some(prev) = &state.auth.previous {
-        if key_id == prev.id {
-            Some(prev)
-        } else {
-            None
-        }
     } else {
-        None
+        state
+            .auth
+            .previous
+            .as_ref()
+            .filter(|prev| key_id == prev.id)
     };
     let key = allowed_key.ok_or(AuthError::Unauthorized("unknown or inactive X-Key-Id"))?;
 
