@@ -2,24 +2,29 @@ const std = @import("std");
 const schema = @import("schema.zig");
 
 const Blake3 = std.crypto.hash.Blake3;
+const Endian = std.builtin.Endian;
+
+fn littleEndian() Endian {
+    return @field(Endian, if (@hasField(Endian, "little")) "little" else "Little");
+}
 
 fn hashField(h: *Blake3, tag: []const u8, data: []const u8) void {
     var tlen: [4]u8 = undefined;
     const tlen_u32 = std.math.cast(u32, tag.len) orelse unreachable;
-    std.mem.writeInt(u32, &tlen, tlen_u32, .little);
+    std.mem.writeInt(u32, &tlen, tlen_u32, littleEndian());
     h.update(&tlen);
     h.update(tag);
 
     var dlen: [4]u8 = undefined;
     const dlen_u32 = std.math.cast(u32, data.len) orelse unreachable;
-    std.mem.writeInt(u32, &dlen, dlen_u32, .little);
+    std.mem.writeInt(u32, &dlen, dlen_u32, littleEndian());
     h.update(&dlen);
     h.update(data);
 }
 
 fn pushU64Le(h: *Blake3, v: u64) void {
     var b: [8]u8 = undefined;
-    std.mem.writeInt(u64, &b, v, .little);
+    std.mem.writeInt(u64, &b, v, littleEndian());
     h.update(&b);
 }
 
