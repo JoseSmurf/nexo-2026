@@ -5,12 +5,14 @@ const Blake3 = std.crypto.hash.Blake3;
 
 fn hashField(h: *Blake3, tag: []const u8, data: []const u8) void {
     var tlen: [4]u8 = undefined;
-    std.mem.writeInt(u32, &tlen, @intCast(tag.len), .little);
+    const tlen_u32 = std.math.cast(u32, tag.len) orelse unreachable;
+    std.mem.writeInt(u32, &tlen, tlen_u32, .little);
     h.update(&tlen);
     h.update(tag);
 
     var dlen: [4]u8 = undefined;
-    std.mem.writeInt(u32, &dlen, @intCast(data.len), .little);
+    const dlen_u32 = std.math.cast(u32, data.len) orelse unreachable;
+    std.mem.writeInt(u32, &dlen, dlen_u32, .little);
     h.update(&dlen);
     h.update(data);
 }

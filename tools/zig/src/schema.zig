@@ -52,7 +52,7 @@ pub fn getU64(obj: std.json.ObjectMap, key: []const u8) ?u64 {
     return switch (v) {
         .integer => |n| blk: {
             if (n < 0) return null;
-            break :blk @intCast(n);
+            break :blk std.math.cast(u64, n) orelse return null;
         },
         else => null,
     };

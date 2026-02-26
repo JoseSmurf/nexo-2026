@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{
         .name = "nexo-audit",
-        .root_source_file = b.path("src/main.zig"),
+        .root_source_file = compatPath(b, "src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -20,11 +20,18 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     const unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/verify.zig"),
+        .root_source_file = compatPath(b, "src/verify.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const test_step = b.step("test", "Run Zig verifier tests");
     test_step.dependOn(&unit_tests.step);
+}
+
+fn compatPath(b: *std.Build, p: []const u8) std.Build.LazyPath {
+    if (@hasDecl(std.Build, "path")) {
+        return b.path(p);
+    }
+    return .{ .path = p };
 }
