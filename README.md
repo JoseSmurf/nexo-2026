@@ -234,20 +234,26 @@ cargo run --release --bin perf_budget
 Offline verifier (no Rust runtime, no HTTP, no hot path dependency):
 
 ```bash
-# Verify a real line from runtime log
-zig run tools/zig/audit_verify.zig -- logs/audit_records.jsonl 1
+# Build and run Zig verifier tests
+cd tools/zig
+zig build test
 
-# Verify the pinned fixture used in CI
-zig run tools/zig/audit_verify.zig -- fixtures/audit_sample.jsonl 1
+# Verify full runtime file (returns non-zero on failure)
+zig build run -- verify ../../logs/audit_records.jsonl
+
+# Verify pinned fixture used in CI
+zig build run -- verify ../../fixtures/audit_sample.jsonl
 ```
 
 Expected output includes:
 
-- `stored=...`
-- `calc=...`
-- `match=true`
+- `verify: total=... ok=... schema_invalid=... tampering=...`
 
 CI runs this verifier with Zig pinned to `0.11.0`.
+
+Compatibility note:
+
+- `tools/zig/audit_verify.zig` remains as a wrapper entrypoint for direct `zig run` execution.
 
 ## Julia PLCA Bridge
 

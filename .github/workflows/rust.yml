@@ -25,7 +25,10 @@ jobs:
     - name: Run tests
       run: cargo test --verbose
     - name: Verify audit hash offline (Zig)
-      run: zig run tools/zig/audit_verify.zig -- fixtures/audit_sample.jsonl 1
+      run: |
+        cd tools/zig
+        zig build test
+        zig build run -- verify ../../fixtures/audit_sample.jsonl
     - name: Enforce perf budget
       run: cargo run --release --bin perf_budget
     - name: Continuous load test
