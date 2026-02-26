@@ -26,6 +26,9 @@ fn build_tx(
 fn bench_evaluate(c: &mut Criterion) {
     let cfg = EngineConfig {
         tz_offset_minutes: -180,
+        night_limit_cents: 100_000,
+        aml_amount_cents: 5_000_000,
+        aml_risk_bps: 9_000,
     };
     let mut group = c.benchmark_group("evaluate");
 

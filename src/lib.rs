@@ -57,12 +57,18 @@ pub struct TransactionIntent<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct EngineConfig {
     pub tz_offset_minutes: i16,
+    pub night_limit_cents: u64,
+    pub aml_amount_cents: u64,
+    pub aml_risk_bps: u16,
 }
 
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             tz_offset_minutes: -180,
+            night_limit_cents: 100_000,
+            aml_amount_cents: 5_000_000,
+            aml_risk_bps: 9_000,
         }
     }
 }
@@ -110,10 +116,6 @@ impl<'a> TransactionIntent<'a> {
     }
 }
 
-const NIGHT_LIMIT_CENTS: u64 = 100_000;
-const AML_RISK_BPS: u16 = 9_000;
-const AML_AMOUNT_CENTS: u64 = 5_000_000;
-
 fn policy_hour(timestamp_utc_ms: u64, offset_minutes: i16) -> u8 {
     let utc_s = (timestamp_utc_ms / 1000) as i64;
     let local_s = utc_s + (offset_minutes as i64 * 60);
@@ -140,20 +142,20 @@ fn rule_ui_integrity(tx: &TransactionIntent) -> Decision {
 
 fn rule_night_limit(tx: &TransactionIntent, cfg: EngineConfig) -> Decision {
     let hour = policy_hour(tx.timestamp_utc_ms, cfg.tz_offset_minutes);
-    if (hour >= 20 || hour <= 6) && tx.amount_cents > NIGHT_LIMIT_CENTS {
+    if (hour >= 20 || hour <= 6) && tx.amount_cents > cfg.night_limit_cents {
         Decision::Blocked {
             rule_id: "BCB-NIGHT-001",
             reason: "Night transaction limit exceeded.",
             severity: Severity::Grave,
             measured: tx.amount_cents,
-            threshold: NIGHT_LIMIT_CENTS,
+            threshold: cfg.night_limit_cents,
         }
     } else {
         Decision::Approved
     }
 }
 
-fn rule_aml(tx: &TransactionIntent) -> Decision {
+fn rule_aml(tx: &TransactionIntent, cfg: EngineConfig) -> Decision {
     if tx.is_pep && !tx.has_active_kyc {
         return Decision::Blocked {
             rule_id: "KYC-PEP-002",
@@ -164,8 +166,8 @@ fn rule_aml(tx: &TransactionIntent) -> Decision {
         };
     }
 
-    let high_risk = tx.risk_bps >= AML_RISK_BPS;
-    let high_amount = tx.amount_cents >= AML_AMOUNT_CENTS;
+    let high_risk = tx.risk_bps >= cfg.aml_risk_bps;
+    let high_amount = tx.amount_cents >= cfg.aml_amount_cents;
 
     if high_risk && high_amount {
         return Decision::Blocked {
@@ -173,7 +175,7 @@ fn rule_aml(tx: &TransactionIntent) -> Decision {
             reason: "High-risk and high-amount transaction.",
             severity: Severity::Critica,
             measured: tx.amount_cents,
-            threshold: AML_AMOUNT_CENTS,
+            threshold: cfg.aml_amount_cents,
         };
     }
 
@@ -183,7 +185,7 @@ fn rule_aml(tx: &TransactionIntent) -> Decision {
             reason: "Transaction requires AML review.",
             severity: Severity::Alta,
             measured: tx.amount_cents,
-            threshold: AML_AMOUNT_CENTS,
+            threshold: cfg.aml_amount_cents,
         };
     }
 
@@ -256,7 +258,7 @@ pub fn evaluate_with_config(
     let trace = vec![
         rule_ui_integrity(tx),
         rule_night_limit(tx, cfg),
-        rule_aml(tx),
+        rule_aml(tx, cfg),
     ];
 
     let final_decision = if trace.iter().any(|d| matches!(d, Decision::Blocked { .. })) {
@@ -288,6 +290,9 @@ mod tests {
     fn cfg_brasil() -> EngineConfig {
         EngineConfig {
             tz_offset_minutes: -180,
+            night_limit_cents: 100_000,
+            aml_amount_cents: 5_000_000,
+            aml_risk_bps: 9_000,
         }
     }
 
@@ -930,12 +935,18 @@ mod tests {
             &tx,
             EngineConfig {
                 tz_offset_minutes: -180,
+                night_limit_cents: 100_000,
+                aml_amount_cents: 5_000_000,
+                aml_risk_bps: 9_000,
             },
         );
         let (decision_jp, _trace_jp, _hash_jp) = evaluate_with_config(
             &tx,
             EngineConfig {
                 tz_offset_minutes: 540,
+                night_limit_cents: 100_000,
+                aml_amount_cents: 5_000_000,
+                aml_risk_bps: 9_000,
             },
         );
 
