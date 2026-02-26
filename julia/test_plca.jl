@@ -63,4 +63,59 @@ include("plca_bridge.jl")
     @testset "7) boundary score=0.0" begin
         @test score_to_risk_bps(BigFloat(0.0)) == UInt16(0)
     end
+
+    @testset "8) secret vazio gera erro claro" begin
+        had_secret = haskey(ENV, "NEXO_HMAC_SECRET")
+        old_secret = had_secret ? ENV["NEXO_HMAC_SECRET"] : ""
+        try
+            if had_secret
+                delete!(ENV, "NEXO_HMAC_SECRET")
+            end
+            payload = Dict{String, Any}(
+                "user_id" => "u1",
+                "amount_cents" => 1000,
+                "is_pep" => false,
+                "has_active_kyc" => true,
+                "timestamp_utc_ms" => 1,
+                "risk_bps" => 10,
+                "ui_hash_valid" => true,
+                "request_id" => "req-1",
+            )
+            err = @test_throws Exception post_evaluate(payload, "req-1", UInt64(1); api_url="http://127.0.0.1:9/evaluate")
+            @test occursin("NEXO_HMAC_SECRET is required", sprint(showerror, err.value))
+        finally
+            if had_secret
+                ENV["NEXO_HMAC_SECRET"] = old_secret
+            end
+        end
+    end
+
+    @testset "9) inputs invalidos sao rejeitados" begin
+        @test_throws ArgumentError plca_score_precise(PlcaInput("u", 0, 1, 1, 1))
+        @test_throws ArgumentError plca_score_precise(PlcaInput("u", 1, 11, 1, 1))
+        @test_throws ArgumentError plca_score_precise(PlcaInput("   ", 1, 1, 1, 1))
+    end
+
+    @testset "10) serializacao canonica com chaves ordenadas" begin
+        p1 = Dict{String, Any}()
+        p1["b"] = 2
+        p1["a"] = 1
+        p1["c"] = true
+
+        p2 = Dict{String, Any}()
+        p2["c"] = true
+        p2["a"] = 1
+        p2["b"] = 2
+
+        j1 = canonical_json(p1)
+        j2 = canonical_json(p2)
+
+        @test j1 == j2
+        @test j1 == "{\"a\":1,\"b\":2,\"c\":true}"
+    end
+
+    @testset "11) arredondamento proximo de 20.0" begin
+        @test score_to_risk_bps(BigFloat("19.9999")) == UInt16(9_999)
+        @test score_to_risk_bps(BigFloat("19.99999999")) == UInt16(9_999)
+    end
 end

@@ -126,10 +126,24 @@ function hmac_blake3(body::String, secret::String, key_id::String, request_id::S
     bytes2hex(outer)
 end
 
+function canonical_json(payload::Dict{String, Any})::String
+    keys_sorted = sort!(collect(keys(payload)))
+    io = IOBuffer()
+    write(io, UInt8('{'))
+    for (i, k) in enumerate(keys_sorted)
+        i > 1 && write(io, UInt8(','))
+        write(io, JSON3.write(k))
+        write(io, UInt8(':'))
+        write(io, JSON3.write(payload[k]))
+    end
+    write(io, UInt8('}'))
+    String(take!(io))
+end
+
 function post_evaluate(payload::Dict{String, Any}, request_id::String, timestamp_ms::UInt64; api_url::String=API_URL)
     secret = get(ENV, "NEXO_HMAC_SECRET", "")
     isempty(secret) && error("NEXO_HMAC_SECRET is required")
-    body = JSON3.write(payload)
+    body = canonical_json(payload)
     signature = hmac_blake3(body, secret, NEXO_KEY_ID, request_id, timestamp_ms)
     headers = [
         "Content-Type" => "application/json",
