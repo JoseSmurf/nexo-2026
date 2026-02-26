@@ -61,21 +61,64 @@ let (decision, trace, hash) = evaluate(&tx);
 // Final decision: Blocked
 // rule_id: "KYC-PEP-002"
 // reason: "PEP without active KYC."
-Running
+```
+
+## Quickstart em 60s
+
+```bash
 git clone https://github.com/JoseSmurf/nexo-2026
 cd nexo-2026
+
+# Required env for signed /evaluate requests
+export NEXO_HMAC_SECRET='dev-secret'
+export NEXO_HMAC_KEY_ID='active'
+
+# Terminal 1: run API
 cargo run
-cargo test
-Tech stack
-Rust — memory safe, zero-cost abstractions
-BLAKE3 — cryptographic audit hash
-serde — JSON serialization
-No async in core, no float for money
-Status
-Core engine: stable
-Rules: BCB + AML/FATF + KYC/PEP
-API layer (HTTP): active
-License
+```
+
+```bash
+# Terminal 2: run tests
+cd nexo-2026
+cargo test -q
+```
+
+```bash
+# Terminal 2: real signed call to /evaluate with curl
+cd nexo-2026
+REQ_ID="$(cat /proc/sys/kernel/random/uuid)"
+TS="$(date +%s%3N)"
+BODY="$(printf '{"user_id":"quickstart_user","amount_cents":150000,"is_pep":false,"has_active_kyc":true,"timestamp_utc_ms":%s,"risk_bps":1200,"ui_hash_valid":true,"request_id":"%s"}' "$TS" "$REQ_ID")"
+SIG="$(cargo run --quiet --bin sign_request -- "$NEXO_HMAC_SECRET" "$NEXO_HMAC_KEY_ID" "$REQ_ID" "$TS" "$BODY")"
+
+curl -sS -X POST 'http://127.0.0.1:3000/evaluate' \
+  -H 'content-type: application/json' \
+  -H "x-signature: $SIG" \
+  -H "x-request-id: $REQ_ID" \
+  -H "x-timestamp: $TS" \
+  -H "x-key-id: $NEXO_HMAC_KEY_ID" \
+  --data "$BODY"
+```
+
+## Tech stack
+
+- Rust (core engine + API)
+- BLAKE3 (audit + signatures)
+- Axum + Tokio (HTTP)
+- serde/serde_json (contracts)
+- Julia bridge (precision PLCA scoring)
+- Zig offline verifier (forensic audit hash check)
+
+## Status
+
+- Core engine: stable
+- Rules: BCB + AML/FATF + KYC/PEP
+- API layer: implemented and active (`POST /evaluate`, health, metrics, audit, security)
+- Security layer: HMAC-BLAKE3, anti-replay, key rotation, rate limit
+- Offline verification: Zig verifier in CI
+
+## License
+
 MIT
 
 ## API Endpoints
