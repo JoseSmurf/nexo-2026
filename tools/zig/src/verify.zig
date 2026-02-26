@@ -48,10 +48,12 @@ pub fn verifyLine(alloc: std.mem.Allocator, line: []const u8) schema.VerifyResul
     if (trace_arr.items.len == 0) return .SchemaInvalid;
 
     _ = schema.getString(root_obj, "request_id") orelse return .SchemaInvalid;
-    _ = schema.getString(root_obj, "final_decision") orelse return .SchemaInvalid;
+    const final_decision = schema.getString(root_obj, "final_decision") orelse return .SchemaInvalid;
 
     var hasher = Blake3.init(.{});
     hashField(&hasher, "schema", "trace_v4");
+    var has_blocked = false;
+    var has_flagged = false;
 
     for (trace_arr.items) |item| {
         switch (item) {
@@ -77,8 +79,10 @@ pub fn verifyLine(alloc: std.mem.Allocator, line: []const u8) schema.VerifyResul
                 const threshold = schema.getU64(payload_obj, "threshold") orelse return .SchemaInvalid;
 
                 if (std.mem.eql(u8, variant, "FlaggedForReview")) {
+                    has_flagged = true;
                     hashField(&hasher, "D:F", rule_id);
                 } else if (std.mem.eql(u8, variant, "Blocked")) {
+                    has_blocked = true;
                     hashField(&hasher, "D:B", rule_id);
                 } else {
                     return .SchemaInvalid;
@@ -98,6 +102,14 @@ pub fn verifyLine(alloc: std.mem.Allocator, line: []const u8) schema.VerifyResul
 
     var out_hex: [64]u8 = undefined;
     _ = std.fmt.bufPrint(&out_hex, "{s}", .{std.fmt.fmtSliceHexLower(&out)}) catch return .SchemaInvalid;
+
+    const expected_final = if (has_blocked)
+        "Blocked"
+    else if (has_flagged)
+        "Flagged"
+    else
+        "Approved";
+    if (!std.mem.eql(u8, final_decision, expected_final)) return .SchemaInvalid;
 
     if (!std.mem.eql(u8, out_hex[0..], audit_hash_str)) return .Tampering;
     return .Ok;
@@ -184,11 +196,11 @@ test "verifyLine rejects missing request_id" {
     try std.testing.expectEqual(schema.VerifyResult.SchemaInvalid, result);
 }
 
-test "verifyLine currently ignores final_decision mismatch when hash matches trace" {
+test "verifyLine rejects final_decision mismatch when hash matches trace" {
     const line =
         \\{"request_id":"blocked-fixture-001","calc_version":null,"profile_name":"br_default_v1","profile_version":"2026.02","timestamp_utc_ms":1772149279575,"user_id":"zig_fixture_user","amount_cents":150000,"risk_bps":1000,"final_decision":"Approved","trace":[{"Blocked":{"measured":1,"reason":"UI integrity verification failed.","rule_id":"UI-FRAUD-001","severity":"Critica","threshold":0}},{"Blocked":{"measured":150000,"reason":"Night transaction limit exceeded.","rule_id":"BCB-NIGHT-001","severity":"Grave","threshold":100000}},"Approved"],"audit_hash":"7f7be4cc47bcb2659ce6b2c857cb64886c433d2c17a6951ab33c6986d47e7131"}
     ;
 
     const result = verifyLine(std.testing.allocator, line);
-    try std.testing.expectEqual(schema.VerifyResult.Ok, result);
+    try std.testing.expectEqual(schema.VerifyResult.SchemaInvalid, result);
 }
