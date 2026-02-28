@@ -67,9 +67,14 @@ include("plca_bridge.jl")
     @testset "8) secret vazio gera erro claro" begin
         had_secret = haskey(ENV, "NEXO_HMAC_SECRET")
         old_secret = had_secret ? ENV["NEXO_HMAC_SECRET"] : ""
+        had_secret_file = haskey(ENV, "NEXO_HMAC_SECRET_FILE")
+        old_secret_file = had_secret_file ? ENV["NEXO_HMAC_SECRET_FILE"] : ""
         try
             if had_secret
                 delete!(ENV, "NEXO_HMAC_SECRET")
+            end
+            if had_secret_file
+                delete!(ENV, "NEXO_HMAC_SECRET_FILE")
             end
             payload = Dict{String, Any}(
                 "user_id" => "u1",
@@ -82,10 +87,14 @@ include("plca_bridge.jl")
                 "request_id" => "req-1",
             )
             err = @test_throws Exception post_evaluate(payload, "req-1", UInt64(1); api_url="http://127.0.0.1:9/evaluate")
-            @test occursin("NEXO_HMAC_SECRET is required", sprint(showerror, err.value))
+            msg = sprint(showerror, err.value)
+            @test occursin("NEXO_HMAC_SECRET is required", msg)
         finally
             if had_secret
                 ENV["NEXO_HMAC_SECRET"] = old_secret
+            end
+            if had_secret_file
+                ENV["NEXO_HMAC_SECRET_FILE"] = old_secret_file
             end
         end
     end
@@ -114,8 +123,103 @@ include("plca_bridge.jl")
         @test j1 == "{\"a\":1,\"b\":2,\"c\":true}"
     end
 
+    @testset "10.1) serializacao canonica em nested payload" begin
+        p1 = Dict{String, Any}()
+        p1["z"] = [3, 2, 1]
+        p1["inner"] = Dict("b" => 2, "a" => 1)
+
+        p2 = Dict{String, Any}()
+        p2["inner"] = Dict("a" => 1, "b" => 2)
+        p2["z"] = [3, 2, 1]
+
+        @test canonical_json(p1) == canonical_json(p2)
+        @test canonical_json(p1) == "{\"inner\":{\"a\":1,\"b\":2},\"z\":[3,2,1]}"
+    end
+
     @testset "11) arredondamento proximo de 20.0" begin
         @test score_to_risk_bps(BigFloat("19.9999")) == UInt16(9_999)
         @test score_to_risk_bps(BigFloat("19.99999999")) == UInt16(9_999)
+    end
+
+    @testset "12) secret por arquivo funciona" begin
+        had_secret = haskey(ENV, "NEXO_HMAC_SECRET")
+        old_secret = had_secret ? ENV["NEXO_HMAC_SECRET"] : ""
+        had_secret_file = haskey(ENV, "NEXO_HMAC_SECRET_FILE")
+        old_secret_file = had_secret_file ? ENV["NEXO_HMAC_SECRET_FILE"] : ""
+        secret_path = tempname()
+        try
+            write(secret_path, "file-secret\n")
+            had_secret && delete!(ENV, "NEXO_HMAC_SECRET")
+            ENV["NEXO_HMAC_SECRET_FILE"] = secret_path
+            @test read_secret_value("NEXO_HMAC_SECRET") == "file-secret"
+        finally
+            isfile(secret_path) && rm(secret_path)
+            if had_secret
+                ENV["NEXO_HMAC_SECRET"] = old_secret
+            elseif haskey(ENV, "NEXO_HMAC_SECRET")
+                delete!(ENV, "NEXO_HMAC_SECRET")
+            end
+            if had_secret_file
+                ENV["NEXO_HMAC_SECRET_FILE"] = old_secret_file
+            elseif haskey(ENV, "NEXO_HMAC_SECRET_FILE")
+                delete!(ENV, "NEXO_HMAC_SECRET_FILE")
+            end
+        end
+    end
+
+    @testset "13) secret file invalido falha fechado" begin
+        had_secret = haskey(ENV, "NEXO_HMAC_SECRET")
+        old_secret = had_secret ? ENV["NEXO_HMAC_SECRET"] : ""
+        had_secret_file = haskey(ENV, "NEXO_HMAC_SECRET_FILE")
+        old_secret_file = had_secret_file ? ENV["NEXO_HMAC_SECRET_FILE"] : ""
+        try
+            had_secret && delete!(ENV, "NEXO_HMAC_SECRET")
+            ENV["NEXO_HMAC_SECRET_FILE"] = "/tmp/does-not-exist-nexo.secret"
+            err = @test_throws Exception read_secret_value("NEXO_HMAC_SECRET")
+            @test occursin("points to missing file", sprint(showerror, err.value))
+        finally
+            if had_secret
+                ENV["NEXO_HMAC_SECRET"] = old_secret
+            elseif haskey(ENV, "NEXO_HMAC_SECRET")
+                delete!(ENV, "NEXO_HMAC_SECRET")
+            end
+            if had_secret_file
+                ENV["NEXO_HMAC_SECRET_FILE"] = old_secret_file
+            elseif haskey(ENV, "NEXO_HMAC_SECRET_FILE")
+                delete!(ENV, "NEXO_HMAC_SECRET_FILE")
+            end
+        end
+    end
+
+    @testset "14) retry/timeout fail-closed em erro de rede" begin
+        had_secret = haskey(ENV, "NEXO_HMAC_SECRET")
+        old_secret = had_secret ? ENV["NEXO_HMAC_SECRET"] : ""
+        try
+            ENV["NEXO_HMAC_SECRET"] = "retry-secret"
+            payload = Dict{String, Any}(
+                "user_id" => "u1",
+                "amount_cents" => 1000,
+                "is_pep" => false,
+                "has_active_kyc" => true,
+                "timestamp_utc_ms" => 1,
+                "risk_bps" => 10,
+                "ui_hash_valid" => true,
+                "request_id" => "req-2",
+            )
+            @test_throws Exception post_evaluate(
+                payload,
+                "req-2",
+                UInt64(1);
+                api_url="http://127.0.0.1:9/evaluate",
+                timeout_ms=150,
+                max_retries=1,
+            )
+        finally
+            if had_secret
+                ENV["NEXO_HMAC_SECRET"] = old_secret
+            elseif haskey(ENV, "NEXO_HMAC_SECRET")
+                delete!(ENV, "NEXO_HMAC_SECRET")
+            end
+        end
     end
 end

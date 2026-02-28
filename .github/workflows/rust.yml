@@ -111,6 +111,8 @@ jobs:
       run: |
         julia --project=./julia -e 'using Pkg; Pkg.instantiate()'
         julia --project=./julia julia/test_plca.jl
+    - name: Run Julia integration test (bridge -> API)
+      run: julia --project=./julia julia/test_integration.jl
     - name: Verify audit hash offline (Zig)
       run: |
         cd tools/zig

@@ -2,10 +2,10 @@ using Dates
 using HTTP
 using JSON3
 using UUIDs
+using Logging
 using Blake3Hash
 
 const API_URL = get(ENV, "NEXO_API_URL", "http://127.0.0.1:3000/evaluate")
-const NEXO_KEY_ID = get(ENV, "NEXO_HMAC_KEY_ID", "active")
 
 const PESO_UTILIDADE  = 2//1
 const PESO_PROBLEMA   = 3//5
@@ -80,6 +80,39 @@ function build_evaluate_request(
     return payload, score, risk_bps, request_id, now_ms
 end
 
+function nexo_key_id()::String
+    key_id = strip(get(ENV, "NEXO_HMAC_KEY_ID", "active"))
+    isempty(key_id) && error("NEXO_HMAC_KEY_ID must not be empty")
+    key_id
+end
+
+function read_secret_value(env_key::String)::String
+    direct = strip(get(ENV, env_key, ""))
+    if !isempty(direct)
+        return direct
+    end
+    file_key = env_key * "_FILE"
+    file_path = strip(get(ENV, file_key, ""))
+    if !isempty(file_path)
+        if !isfile(file_path)
+            error("$(file_key) points to missing file: $(file_path)")
+        end
+        value = strip(read(file_path, String))
+        isempty(value) && error("$(file_key) file is empty: $(file_path)")
+        return value
+    end
+    error("$(env_key) is required (or $(file_key))")
+end
+
+function env_int(name::String, default::Int)::Int
+    raw = strip(get(ENV, name, ""))
+    isempty(raw) && return default
+    parsed = tryparse(Int, raw)
+    parsed === nothing && error("$(name) must be an integer")
+    parsed <= 0 && error("$(name) must be > 0")
+    parsed
+end
+
 function u32le(n::UInt32)
     UInt8[
         UInt8((n >> 0) & 0xff),
@@ -126,34 +159,92 @@ function hmac_blake3(body::String, secret::String, key_id::String, request_id::S
     bytes2hex(outer)
 end
 
-function canonical_json(payload::Dict{String, Any})::String
-    keys_sorted = sort!(collect(keys(payload)))
-    io = IOBuffer()
-    write(io, UInt8('{'))
-    for (i, k) in enumerate(keys_sorted)
-        i > 1 && write(io, UInt8(','))
-        write(io, JSON3.write(k))
-        write(io, UInt8(':'))
-        write(io, JSON3.write(payload[k]))
+function write_canonical_json(io::IO, value)
+    if value isa AbstractDict
+        key_map = Dict{String, Any}()
+        for original_key in keys(value)
+            key_map[string(original_key)] = original_key
+        end
+        keys_sorted = sort!(collect(keys(key_map)))
+        write(io, UInt8('{'))
+        for (i, k) in enumerate(keys_sorted)
+            i > 1 && write(io, UInt8(','))
+            write(io, JSON3.write(k))
+            write(io, UInt8(':'))
+            write_canonical_json(io, value[key_map[k]])
+        end
+        write(io, UInt8('}'))
+        return
     end
-    write(io, UInt8('}'))
+    if value isa AbstractVector
+        write(io, UInt8('['))
+        for (i, item) in enumerate(value)
+            i > 1 && write(io, UInt8(','))
+            write_canonical_json(io, item)
+        end
+        write(io, UInt8(']'))
+        return
+    end
+    write(io, JSON3.write(value))
+end
+
+function canonical_json(payload::Dict{String, Any})::String
+    io = IOBuffer()
+    write_canonical_json(io, payload)
     String(take!(io))
 end
 
-function post_evaluate(payload::Dict{String, Any}, request_id::String, timestamp_ms::UInt64; api_url::String=API_URL)
-    secret = get(ENV, "NEXO_HMAC_SECRET", "")
-    isempty(secret) && error("NEXO_HMAC_SECRET is required")
+function post_evaluate(payload::Dict{String, Any}, request_id::String, timestamp_ms::UInt64; api_url::String=API_URL, timeout_ms::Int=env_int("NEXO_HTTP_TIMEOUT_MS", 2500), max_retries::Int=env_int("NEXO_HTTP_MAX_RETRIES", 2))
+    max_retries < 0 && error("max_retries must be >= 0")
+    secret = read_secret_value("NEXO_HMAC_SECRET")
+    key_id = nexo_key_id()
     body = canonical_json(payload)
-    signature = hmac_blake3(body, secret, NEXO_KEY_ID, request_id, timestamp_ms)
+    signature = hmac_blake3(body, secret, key_id, request_id, timestamp_ms)
     headers = [
         "Content-Type" => "application/json",
         "X-Signature" => signature,
         "X-Request-Id" => request_id,
         "X-Timestamp" => string(timestamp_ms),
-        "X-Key-Id" => NEXO_KEY_ID,
+        "X-Key-Id" => key_id,
     ]
-    resp = HTTP.request("POST", api_url, headers, body)
-    return resp.status, String(resp.body)
+
+    @info "julia_bridge_request_start" request_id=request_id timestamp_ms=timestamp_ms key_id=key_id timeout_ms=timeout_ms max_retries=max_retries payload_bytes=sizeof(body)
+    timeout_s = max(1, cld(timeout_ms, 1000))
+    attempts = max_retries + 1
+    for attempt in 1:attempts
+        started = time_ns()
+        try
+            resp = HTTP.request(
+                "POST",
+                api_url,
+                headers,
+                body;
+                status_exception=false,
+                connect_timeout=timeout_s,
+                readtimeout=timeout_s,
+            )
+            elapsed_ms = round(Int, (time_ns() - started) / 1_000_000)
+            code = resp.status
+            if (code == 429 || code == 503) && attempt < attempts
+                @warn "julia_bridge_request_retry" request_id=request_id status=code attempt=attempt elapsed_ms=elapsed_ms
+                sleep(0.05 * attempt)
+                continue
+            end
+            @info "julia_bridge_request_end" request_id=request_id status=code attempt=attempt elapsed_ms=elapsed_ms
+            return code, String(resp.body)
+        catch err
+            elapsed_ms = round(Int, (time_ns() - started) / 1_000_000)
+            if attempt < attempts
+                @warn "julia_bridge_request_retry_error" request_id=request_id attempt=attempt elapsed_ms=elapsed_ms error=sprint(showerror, err)
+                sleep(0.05 * attempt)
+                continue
+            end
+            @error "julia_bridge_request_failed" request_id=request_id attempt=attempt elapsed_ms=elapsed_ms error=sprint(showerror, err)
+            rethrow(err)
+        end
+    end
+
+    error("unreachable: retries exhausted")
 end
 
 function main()
