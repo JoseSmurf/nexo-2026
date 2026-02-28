@@ -20,6 +20,12 @@ pub struct AuditRecord {
     pub final_decision: FinalDecision,
     pub trace: serde_json::Value,
     pub audit_hash: String,
+    #[serde(default = "default_hash_algo")]
+    pub hash_algo: String,
+}
+
+fn default_hash_algo() -> String {
+    "blake3".to_string()
 }
 
 #[derive(Clone)]

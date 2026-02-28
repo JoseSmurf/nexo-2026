@@ -1,32 +1,6 @@
 const std = @import("std");
 const schema = @import("schema.zig");
-
-const Blake3 = std.crypto.hash.Blake3;
-const Endian = std.builtin.Endian;
-
-fn littleEndian() Endian {
-    return @field(Endian, if (@hasField(Endian, "little")) "little" else "Little");
-}
-
-fn hashField(h: *Blake3, tag: []const u8, data: []const u8) void {
-    var tlen: [4]u8 = undefined;
-    const tlen_u32 = std.math.cast(u32, tag.len) orelse unreachable;
-    std.mem.writeInt(u32, &tlen, tlen_u32, littleEndian());
-    h.update(&tlen);
-    h.update(tag);
-
-    var dlen: [4]u8 = undefined;
-    const dlen_u32 = std.math.cast(u32, data.len) orelse unreachable;
-    std.mem.writeInt(u32, &dlen, dlen_u32, littleEndian());
-    h.update(&dlen);
-    h.update(data);
-}
-
-fn pushU64Le(h: *Blake3, v: u64) void {
-    var b: [8]u8 = undefined;
-    std.mem.writeInt(u64, &b, v, littleEndian());
-    h.update(&b);
-}
+const crypto = @import("crypto.zig");
 
 pub fn verifyLine(alloc: std.mem.Allocator, line: []const u8) schema.VerifyResult {
     var parsed = std.json.parseFromSlice(std.json.Value, alloc, line, .{}) catch return .SchemaInvalid;
@@ -40,6 +14,10 @@ pub fn verifyLine(alloc: std.mem.Allocator, line: []const u8) schema.VerifyResul
     const audit_hash_str = schema.getString(root_obj, "audit_hash") orelse return .SchemaInvalid;
     if (!schema.isHexLower64(audit_hash_str)) return .SchemaInvalid;
 
+    const hash_algo_str = schema.getString(root_obj, "hash_algo") orelse return .SchemaInvalid;
+    const hash_algo = crypto.HashAlgorithm.parse(hash_algo_str) orelse return .SchemaInvalid;
+    if (hash_algo != .blake3) return .SchemaInvalid;
+
     const trace_val = root_obj.get("trace") orelse return .SchemaInvalid;
     const trace_arr = switch (trace_val) {
         .array => |a| a,
@@ -50,8 +28,8 @@ pub fn verifyLine(alloc: std.mem.Allocator, line: []const u8) schema.VerifyResul
     _ = schema.getString(root_obj, "request_id") orelse return .SchemaInvalid;
     const final_decision = schema.getString(root_obj, "final_decision") orelse return .SchemaInvalid;
 
-    var hasher = Blake3.init(.{});
-    hashField(&hasher, "schema", "trace_v4");
+    var hasher = crypto.Hasher.init(hash_algo);
+    crypto.hashField(&hasher, "schema", "trace_v4");
     var has_blocked = false;
     var has_flagged = false;
 
@@ -59,7 +37,7 @@ pub fn verifyLine(alloc: std.mem.Allocator, line: []const u8) schema.VerifyResul
         switch (item) {
             .string => |s| {
                 if (!std.mem.eql(u8, s, "Approved")) return .SchemaInvalid;
-                hashField(&hasher, "D:A", "");
+                crypto.hashField(&hasher, "D:A", "");
             },
             .object => |obj| {
                 if (obj.count() != 1) return .SchemaInvalid;
@@ -80,18 +58,18 @@ pub fn verifyLine(alloc: std.mem.Allocator, line: []const u8) schema.VerifyResul
 
                 if (std.mem.eql(u8, variant, "FlaggedForReview")) {
                     has_flagged = true;
-                    hashField(&hasher, "D:F", rule_id);
+                    crypto.hashField(&hasher, "D:F", rule_id);
                 } else if (std.mem.eql(u8, variant, "Blocked")) {
                     has_blocked = true;
-                    hashField(&hasher, "D:B", rule_id);
+                    crypto.hashField(&hasher, "D:B", rule_id);
                 } else {
                     return .SchemaInvalid;
                 }
 
-                hashField(&hasher, "R", reason);
+                crypto.hashField(&hasher, "R", reason);
                 hasher.update(&[_]u8{severity.rank()});
-                pushU64Le(&hasher, measured);
-                pushU64Le(&hasher, threshold);
+                crypto.pushU64Le(&hasher, measured);
+                crypto.pushU64Le(&hasher, threshold);
             },
             else => return .SchemaInvalid,
         }
@@ -109,15 +87,15 @@ pub fn verifyLine(alloc: std.mem.Allocator, line: []const u8) schema.VerifyResul
         "Flagged"
     else
         "Approved";
-    if (!std.mem.eql(u8, final_decision, expected_final)) return .SchemaInvalid;
 
+    if (!std.mem.eql(u8, final_decision, expected_final)) return .SchemaInvalid;
     if (!std.mem.eql(u8, out_hex[0..], audit_hash_str)) return .Tampering;
     return .Ok;
 }
 
 test "verifyLine accepts known-good fixture line" {
     const line =
-        \\{"request_id":"d1b13dbd-8ce2-41ea-a2d7-c5294e320fcb","calc_version":null,"profile_name":"br_default_v1","profile_version":"2026.02","timestamp_utc_ms":1771845406862,"user_id":"julia_bridge_user","amount_cents":150000,"risk_bps":9999,"final_decision":"Flagged","trace":["Approved","Approved",{"FlaggedForReview":{"measured":150000,"reason":"Transaction requires AML review.","rule_id":"AML-FATF-REVIEW-001","severity":"Alta","threshold":5000000}}],"audit_hash":"bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3"}
+        \\{"request_id":"d1b13dbd-8ce2-41ea-a2d7-c5294e320fcb","calc_version":null,"profile_name":"br_default_v1","profile_version":"2026.02","timestamp_utc_ms":1771845406862,"user_id":"julia_bridge_user","amount_cents":150000,"risk_bps":9999,"final_decision":"Flagged","trace":["Approved","Approved",{"FlaggedForReview":{"measured":150000,"reason":"Transaction requires AML review.","rule_id":"AML-FATF-REVIEW-001","severity":"Alta","threshold":5000000}}],"hash_algo":"blake3","audit_hash":"bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3"}
     ;
 
     const result = verifyLine(std.testing.allocator, line);
@@ -126,7 +104,7 @@ test "verifyLine accepts known-good fixture line" {
 
 test "verifyLine detects tampering" {
     const line =
-        \\{"request_id":"d1b13dbd-8ce2-41ea-a2d7-c5294e320fcb","calc_version":null,"profile_name":"br_default_v1","profile_version":"2026.02","timestamp_utc_ms":1771845406862,"user_id":"julia_bridge_user","amount_cents":150000,"risk_bps":9999,"final_decision":"Flagged","trace":["Approved","Approved",{"FlaggedForReview":{"measured":150001,"reason":"Transaction requires AML review.","rule_id":"AML-FATF-REVIEW-001","severity":"Alta","threshold":5000000}}],"audit_hash":"bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3"}
+        \\{"request_id":"d1b13dbd-8ce2-41ea-a2d7-c5294e320fcb","calc_version":null,"profile_name":"br_default_v1","profile_version":"2026.02","timestamp_utc_ms":1771845406862,"user_id":"julia_bridge_user","amount_cents":150000,"risk_bps":9999,"final_decision":"Flagged","trace":["Approved","Approved",{"FlaggedForReview":{"measured":150001,"reason":"Transaction requires AML review.","rule_id":"AML-FATF-REVIEW-001","severity":"Alta","threshold":5000000}}],"hash_algo":"blake3","audit_hash":"bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3"}
     ;
 
     const result = verifyLine(std.testing.allocator, line);
@@ -135,7 +113,7 @@ test "verifyLine detects tampering" {
 
 test "verifyLine rejects schema drift" {
     const line =
-        \\{"request_id":"d1b13dbd-8ce2-41ea-a2d7-c5294e320fcb","final_decision":"Flagged","trace":["APPROVED"],"audit_hash":"bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3"}
+        \\{"request_id":"d1b13dbd-8ce2-41ea-a2d7-c5294e320fcb","final_decision":"Flagged","trace":["APPROVED"],"hash_algo":"blake3","audit_hash":"bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3"}
     ;
 
     const result = verifyLine(std.testing.allocator, line);
@@ -144,7 +122,7 @@ test "verifyLine rejects schema drift" {
 
 test "verifyLine rejects empty trace array as schema invalid" {
     const line =
-        \\{"request_id":"empty-trace-001","final_decision":"Approved","trace":[],"audit_hash":"bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3"}
+        \\{"request_id":"empty-trace-001","final_decision":"Approved","trace":[],"hash_algo":"blake3","audit_hash":"bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3"}
     ;
 
     const result = verifyLine(std.testing.allocator, line);
@@ -153,7 +131,7 @@ test "verifyLine rejects empty trace array as schema invalid" {
 
 test "verifyLine rejects uppercase audit hash as schema invalid" {
     const line =
-        \\{"request_id":"d1b13dbd-8ce2-41ea-a2d7-c5294e320fcb","calc_version":null,"profile_name":"br_default_v1","profile_version":"2026.02","timestamp_utc_ms":1771845406862,"user_id":"julia_bridge_user","amount_cents":150000,"risk_bps":9999,"final_decision":"Flagged","trace":["Approved","Approved",{"FlaggedForReview":{"measured":150000,"reason":"Transaction requires AML review.","rule_id":"AML-FATF-REVIEW-001","severity":"Alta","threshold":5000000}}],"audit_hash":"BF5CFDA1E218837D2F8A597F8011B4096A38E8578DB23EF6AEEEDE292B4649F3"}
+        \\{"request_id":"d1b13dbd-8ce2-41ea-a2d7-c5294e320fcb","calc_version":null,"profile_name":"br_default_v1","profile_version":"2026.02","timestamp_utc_ms":1771845406862,"user_id":"julia_bridge_user","amount_cents":150000,"risk_bps":9999,"final_decision":"Flagged","trace":["Approved","Approved",{"FlaggedForReview":{"measured":150000,"reason":"Transaction requires AML review.","rule_id":"AML-FATF-REVIEW-001","severity":"Alta","threshold":5000000}}],"hash_algo":"blake3","audit_hash":"BF5CFDA1E218837D2F8A597F8011B4096A38E8578DB23EF6AEEEDE292B4649F3"}
     ;
 
     const result = verifyLine(std.testing.allocator, line);
@@ -162,7 +140,7 @@ test "verifyLine rejects uppercase audit hash as schema invalid" {
 
 test "verifyLine accepts blocked fixture line" {
     const line =
-        \\{"request_id":"blocked-fixture-001","calc_version":null,"profile_name":"br_default_v1","profile_version":"2026.02","timestamp_utc_ms":1772149279575,"user_id":"zig_fixture_user","amount_cents":150000,"risk_bps":1000,"final_decision":"Blocked","trace":[{"Blocked":{"measured":1,"reason":"UI integrity verification failed.","rule_id":"UI-FRAUD-001","severity":"Critica","threshold":0}},{"Blocked":{"measured":150000,"reason":"Night transaction limit exceeded.","rule_id":"BCB-NIGHT-001","severity":"Grave","threshold":100000}},"Approved"],"audit_hash":"7f7be4cc47bcb2659ce6b2c857cb64886c433d2c17a6951ab33c6986d47e7131"}
+        \\{"request_id":"blocked-fixture-001","calc_version":null,"profile_name":"br_default_v1","profile_version":"2026.02","timestamp_utc_ms":1772149279575,"user_id":"zig_fixture_user","amount_cents":150000,"risk_bps":1000,"final_decision":"Blocked","trace":[{"Blocked":{"measured":1,"reason":"UI integrity verification failed.","rule_id":"UI-FRAUD-001","severity":"Critica","threshold":0}},{"Blocked":{"measured":150000,"reason":"Night transaction limit exceeded.","rule_id":"BCB-NIGHT-001","severity":"Grave","threshold":100000}},"Approved"],"hash_algo":"blake3","audit_hash":"7f7be4cc47bcb2659ce6b2c857cb64886c433d2c17a6951ab33c6986d47e7131"}
     ;
 
     const result = verifyLine(std.testing.allocator, line);
@@ -171,7 +149,7 @@ test "verifyLine accepts blocked fixture line" {
 
 test "verifyLine detects tampering on blocked fixture line" {
     const line =
-        \\{"request_id":"blocked-fixture-001","calc_version":null,"profile_name":"br_default_v1","profile_version":"2026.02","timestamp_utc_ms":1772149279575,"user_id":"zig_fixture_user","amount_cents":150000,"risk_bps":1000,"final_decision":"Blocked","trace":[{"Blocked":{"measured":1,"reason":"UI integrity verification failed.","rule_id":"UI-FRAUD-001","severity":"Critica","threshold":0}},{"Blocked":{"measured":150001,"reason":"Night transaction limit exceeded.","rule_id":"BCB-NIGHT-001","severity":"Grave","threshold":100000}},"Approved"],"audit_hash":"7f7be4cc47bcb2659ce6b2c857cb64886c433d2c17a6951ab33c6986d47e7131"}
+        \\{"request_id":"blocked-fixture-001","calc_version":null,"profile_name":"br_default_v1","profile_version":"2026.02","timestamp_utc_ms":1772149279575,"user_id":"zig_fixture_user","amount_cents":150000,"risk_bps":1000,"final_decision":"Blocked","trace":[{"Blocked":{"measured":1,"reason":"UI integrity verification failed.","rule_id":"UI-FRAUD-001","severity":"Critica","threshold":0}},{"Blocked":{"measured":150001,"reason":"Night transaction limit exceeded.","rule_id":"BCB-NIGHT-001","severity":"Grave","threshold":100000}},"Approved"],"hash_algo":"blake3","audit_hash":"7f7be4cc47bcb2659ce6b2c857cb64886c433d2c17a6951ab33c6986d47e7131"}
     ;
 
     const result = verifyLine(std.testing.allocator, line);
@@ -180,7 +158,7 @@ test "verifyLine detects tampering on blocked fixture line" {
 
 test "verifyLine rejects missing final_decision" {
     const line =
-        \\{"request_id":"missing-final-001","trace":["Approved"],"audit_hash":"bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3"}
+        \\{"request_id":"missing-final-001","trace":["Approved"],"hash_algo":"blake3","audit_hash":"bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3"}
     ;
 
     const result = verifyLine(std.testing.allocator, line);
@@ -189,7 +167,7 @@ test "verifyLine rejects missing final_decision" {
 
 test "verifyLine rejects missing request_id" {
     const line =
-        \\{"final_decision":"Approved","trace":["Approved"],"audit_hash":"bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3"}
+        \\{"final_decision":"Approved","trace":["Approved"],"hash_algo":"blake3","audit_hash":"bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3"}
     ;
 
     const result = verifyLine(std.testing.allocator, line);
@@ -198,7 +176,7 @@ test "verifyLine rejects missing request_id" {
 
 test "verifyLine rejects final_decision mismatch when hash matches trace" {
     const line =
-        \\{"request_id":"blocked-fixture-001","calc_version":null,"profile_name":"br_default_v1","profile_version":"2026.02","timestamp_utc_ms":1772149279575,"user_id":"zig_fixture_user","amount_cents":150000,"risk_bps":1000,"final_decision":"Approved","trace":[{"Blocked":{"measured":1,"reason":"UI integrity verification failed.","rule_id":"UI-FRAUD-001","severity":"Critica","threshold":0}},{"Blocked":{"measured":150000,"reason":"Night transaction limit exceeded.","rule_id":"BCB-NIGHT-001","severity":"Grave","threshold":100000}},"Approved"],"audit_hash":"7f7be4cc47bcb2659ce6b2c857cb64886c433d2c17a6951ab33c6986d47e7131"}
+        \\{"request_id":"blocked-fixture-001","calc_version":null,"profile_name":"br_default_v1","profile_version":"2026.02","timestamp_utc_ms":1772149279575,"user_id":"zig_fixture_user","amount_cents":150000,"risk_bps":1000,"final_decision":"Approved","trace":[{"Blocked":{"measured":1,"reason":"UI integrity verification failed.","rule_id":"UI-FRAUD-001","severity":"Critica","threshold":0}},{"Blocked":{"measured":150000,"reason":"Night transaction limit exceeded.","rule_id":"BCB-NIGHT-001","severity":"Grave","threshold":100000}},"Approved"],"hash_algo":"blake3","audit_hash":"7f7be4cc47bcb2659ce6b2c857cb64886c433d2c17a6951ab33c6986d47e7131"}
     ;
 
     const result = verifyLine(std.testing.allocator, line);

@@ -113,6 +113,7 @@ pub struct EvaluateResponse {
     pub final_decision: FinalDecision,
     pub trace: Vec<Decision>,
     pub audit_hash: String,
+    pub hash_algo: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -501,6 +502,7 @@ async fn evaluate_handler(
         final_decision,
         trace: serde_json::to_value(&trace).unwrap_or_else(|_| serde_json::json!([])),
         audit_hash: audit_hash.clone(),
+        hash_algo: "blake3".to_string(),
     };
 
     if state.audit_enabled {
@@ -538,6 +540,7 @@ async fn evaluate_handler(
         final_decision,
         trace,
         audit_hash,
+        hash_algo: "blake3".to_string(),
     };
     signed_json_response(StatusCode::OK, &state, &header_request_id, &response)
 }
