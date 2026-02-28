@@ -151,6 +151,12 @@ pub struct SecurityStatusResponse {
     pub rate_limit_ip: u32,
     pub rate_limit_user: u32,
     pub rate_limit_hits: u64,
+    pub unauthorized_total: u64,
+    pub request_timeout_total: u64,
+    pub conflict_total: u64,
+    pub too_many_requests_total: u64,
+    pub p95_latency_ns: f64,
+    pub p99_latency_ns: f64,
 }
 
 #[derive(Debug)]
@@ -644,6 +650,7 @@ fn auth_error_response(state: &AppState, request_id: String, err: AuthError) -> 
 }
 
 fn error_response(status: StatusCode, state: &AppState, request_id: &str, msg: &str) -> Response {
+    state.metrics.observe_http_status(status.as_u16());
     let payload = ErrorResponse {
         request_id: request_id.to_string(),
         error: msg.to_string(),
@@ -914,6 +921,7 @@ async fn security_status_handler(State(state): State<AppState>) -> impl IntoResp
     for entry in state.key_usage.iter() {
         usage.insert(entry.key().clone(), *entry.value());
     }
+    let metrics = state.metrics.snapshot();
     (
         StatusCode::OK,
         Json(SecurityStatusResponse {
@@ -928,6 +936,12 @@ async fn security_status_handler(State(state): State<AppState>) -> impl IntoResp
             rate_limit_ip: state.rate_limiter.limit_per_ip,
             rate_limit_user: state.rate_limiter.limit_per_user,
             rate_limit_hits: state.rate_limiter.hits(),
+            unauthorized_total: metrics.unauthorized_total,
+            request_timeout_total: metrics.request_timeout_total,
+            conflict_total: metrics.conflict_total,
+            too_many_requests_total: metrics.too_many_requests_total,
+            p95_latency_ns: metrics.p95_latency_ns,
+            p99_latency_ns: metrics.p99_latency_ns,
         }),
     )
 }
