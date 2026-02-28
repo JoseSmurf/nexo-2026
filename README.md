@@ -73,6 +73,10 @@ cd nexo-2026
 export NEXO_HMAC_SECRET='dev-secret'
 export NEXO_HMAC_KEY_ID='active'
 
+# Profile examples
+export NEXO_PROFILE='jp_default_v1'
+# export NEXO_PROFILE='gb_default_v1'
+
 # Terminal 1: run API
 cargo run --bin syntax-engine
 ```
@@ -116,6 +120,13 @@ curl -sS -X POST 'http://127.0.0.1:3000/evaluate' \
 - API layer: implemented and active (`POST /evaluate`, health, metrics, audit, security)
 - Security layer: HMAC-BLAKE3, anti-replay, key rotation, rate limit
 - Offline verification: Zig verifier in CI
+- Rust tests: 81
+- Julia tests: 118
+- Zig tests: 10
+- Total tests: 209
+- Jurisdictions covered: 9
+- Currencies covered: 9
+- Regulators covered: 9
 
 ## License
 
@@ -190,19 +201,17 @@ Severity rank mapping:
 
 Rule profiles (versioned, via env):
 
-- `NEXO_PROFILE=br_default_v1` (default)
-- `NEXO_PROFILE=us_default_v1`
-- `NEXO_PROFILE=eu_default_v1`
-- `NEXO_PROFILE=cn_default_v1`
-
-Per-profile financial thresholds:
-
-| Profile | Timezone offset | Night limit (cents) | AML amount threshold (cents) | AML risk threshold (bps) |
-|---------|------------------|---------------------|------------------------------|--------------------------|
-| BR (`br_default_v1`) | `-180` | `100_000` | `5_000_000` | `9_000` |
-| US (`us_default_v1`) | `-300` | `500_000` | `10_000_000` | `9_000` |
-| EU (`eu_default_v1`) | `60` | `300_000` | `10_000_000` | `9_000` |
-| CN (`cn_default_v1`) | `480` | `400_000` | `10_000_000` | `9_000` |
+| Profile | Country | Currency | Regulator | Timezone | Night Window | Night Limit |
+|---|---|---|---|---|---|---|
+| br_default_v1 | Brazil | BRL | BCB | UTC-3 | 20h-6h | R$ 1.000,00 |
+| us_default_v1 | USA | USD | FinCEN | UTC-5 | 23h-5h | R$ 5.000,00 |
+| eu_default_v1 | Europe | EUR | EBA | UTC+1 | 22h-6h | R$ 3.000,00 |
+| cn_default_v1 | China | CNY | PBOC | UTC+8 | 23h-5h | R$ 4.000,00 |
+| ae_default_v1 | UAE | AED | CBUAE | UTC+4 | 22h-6h | R$ 3.000,00 |
+| in_default_v1 | India | INR | RBI | UTC+5:30 | 22h-6h | R$ 2.000,00 |
+| jp_default_v1 | Japan | JPY | FSA | UTC+9 | 23h-5h | R$ 4.500,00 |
+| gb_default_v1 | UK | GBP | FCA | UTC+0 | 22h-6h | R$ 3.500,00 |
+| kr_default_v1 | South Korea | KRW | FSC | UTC+9 | 23h-5h | R$ 3.800,00 |
 
 ## Security (Formal HMAC-BLAKE3 + Anti-Replay + Rotation + Rate Limit)
 
