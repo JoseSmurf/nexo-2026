@@ -218,9 +218,10 @@ Rule profiles (versioned, via env):
 `POST /evaluate` now requires signed headers:
 
 - `X-Signature`
-- `X-Request-Id` (UUID v4)
+- `X-Request-Id` (UUID v4, required)
 - `X-Timestamp` (unix ms)
-- `X-Key-Id`
+- `X-Key-Id` (`[A-Za-z0-9._-]`, max 64 chars)
+- `Content-Type: application/json`
 
 Server validation order:
 
@@ -236,6 +237,7 @@ Status codes:
 - `408` expired timestamp window
 - `409` replayed `X-Request-Id`
 - `429` rate limit exceeded
+- `415` invalid content type
 
 Required environment:
 
@@ -271,6 +273,8 @@ Response authenticity:
 
 - `X-Response-Signature`
 - `X-Response-Key-Id`
+- `Cache-Control: no-store`
+- `X-Content-Type-Options: nosniff`
 
 Production hardening and incident response:
 

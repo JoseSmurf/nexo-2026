@@ -32,6 +32,9 @@ const DEFAULT_RATE_LIMIT_WINDOW_MS: u64 = 60_000;
 const DEFAULT_RATE_LIMIT_IP: u32 = 600;
 const DEFAULT_RATE_LIMIT_USER: u32 = 300;
 const MAX_REQUEST_BODY_BYTES: usize = 1_048_576;
+const MAX_REQUEST_ID_LEN: usize = 64;
+const MAX_KEY_ID_LEN: usize = 64;
+const MAX_USER_ID_LEN: usize = 128;
 
 const HEADER_SIGNATURE: &str = "x-signature";
 const HEADER_REQUEST_ID: &str = "x-request-id";
@@ -42,6 +45,8 @@ const HEADER_RESPONSE_KEY_ID: &str = "x-response-key-id";
 const HEADER_FORWARDED_FOR: &str = "x-forwarded-for";
 const HEADER_REAL_IP: &str = "x-real-ip";
 const HEADER_CONTENT_TYPE: &str = "content-type";
+const HEADER_CACHE_CONTROL: &str = "cache-control";
+const HEADER_X_CONTENT_TYPE_OPTIONS: &str = "x-content-type-options";
 
 pub const BENCH_HMAC_SECRET: &str = "bench_hmac_secret";
 pub const BENCH_KEY_ID: &str = "active";
@@ -416,6 +421,18 @@ async fn rate_limit_middleware(
     let ip = extract_client_ip(&parts.headers);
     let user_id = extract_user_id_from_body(&body_bytes).unwrap_or_else(|| "unknown".to_string());
 
+    if !is_json_content_type(&parts.headers) {
+        let request_id = extract_header(&parts.headers, HEADER_REQUEST_ID)
+            .map(ToString::to_string)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        return error_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            &state,
+            &request_id,
+            "content-type must be application/json",
+        );
+    }
+
     if !state.rate_limiter.allow(&ip, &user_id, now) {
         let request_id = extract_header(&parts.headers, HEADER_REQUEST_ID)
             .map(ToString::to_string)
@@ -478,8 +495,30 @@ async fn evaluate_handler(
             "user_id must not be empty",
         );
     }
+    if req.user_id.chars().count() > MAX_USER_ID_LEN {
+        state
+            .metrics
+            .observe_error(start.elapsed().as_nanos() as u64);
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            &state,
+            &header_request_id,
+            "user_id too long",
+        );
+    }
 
     if let Some(body_request_id) = req.request_id.as_deref() {
+        if !is_uuid_v4(body_request_id) {
+            state
+                .metrics
+                .observe_error(start.elapsed().as_nanos() as u64);
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &state,
+                &header_request_id,
+                "request_id in body must be UUID v4",
+            );
+        }
         if body_request_id != header_request_id {
             state
                 .metrics
@@ -584,12 +623,23 @@ fn validate_security_headers(
     let request_id = extract_header(headers, HEADER_REQUEST_ID)
         .ok_or(AuthError::Unauthorized("missing X-Request-Id header"))?
         .to_string();
+    if request_id.len() > MAX_REQUEST_ID_LEN || !is_uuid_v4(&request_id) {
+        return Err(AuthError::Unauthorized(
+            "invalid X-Request-Id header (expected UUID v4)",
+        ));
+    }
     let timestamp_ms = extract_header(headers, HEADER_TIMESTAMP)
         .ok_or(AuthError::Unauthorized("missing X-Timestamp header"))?
         .parse::<u64>()
         .map_err(|_| AuthError::Unauthorized("invalid X-Timestamp header"))?;
+    if timestamp_ms == 0 {
+        return Err(AuthError::Unauthorized("invalid X-Timestamp header"));
+    }
     let key_id = extract_header(headers, HEADER_KEY_ID)
         .ok_or(AuthError::Unauthorized("missing X-Key-Id header"))?;
+    if key_id.len() > MAX_KEY_ID_LEN || !is_valid_key_id(key_id) {
+        return Err(AuthError::Unauthorized("invalid X-Key-Id header"));
+    }
 
     let now = now_utc_ms();
     if now.abs_diff(timestamp_ms) > state.auth_window_ms {
@@ -697,6 +747,14 @@ fn signed_json_response<T: Serialize>(
         HeaderName::from_static(HEADER_CONTENT_TYPE),
         HeaderValue::from_static("application/json"),
     );
+    response.headers_mut().insert(
+        HeaderName::from_static(HEADER_CACHE_CONTROL),
+        HeaderValue::from_static("no-store"),
+    );
+    response.headers_mut().insert(
+        HeaderName::from_static(HEADER_X_CONTENT_TYPE_OPTIONS),
+        HeaderValue::from_static("nosniff"),
+    );
     if let Ok(v) = HeaderValue::from_str(&sig) {
         response
             .headers_mut()
@@ -737,6 +795,32 @@ fn extract_client_ip(headers: &HeaderMap) -> String {
 fn extract_user_id_from_body(body: &[u8]) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
     value.get("user_id")?.as_str().map(ToString::to_string)
+}
+
+fn is_uuid_v4(value: &str) -> bool {
+    Uuid::parse_str(value)
+        .map(|uuid| uuid.get_version_num() == 4)
+        .unwrap_or(false)
+}
+
+fn is_valid_key_id(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+}
+
+fn is_json_content_type(headers: &HeaderMap) -> bool {
+    let Some(raw) = extract_header(headers, HEADER_CONTENT_TYPE) else {
+        return false;
+    };
+    let mime = raw
+        .split(';')
+        .next()
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    mime == "application/json"
 }
 
 pub fn compute_signature(
@@ -1030,14 +1114,14 @@ mod tests {
             "timestamp_utc_ms": now,
             "risk_bps": 1_000,
             "ui_hash_valid": true,
-            "request_id": "req-contract-1",
+            "request_id": "564a7218-13e5-46c9-84f6-bf4c53ff533f",
             "calc_version": "plca_v1"
         });
         let req = signed_request(
             req_body,
             "test_active_secret",
             "active",
-            "req-contract-1",
+            "564a7218-13e5-46c9-84f6-bf4c53ff533f",
             now,
         );
         let resp = app.oneshot(req).await.expect("response");
@@ -1051,7 +1135,7 @@ mod tests {
             .expect("body bytes")
             .to_bytes();
         let json: Value = serde_json::from_slice(&body).expect("json");
-        assert_eq!(json["request_id"], "req-contract-1");
+        assert_eq!(json["request_id"], "564a7218-13e5-46c9-84f6-bf4c53ff533f");
         assert_eq!(json["auth_key_id"], "active");
     }
 
@@ -1129,7 +1213,7 @@ mod tests {
             req_body,
             "test_active_secret",
             "active",
-            "req-expired",
+            "eff9d36f-f47e-484d-884e-172ceaf7056b",
             now.saturating_sub(180_000),
         );
         let resp = app.oneshot(req).await.expect("response");
@@ -1153,10 +1237,16 @@ mod tests {
             req_body.clone(),
             "test_active_secret",
             "active",
-            "req-replay",
+            "2f68f4d8-c2f4-402f-bb72-76b24f3de390",
             now,
         );
-        let req2 = signed_request(req_body, "test_active_secret", "active", "req-replay", now);
+        let req2 = signed_request(
+            req_body,
+            "test_active_secret",
+            "active",
+            "2f68f4d8-c2f4-402f-bb72-76b24f3de390",
+            now,
+        );
         assert_eq!(
             app.clone().oneshot(req1).await.expect("r1").status(),
             StatusCode::OK
@@ -1184,7 +1274,7 @@ mod tests {
             req_body,
             "test_previous_secret",
             "previous",
-            "req-prev",
+            "695bcb2a-8c59-4894-a4ef-a6a41847f3cc",
             now,
         );
         let resp = app.oneshot(req).await.expect("response");
@@ -1216,7 +1306,7 @@ mod tests {
         let signature = compute_signature(
             "test_active_secret",
             "active",
-            "req-tampered",
+            "5c316bd5-a0c2-4e6d-aed8-ed706734af08",
             now,
             body_original.to_string().as_bytes(),
         );
@@ -1225,7 +1315,7 @@ mod tests {
             .uri("/evaluate")
             .header("content-type", "application/json")
             .header("x-signature", signature)
-            .header("x-request-id", "req-tampered")
+            .header("x-request-id", "5c316bd5-a0c2-4e6d-aed8-ed706734af08")
             .header("x-timestamp", now.to_string())
             .header("x-key-id", "active")
             .body(Body::from(body_tampered.to_string()))
@@ -1247,8 +1337,117 @@ mod tests {
             "risk_bps":1000,
             "ui_hash_valid":true
         });
-        let req = signed_request(req_body, "test_active_secret", "unknown", "req-unk", now);
+        let req = signed_request(
+            req_body,
+            "test_active_secret",
+            "unknown",
+            "1816f9cf-62f5-4c3f-b205-cdba315c52d4",
+            now,
+        );
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn invalid_header_request_id_returns_401() {
+        let app = app_with_state(test_state());
+        let now = now_utc_ms();
+        let req_body = serde_json::json!({
+            "user_id":"u",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let req = signed_request(req_body, "test_active_secret", "active", "not-a-uuid", now);
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn invalid_header_key_id_returns_401() {
+        let app = app_with_state(test_state());
+        let now = now_utc_ms();
+        let req_body = serde_json::json!({
+            "user_id":"u",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let req = signed_request(
+            req_body,
+            "test_active_secret",
+            "active;DROP",
+            "7f6565ca-a7d1-4512-b118-cf7a410ca4f3",
+            now,
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn non_json_content_type_returns_415() {
+        let app = app_with_state(test_state());
+        let now = now_utc_ms();
+        let req_body = serde_json::json!({
+            "user_id":"u_non_json",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let body = req_body.to_string();
+        let request_id = "d37e2ed0-08de-4f32-a174-e6f721ce8ace";
+        let signature = compute_signature(
+            "test_active_secret",
+            "active",
+            request_id,
+            now,
+            body.as_bytes(),
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri("/evaluate")
+            .header("content-type", "text/plain")
+            .header("x-signature", signature)
+            .header("x-request-id", request_id)
+            .header("x-timestamp", now.to_string())
+            .header("x-key-id", "active")
+            .body(Body::from(body))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    #[tokio::test]
+    async fn body_request_id_must_be_uuid_v4() {
+        let app = app_with_state(test_state());
+        let now = now_utc_ms();
+        let req_body = serde_json::json!({
+            "user_id":"u_body_req_id",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true,
+            "request_id":"abc123"
+        });
+        let req = signed_request(
+            req_body,
+            "test_active_secret",
+            "active",
+            "42980a6c-9b20-4f39-93a9-7ed0ace98e93",
+            now,
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }
