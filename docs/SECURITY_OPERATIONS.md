@@ -26,7 +26,7 @@ Recommended baseline:
 ### 1.3 Secrets Management
 
 - Store `NEXO_HMAC_SECRET` in a secret manager (not plaintext files).
-- Optionally enable Vault as source-of-truth with `NEXO_SECRET_PROVIDER=vault`.
+- Optionally enable managed secret providers with `NEXO_SECRET_PROVIDER=vault|azure|gcp|aws`.
 - Prefer mounted secret files for runtime injection:
   - `NEXO_HMAC_SECRET_FILE`
   - `NEXO_HMAC_SECRET_PREV_FILE`
@@ -42,6 +42,20 @@ Vault runtime variables:
 - `NEXO_VAULT_PATH`
 - `NEXO_VAULT_MOUNT` (default `secret`)
 - `NEXO_VAULT_TIMEOUT_MS` (default `2000`)
+
+Azure runtime variables:
+- `NEXO_AZURE_VAULT_URL`
+- `NEXO_AZURE_ACCESS_TOKEN` or `NEXO_AZURE_ACCESS_TOKEN_FILE`
+- `NEXO_AZURE_USE_MANAGED_IDENTITY=true` (optional)
+
+GCP runtime variables:
+- `NEXO_GCP_PROJECT_ID`
+- `NEXO_GCP_ACCESS_TOKEN` or `NEXO_GCP_ACCESS_TOKEN_FILE`
+- `NEXO_GCP_USE_METADATA_TOKEN=true` (optional)
+
+AWS runtime variables:
+- `NEXO_AWS_REGION`
+- `NEXO_AWS_SECRET_ID`
 
 ### 1.4 Runtime Isolation
 

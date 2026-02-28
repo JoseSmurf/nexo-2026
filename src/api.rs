@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use aws_config::BehaviorVersion;
 use axum::{
     body::{to_bytes, Body, Bytes},
     extract::{Query, State},
@@ -15,6 +16,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use base64::Engine as _;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -39,6 +41,10 @@ const MAX_KEY_ID_LEN: usize = 64;
 const MAX_USER_ID_LEN: usize = 128;
 const DEFAULT_SECRET_PROVIDER: &str = "none";
 const DEFAULT_VAULT_TIMEOUT_MS: u64 = 2_000;
+const DEFAULT_AZURE_TIMEOUT_MS: u64 = 2_000;
+const DEFAULT_AZURE_API_VERSION: &str = "7.4";
+const DEFAULT_GCP_TIMEOUT_MS: u64 = 2_000;
+const DEFAULT_AWS_RUNTIME_TIMEOUT_MS: u64 = 5_000;
 
 const HEADER_SIGNATURE: &str = "x-signature";
 const HEADER_REQUEST_ID: &str = "x-request-id";
@@ -333,6 +339,9 @@ fn load_secret_bundle_from_env() -> Option<SecretBundle> {
     match provider.as_str() {
         "" | "none" => None,
         "vault" => Some(load_vault_bundle_from_env()),
+        "azure" => Some(load_azure_bundle_from_env()),
+        "gcp" => Some(load_gcp_bundle_from_env()),
+        "aws" => Some(load_aws_bundle_from_env()),
         other => panic!("unsupported NEXO_SECRET_PROVIDER '{other}'"),
     }
 }
@@ -393,6 +402,401 @@ fn load_vault_bundle_from_env() -> SecretBundle {
     .expect("invalid Vault payload for security secrets")
 }
 
+fn load_azure_bundle_from_env() -> SecretBundle {
+    let vault_url = std::env::var("NEXO_AZURE_VAULT_URL")
+        .expect("NEXO_AZURE_VAULT_URL is required when NEXO_SECRET_PROVIDER=azure");
+    let timeout_ms = std::env::var("NEXO_AZURE_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_AZURE_TIMEOUT_MS);
+    let api_version = std::env::var("NEXO_AZURE_API_VERSION")
+        .unwrap_or_else(|_| DEFAULT_AZURE_API_VERSION.to_string());
+
+    let name_active_secret = std::env::var("NEXO_AZURE_SECRET_ACTIVE")
+        .unwrap_or_else(|_| "nexo-hmac-secret-active".into());
+    let name_prev_secret =
+        std::env::var("NEXO_AZURE_SECRET_PREV").unwrap_or_else(|_| "nexo-hmac-secret-prev".into());
+    let name_active_key_id = std::env::var("NEXO_AZURE_SECRET_KEY_ID_ACTIVE")
+        .unwrap_or_else(|_| "nexo-hmac-key-id-active".into());
+    let name_prev_key_id = std::env::var("NEXO_AZURE_SECRET_KEY_ID_PREV")
+        .unwrap_or_else(|_| "nexo-hmac-key-id-prev".into());
+
+    let token = load_azure_access_token(timeout_ms);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        .build()
+        .expect("failed to build azure key vault HTTP client");
+
+    let active_secret = fetch_azure_secret_value(
+        &client,
+        &vault_url,
+        &name_active_secret,
+        &api_version,
+        &token,
+    );
+    let previous_secret =
+        fetch_azure_secret_optional(&client, &vault_url, &name_prev_secret, &api_version, &token);
+    let active_key_id = fetch_azure_secret_optional(
+        &client,
+        &vault_url,
+        &name_active_key_id,
+        &api_version,
+        &token,
+    );
+    let previous_key_id =
+        fetch_azure_secret_optional(&client, &vault_url, &name_prev_key_id, &api_version, &token);
+
+    SecretBundle {
+        active_secret: Some(active_secret),
+        previous_secret,
+        active_key_id,
+        previous_key_id,
+    }
+}
+
+fn load_azure_access_token(timeout_ms: u64) -> String {
+    if let Ok(path) = std::env::var("NEXO_AZURE_ACCESS_TOKEN_FILE") {
+        let token = read_secret_file(&path, "NEXO_AZURE_ACCESS_TOKEN_FILE");
+        assert!(
+            !token.trim().is_empty(),
+            "NEXO_AZURE_ACCESS_TOKEN_FILE contains empty token."
+        );
+        return token;
+    }
+    if let Ok(token) = std::env::var("NEXO_AZURE_ACCESS_TOKEN") {
+        let token = token.trim().to_string();
+        if !token.is_empty() {
+            return token;
+        }
+    }
+
+    let use_mi = std::env::var("NEXO_AZURE_USE_MANAGED_IDENTITY")
+        .ok()
+        .map(|v| {
+            let val = v.to_ascii_lowercase();
+            val == "1" || val == "true" || val == "yes"
+        })
+        .unwrap_or(false);
+    assert!(
+        use_mi,
+        "NEXO_AZURE_ACCESS_TOKEN (or *_FILE) is required unless NEXO_AZURE_USE_MANAGED_IDENTITY=true"
+    );
+
+    let mut query = vec![
+        ("api-version", "2018-02-01".to_string()),
+        ("resource", "https://vault.azure.net".to_string()),
+    ];
+    if let Ok(client_id) = std::env::var("NEXO_AZURE_MANAGED_IDENTITY_CLIENT_ID") {
+        let id = client_id.trim().to_string();
+        if !id.is_empty() {
+            query.push(("client_id", id));
+        }
+    }
+    let endpoint = std::env::var("NEXO_AZURE_IMDS_ENDPOINT")
+        .unwrap_or_else(|_| "http://169.254.169.254/metadata/identity/oauth2/token".to_string());
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        .build()
+        .expect("failed to build azure IMDS HTTP client");
+    let response = client
+        .get(endpoint)
+        .query(&query)
+        .header("Metadata", "true")
+        .send()
+        .expect("failed to fetch managed identity token from IMDS");
+    assert!(
+        response.status().is_success(),
+        "azure IMDS returned HTTP {} while fetching token",
+        response.status()
+    );
+    let payload: serde_json::Value = response
+        .json()
+        .expect("failed to parse azure IMDS token JSON");
+    parse_azure_access_token_response(&payload).expect("missing access_token in azure IMDS payload")
+}
+
+fn parse_azure_access_token_response(payload: &serde_json::Value) -> Option<String> {
+    payload
+        .as_object()?
+        .get("access_token")?
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn build_azure_secret_url(vault_url: &str, secret_name: &str, api_version: &str) -> reqwest::Url {
+    let mut url = reqwest::Url::parse(&format!(
+        "{}/secrets/{}",
+        vault_url.trim_end_matches('/'),
+        secret_name.trim_matches('/')
+    ))
+    .expect("invalid NEXO_AZURE_VAULT_URL or secret name");
+    url.query_pairs_mut()
+        .append_pair("api-version", api_version)
+        .finish();
+    url
+}
+
+fn parse_azure_secret_value(payload: &serde_json::Value) -> Option<String> {
+    payload
+        .as_object()?
+        .get("value")?
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn fetch_azure_secret_value(
+    client: &reqwest::blocking::Client,
+    vault_url: &str,
+    secret_name: &str,
+    api_version: &str,
+    token: &str,
+) -> String {
+    fetch_azure_secret_optional(client, vault_url, secret_name, api_version, token).unwrap_or_else(
+        || panic!("required secret '{secret_name}' not found or empty in Azure Key Vault"),
+    )
+}
+
+fn fetch_azure_secret_optional(
+    client: &reqwest::blocking::Client,
+    vault_url: &str,
+    secret_name: &str,
+    api_version: &str,
+    token: &str,
+) -> Option<String> {
+    let url = build_azure_secret_url(vault_url, secret_name, api_version);
+    let response = client
+        .get(url)
+        .bearer_auth(token)
+        .send()
+        .expect("failed to fetch secret from Azure Key Vault");
+
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return None;
+    }
+    assert!(
+        response.status().is_success(),
+        "azure key vault returned HTTP {} for secret '{}'",
+        response.status(),
+        secret_name
+    );
+    let payload: serde_json::Value = response
+        .json()
+        .expect("failed to parse Azure Key Vault secret JSON");
+    parse_azure_secret_value(&payload)
+}
+
+fn load_gcp_bundle_from_env() -> SecretBundle {
+    let project_id = std::env::var("NEXO_GCP_PROJECT_ID")
+        .expect("NEXO_GCP_PROJECT_ID is required when NEXO_SECRET_PROVIDER=gcp");
+    let timeout_ms = std::env::var("NEXO_GCP_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_GCP_TIMEOUT_MS);
+    let active_name = std::env::var("NEXO_GCP_SECRET_ACTIVE")
+        .unwrap_or_else(|_| "nexo-hmac-secret-active".into());
+    let prev_name =
+        std::env::var("NEXO_GCP_SECRET_PREV").unwrap_or_else(|_| "nexo-hmac-secret-prev".into());
+    let active_key_id_name = std::env::var("NEXO_GCP_SECRET_KEY_ID_ACTIVE")
+        .unwrap_or_else(|_| "nexo-hmac-key-id-active".into());
+    let prev_key_id_name = std::env::var("NEXO_GCP_SECRET_KEY_ID_PREV")
+        .unwrap_or_else(|_| "nexo-hmac-key-id-prev".into());
+
+    let token = load_gcp_access_token(timeout_ms);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        .build()
+        .expect("failed to build GCP secret manager HTTP client");
+
+    let active_secret = fetch_gcp_secret_value(&client, &project_id, &active_name, &token);
+    let previous_secret = fetch_gcp_secret_optional(&client, &project_id, &prev_name, &token);
+    let active_key_id =
+        fetch_gcp_secret_optional(&client, &project_id, &active_key_id_name, &token);
+    let previous_key_id =
+        fetch_gcp_secret_optional(&client, &project_id, &prev_key_id_name, &token);
+
+    SecretBundle {
+        active_secret: Some(active_secret),
+        previous_secret,
+        active_key_id,
+        previous_key_id,
+    }
+}
+
+fn load_aws_bundle_from_env() -> SecretBundle {
+    let region = std::env::var("NEXO_AWS_REGION")
+        .expect("NEXO_AWS_REGION is required when NEXO_SECRET_PROVIDER=aws");
+    let secret_id = std::env::var("NEXO_AWS_SECRET_ID")
+        .expect("NEXO_AWS_SECRET_ID is required when NEXO_SECRET_PROVIDER=aws");
+    let field_active_secret =
+        std::env::var("NEXO_AWS_FIELD_ACTIVE_SECRET").unwrap_or_else(|_| "hmac_secret".into());
+    let field_prev_secret =
+        std::env::var("NEXO_AWS_FIELD_PREV_SECRET").unwrap_or_else(|_| "hmac_secret_prev".into());
+    let field_active_key_id =
+        std::env::var("NEXO_AWS_FIELD_ACTIVE_KEY_ID").unwrap_or_else(|_| "hmac_key_id".into());
+    let field_prev_key_id =
+        std::env::var("NEXO_AWS_FIELD_PREV_KEY_ID").unwrap_or_else(|_| "hmac_key_id_prev".into());
+    let timeout_ms = std::env::var("NEXO_AWS_RUNTIME_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_AWS_RUNTIME_TIMEOUT_MS);
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("failed to create Tokio runtime for AWS secrets");
+
+    let payload = runtime.block_on(async move {
+        let config = aws_config::defaults(BehaviorVersion::latest())
+            .region(aws_config::Region::new(region))
+            .load()
+            .await;
+        let client = aws_sdk_secretsmanager::Client::new(&config);
+        let fut = client.get_secret_value().secret_id(secret_id).send();
+        tokio::time::timeout(Duration::from_millis(timeout_ms), fut)
+            .await
+            .expect("timeout while fetching AWS secret bundle")
+            .expect("failed to fetch AWS secret bundle")
+    });
+
+    let raw_secret = payload
+        .secret_string()
+        .expect("AWS secret bundle must be a JSON string");
+    let json_payload: serde_json::Value =
+        serde_json::from_str(raw_secret).expect("AWS secret bundle JSON is invalid");
+    parse_generic_secret_bundle(
+        &json_payload,
+        &field_active_secret,
+        &field_prev_secret,
+        &field_active_key_id,
+        &field_prev_key_id,
+    )
+    .expect("invalid AWS secret bundle fields")
+}
+
+fn load_gcp_access_token(timeout_ms: u64) -> String {
+    if let Ok(path) = std::env::var("NEXO_GCP_ACCESS_TOKEN_FILE") {
+        let token = read_secret_file(&path, "NEXO_GCP_ACCESS_TOKEN_FILE");
+        assert!(
+            !token.trim().is_empty(),
+            "NEXO_GCP_ACCESS_TOKEN_FILE contains empty token."
+        );
+        return token;
+    }
+    if let Ok(token) = std::env::var("NEXO_GCP_ACCESS_TOKEN") {
+        let token = token.trim().to_string();
+        if !token.is_empty() {
+            return token;
+        }
+    }
+
+    let use_metadata = std::env::var("NEXO_GCP_USE_METADATA_TOKEN")
+        .ok()
+        .map(|v| {
+            let val = v.to_ascii_lowercase();
+            val == "1" || val == "true" || val == "yes"
+        })
+        .unwrap_or(false);
+    assert!(
+        use_metadata,
+        "NEXO_GCP_ACCESS_TOKEN (or *_FILE) is required unless NEXO_GCP_USE_METADATA_TOKEN=true"
+    );
+
+    let endpoint = std::env::var("NEXO_GCP_METADATA_TOKEN_URL").unwrap_or_else(|_| {
+        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+            .to_string()
+    });
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        .build()
+        .expect("failed to build GCP metadata HTTP client");
+    let response = client
+        .get(endpoint)
+        .header("Metadata-Flavor", "Google")
+        .send()
+        .expect("failed to fetch GCP metadata token");
+    assert!(
+        response.status().is_success(),
+        "gcp metadata returned HTTP {} while fetching token",
+        response.status()
+    );
+    let payload: serde_json::Value = response
+        .json()
+        .expect("failed to parse GCP metadata token JSON");
+    parse_gcp_access_token_response(&payload).expect("missing access_token in GCP metadata payload")
+}
+
+fn parse_gcp_access_token_response(payload: &serde_json::Value) -> Option<String> {
+    payload
+        .as_object()?
+        .get("access_token")?
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn build_gcp_secret_access_url(project_id: &str, secret_name: &str) -> reqwest::Url {
+    reqwest::Url::parse(&format!(
+        "https://secretmanager.googleapis.com/v1/projects/{}/secrets/{}/versions/latest:access",
+        project_id.trim_matches('/'),
+        secret_name.trim_matches('/')
+    ))
+    .expect("invalid GCP project or secret name")
+}
+
+fn parse_gcp_secret_access_payload(payload: &serde_json::Value) -> Option<String> {
+    let b64 = payload
+        .as_object()?
+        .get("payload")?
+        .as_object()?
+        .get("data")?
+        .as_str()?;
+    let raw = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    String::from_utf8(raw)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn fetch_gcp_secret_value(
+    client: &reqwest::blocking::Client,
+    project_id: &str,
+    secret_name: &str,
+    token: &str,
+) -> String {
+    fetch_gcp_secret_optional(client, project_id, secret_name, token).unwrap_or_else(|| {
+        panic!("required secret '{secret_name}' not found or empty in GCP Secret Manager")
+    })
+}
+
+fn fetch_gcp_secret_optional(
+    client: &reqwest::blocking::Client,
+    project_id: &str,
+    secret_name: &str,
+    token: &str,
+) -> Option<String> {
+    let url = build_gcp_secret_access_url(project_id, secret_name);
+    let response = client
+        .get(url)
+        .bearer_auth(token)
+        .send()
+        .expect("failed to fetch secret from GCP Secret Manager");
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return None;
+    }
+    assert!(
+        response.status().is_success(),
+        "gcp secret manager returned HTTP {} for secret '{}'",
+        response.status(),
+        secret_name
+    );
+    let payload: serde_json::Value = response
+        .json()
+        .expect("failed to parse GCP secret access JSON");
+    parse_gcp_secret_access_payload(&payload)
+}
+
 fn parse_vault_bundle(
     payload: &serde_json::Value,
     field_active_secret: &str,
@@ -428,6 +832,40 @@ fn parse_vault_bundle(
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()),
         previous_key_id: map_v2
+            .get(field_prev_key_id)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+    })
+}
+
+fn parse_generic_secret_bundle(
+    payload: &serde_json::Value,
+    field_active_secret: &str,
+    field_prev_secret: &str,
+    field_active_key_id: &str,
+    field_prev_key_id: &str,
+) -> Result<SecretBundle, &'static str> {
+    let map = payload
+        .as_object()
+        .ok_or("secret bundle payload is not an object")?;
+    Ok(SecretBundle {
+        active_secret: map
+            .get(field_active_secret)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        previous_secret: map
+            .get(field_prev_secret)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        active_key_id: map
+            .get(field_active_key_id)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        previous_key_id: map
             .get(field_prev_key_id)
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
@@ -1715,5 +2153,100 @@ mod tests {
         )
         .expect_err("expected parse error");
         assert_eq!(err, "vault payload missing data field");
+    }
+
+    #[test]
+    fn parse_azure_access_token_response_ok() {
+        let payload = serde_json::json!({
+            "access_token": "token123",
+            "expires_in": "3599"
+        });
+        assert_eq!(
+            parse_azure_access_token_response(&payload),
+            Some("token123".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_azure_access_token_response_missing() {
+        let payload = serde_json::json!({"token_type": "Bearer"});
+        assert!(parse_azure_access_token_response(&payload).is_none());
+    }
+
+    #[test]
+    fn parse_azure_secret_value_ok() {
+        let payload = serde_json::json!({
+            "value": "very_secret",
+            "id": "https://vault.vault.azure.net/secrets/x"
+        });
+        assert_eq!(
+            parse_azure_secret_value(&payload),
+            Some("very_secret".to_string())
+        );
+    }
+
+    #[test]
+    fn build_azure_secret_url_contains_api_version() {
+        let url = build_azure_secret_url("https://nexo-kv.vault.azure.net", "my-secret", "7.4");
+        assert_eq!(
+            url.as_str(),
+            "https://nexo-kv.vault.azure.net/secrets/my-secret?api-version=7.4"
+        );
+    }
+
+    #[test]
+    fn parse_gcp_access_token_response_ok() {
+        let payload = serde_json::json!({
+            "access_token": "gcp_token_1",
+            "expires_in": 3599
+        });
+        assert_eq!(
+            parse_gcp_access_token_response(&payload),
+            Some("gcp_token_1".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_gcp_secret_access_payload_ok() {
+        let payload = serde_json::json!({
+            "payload": {
+                "data": "c2VjcmV0X3ZhbHVl"
+            }
+        });
+        assert_eq!(
+            parse_gcp_secret_access_payload(&payload),
+            Some("secret_value".to_string())
+        );
+    }
+
+    #[test]
+    fn build_gcp_secret_access_url_ok() {
+        let url = build_gcp_secret_access_url("proj-1", "hmac-active");
+        assert_eq!(
+            url.as_str(),
+            "https://secretmanager.googleapis.com/v1/projects/proj-1/secrets/hmac-active/versions/latest:access"
+        );
+    }
+
+    #[test]
+    fn parse_generic_secret_bundle_ok() {
+        let payload = serde_json::json!({
+            "hmac_secret": "active_s",
+            "hmac_secret_prev": "prev_s",
+            "hmac_key_id": "active",
+            "hmac_key_id_prev": "previous"
+        });
+        let bundle = super::parse_generic_secret_bundle(
+            &payload,
+            "hmac_secret",
+            "hmac_secret_prev",
+            "hmac_key_id",
+            "hmac_key_id_prev",
+        )
+        .expect("bundle");
+        assert_eq!(bundle.active_secret.as_deref(), Some("active_s"));
+        assert_eq!(bundle.previous_secret.as_deref(), Some("prev_s"));
+        assert_eq!(bundle.active_key_id.as_deref(), Some("active"));
+        assert_eq!(bundle.previous_key_id.as_deref(), Some("previous"));
     }
 }

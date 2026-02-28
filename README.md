@@ -120,10 +120,10 @@ curl -sS -X POST 'http://127.0.0.1:3000/evaluate' \
 - API layer: implemented and active (`POST /evaluate`, health, metrics, audit, security)
 - Security layer: HMAC-BLAKE3, anti-replay, key rotation, rate limit
 - Offline verification: Zig verifier in CI
-- Rust tests: 89
+- Rust tests: 97
 - Julia tests: 118
 - Zig tests: 10
-- Total tests: 217
+- Total tests: 225
 - Jurisdictions covered: 9
 - Currencies covered: 9
 - Regulators covered: 9
@@ -241,7 +241,7 @@ Status codes:
 
 Required environment:
 
-- `NEXO_SECRET_PROVIDER` (`none` default, or `vault`)
+- `NEXO_SECRET_PROVIDER` (`none` default, `vault`, or `azure`)
 - `NEXO_HMAC_SECRET` (required unless `NEXO_HMAC_SECRET_FILE` is set)
 - `NEXO_HMAC_SECRET_FILE` (path to mounted secret file, preferred for production)
 - `NEXO_HMAC_SECRET_PREV` (optional rotation window)
@@ -270,6 +270,47 @@ Vault provider (when `NEXO_SECRET_PROVIDER=vault`):
 - `NEXO_VAULT_FIELD_PREV_SECRET` (optional, default `hmac_secret_prev`)
 - `NEXO_VAULT_FIELD_ACTIVE_KEY_ID` (optional, default `hmac_key_id`)
 - `NEXO_VAULT_FIELD_PREV_KEY_ID` (optional, default `hmac_key_id_prev`)
+
+Azure provider (when `NEXO_SECRET_PROVIDER=azure`):
+
+- `NEXO_AZURE_VAULT_URL` (e.g. `https://myvault.vault.azure.net`)
+- `NEXO_AZURE_ACCESS_TOKEN` or `NEXO_AZURE_ACCESS_TOKEN_FILE`
+- Optional managed identity mode:
+  - `NEXO_AZURE_USE_MANAGED_IDENTITY=true`
+  - `NEXO_AZURE_MANAGED_IDENTITY_CLIENT_ID` (optional user-assigned identity)
+  - `NEXO_AZURE_IMDS_ENDPOINT` (optional override)
+- Secret names:
+  - `NEXO_AZURE_SECRET_ACTIVE` (default `nexo-hmac-secret-active`)
+  - `NEXO_AZURE_SECRET_PREV` (default `nexo-hmac-secret-prev`)
+  - `NEXO_AZURE_SECRET_KEY_ID_ACTIVE` (default `nexo-hmac-key-id-active`)
+  - `NEXO_AZURE_SECRET_KEY_ID_PREV` (default `nexo-hmac-key-id-prev`)
+- `NEXO_AZURE_API_VERSION` (default `7.4`)
+- `NEXO_AZURE_TIMEOUT_MS` (default `2000`)
+
+GCP provider (when `NEXO_SECRET_PROVIDER=gcp`):
+
+- `NEXO_GCP_PROJECT_ID`
+- `NEXO_GCP_ACCESS_TOKEN` or `NEXO_GCP_ACCESS_TOKEN_FILE`
+- Optional metadata token mode:
+  - `NEXO_GCP_USE_METADATA_TOKEN=true`
+  - `NEXO_GCP_METADATA_TOKEN_URL` (optional override)
+- Secret names:
+  - `NEXO_GCP_SECRET_ACTIVE` (default `nexo-hmac-secret-active`)
+  - `NEXO_GCP_SECRET_PREV` (default `nexo-hmac-secret-prev`)
+  - `NEXO_GCP_SECRET_KEY_ID_ACTIVE` (default `nexo-hmac-key-id-active`)
+  - `NEXO_GCP_SECRET_KEY_ID_PREV` (default `nexo-hmac-key-id-prev`)
+- `NEXO_GCP_TIMEOUT_MS` (default `2000`)
+
+AWS provider (when `NEXO_SECRET_PROVIDER=aws`):
+
+- `NEXO_AWS_REGION`
+- `NEXO_AWS_SECRET_ID` (Secrets Manager JSON bundle id)
+- Optional field names in the JSON:
+  - `NEXO_AWS_FIELD_ACTIVE_SECRET` (default `hmac_secret`)
+  - `NEXO_AWS_FIELD_PREV_SECRET` (default `hmac_secret_prev`)
+  - `NEXO_AWS_FIELD_ACTIVE_KEY_ID` (default `hmac_key_id`)
+  - `NEXO_AWS_FIELD_PREV_KEY_ID` (default `hmac_key_id_prev`)
+- `NEXO_AWS_RUNTIME_TIMEOUT_MS` (default `5000`)
 
 Rotation flow:
 
