@@ -4,6 +4,7 @@ use axum::body::Body;
 use axum::http::Request;
 use serde_json::json;
 use tower::util::ServiceExt;
+use uuid::Uuid;
 fn percentile(sorted: &[u128], pct: f64) -> f64 {
     if sorted.is_empty() {
         return 0.0;
@@ -41,7 +42,7 @@ async fn main() {
         let mut handles = Vec::with_capacity(batch);
         for _ in 0..batch {
             idx += 1;
-            let req_id = format!("load-{}", idx);
+            let req_id = Uuid::new_v4().to_string();
             let timestamp = chrono_like_now_ms();
             let req_body = json!({
                 "user_id": "load_user",

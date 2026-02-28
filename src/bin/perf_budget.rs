@@ -4,6 +4,7 @@ use axum::body::Body;
 use axum::http::Request;
 use syntax_engine::{evaluate_with_config, EngineConfig, TransactionIntent};
 use tower::util::ServiceExt;
+use uuid::Uuid;
 
 fn main() {
     let engine_budget_ns: f64 = std::env::var("NEXO_ENGINE_BUDGET_NS")
@@ -43,9 +44,9 @@ fn main() {
 
     let http_start = Instant::now();
     rt.block_on(async {
-        for i in 0..http_iterations {
+        for _ in 0..http_iterations {
             let timestamp = now_ms();
-            let request_id = format!("perf-{i}");
+            let request_id = Uuid::new_v4().to_string();
             let req_body = serde_json::json!({
                 "user_id": "perf_user",
                 "amount_cents": 50_000,
