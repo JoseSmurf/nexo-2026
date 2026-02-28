@@ -259,10 +259,27 @@ Rotation flow:
 3. Update Julia `X-Key-Id` to the active key id
 4. Remove previous key after clients are migrated
 
+Rotation hardening (fail-closed startup checks):
+
+- `NEXO_HMAC_SECRET` must be present and non-empty
+- `NEXO_HMAC_KEY_ID` must be non-empty
+- if `NEXO_HMAC_SECRET_PREV` is set:
+  - `NEXO_HMAC_KEY_ID_PREV` must be non-empty
+  - `NEXO_HMAC_KEY_ID_PREV` must differ from `NEXO_HMAC_KEY_ID`
+
 Response authenticity:
 
 - `X-Response-Signature`
 - `X-Response-Key-Id`
+
+Operational observability:
+
+- `GET /metrics` now includes:
+  - `avg_latency_ns`, `p95_latency_ns`, `p99_latency_ns`
+  - decision counters and security counters (`unauthorized_total`, `request_timeout_total`, `conflict_total`, `too_many_requests_total`)
+- `GET /security/status` now includes:
+  - security counters above
+  - `rotation_mode` (`active_only` or `active_plus_previous`)
 
 ## Latency & Load
 

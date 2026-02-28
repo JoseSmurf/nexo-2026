@@ -157,6 +157,7 @@ pub struct SecurityStatusResponse {
     pub too_many_requests_total: u64,
     pub p95_latency_ns: f64,
     pub p99_latency_ns: f64,
+    pub rotation_mode: String,
 }
 
 #[derive(Debug)]
@@ -176,11 +177,31 @@ impl AppState {
             .unwrap_or(DEFAULT_RETENTION);
         let active_secret = std::env::var("NEXO_HMAC_SECRET")
             .expect("NEXO_HMAC_SECRET is required. Refusing to start without HMAC secret.");
+        assert!(
+            !active_secret.trim().is_empty(),
+            "NEXO_HMAC_SECRET is empty. Refusing to start with empty HMAC secret."
+        );
         let active_id =
             std::env::var("NEXO_HMAC_KEY_ID").unwrap_or_else(|_| BENCH_KEY_ID.to_string());
-        let previous_secret = std::env::var("NEXO_HMAC_SECRET_PREV").ok();
+        assert!(
+            !active_id.trim().is_empty(),
+            "NEXO_HMAC_KEY_ID must not be empty."
+        );
+        let previous_secret = std::env::var("NEXO_HMAC_SECRET_PREV")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
         let previous_id =
             std::env::var("NEXO_HMAC_KEY_ID_PREV").unwrap_or_else(|_| "previous".to_string());
+        if previous_secret.is_some() {
+            assert!(
+                !previous_id.trim().is_empty(),
+                "NEXO_HMAC_KEY_ID_PREV must not be empty when NEXO_HMAC_SECRET_PREV is set."
+            );
+            assert!(
+                previous_id != active_id,
+                "NEXO_HMAC_KEY_ID_PREV must be different from NEXO_HMAC_KEY_ID."
+            );
+        }
         let auth_window_ms = std::env::var("NEXO_AUTH_WINDOW_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -922,6 +943,11 @@ async fn security_status_handler(State(state): State<AppState>) -> impl IntoResp
         usage.insert(entry.key().clone(), *entry.value());
     }
     let metrics = state.metrics.snapshot();
+    let rotation_mode = if state.auth.previous.is_some() {
+        "active_plus_previous"
+    } else {
+        "active_only"
+    };
     (
         StatusCode::OK,
         Json(SecurityStatusResponse {
@@ -942,6 +968,7 @@ async fn security_status_handler(State(state): State<AppState>) -> impl IntoResp
             too_many_requests_total: metrics.too_many_requests_total,
             p95_latency_ns: metrics.p95_latency_ns,
             p99_latency_ns: metrics.p99_latency_ns,
+            rotation_mode: rotation_mode.to_string(),
         }),
     )
 }
