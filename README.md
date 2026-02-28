@@ -120,10 +120,10 @@ curl -sS -X POST 'http://127.0.0.1:3000/evaluate' \
 - API layer: implemented and active (`POST /evaluate`, health, metrics, audit, security)
 - Security layer: HMAC-BLAKE3, anti-replay, key rotation, rate limit
 - Offline verification: Zig verifier in CI
-- Rust tests: 102
-- Julia tests: 118
+- Rust tests: 104
+- Julia tests: 124
 - Zig tests: 10
-- Total tests: 230
+- Total tests: 238
 - Jurisdictions covered: 9
 - Currencies covered: 9
 - Regulators covered: 9
@@ -394,6 +394,10 @@ Enforce performance budget (also in CI):
 ```bash
 cargo run --release --bin perf_budget
 ```
+
+CI note:
+
+- `bench` job runs on `push` and `workflow_dispatch`.
 
 ## Staging (mTLS + client signature + audit chain)
 
