@@ -3,6 +3,7 @@ WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY benches ./benches
 
 RUN cargo build --release --bin syntax-engine --bin sign_request --bin sign_client_request --bin client_pubkey
 
