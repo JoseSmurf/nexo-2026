@@ -178,7 +178,8 @@ MIT
     }
   ],
   "audit_hash": "64-char-lowercase-hex",
-  "hash_algo": "blake3|sha3-256"
+  "hash_algo": "blake3|sha3-256",
+  "sha3_shadow": "optional-64-char-lowercase-hex"
 }
 ```
 
@@ -261,6 +262,7 @@ Required environment:
 - `NEXO_RATE_LIMIT_USER` (optional, default `300`)
 - `NEXO_HASH_FAILOVER_MODE` (optional, default `false`)
 - `NEXO_SHA3_FAILOVER_BPS` (optional, default `1750`; range `0..10000`)
+- `NEXO_SHA3_SHADOW_ENABLED` (optional, default `false`; when `true`, keeps `hash_algo=blake3` and adds `sha3_shadow`)
 - `NEXO_MTLS_REQUIRED` (optional, default `false`)
 - `NEXO_CLIENT_SIG_REQUIRED` (optional, default `false`)
 

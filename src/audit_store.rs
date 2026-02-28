@@ -22,6 +22,8 @@ pub struct AuditRecord {
     pub audit_hash: String,
     #[serde(default = "default_hash_algo")]
     pub hash_algo: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha3_shadow: Option<String>,
     #[serde(default)]
     pub prev_record_hash: Option<String>,
     #[serde(default)]
@@ -126,7 +128,7 @@ fn hash_field(h: &mut blake3::Hasher, tag: &[u8], data: &[u8]) {
 
 fn compute_record_hash(record: &AuditRecord) -> String {
     let mut h = blake3::Hasher::new();
-    hash_field(&mut h, b"schema", b"audit_record_v1");
+    hash_field(&mut h, b"schema", b"audit_record_v2");
     hash_field(&mut h, b"request_id", record.request_id.as_bytes());
     hash_field(&mut h, b"profile_name", record.profile_name.as_bytes());
     hash_field(
@@ -142,6 +144,11 @@ fn compute_record_hash(record: &AuditRecord) -> String {
     hash_field(&mut h, b"user_id", record.user_id.as_bytes());
     hash_field(&mut h, b"audit_hash", record.audit_hash.as_bytes());
     hash_field(&mut h, b"hash_algo", record.hash_algo.as_bytes());
+    hash_field(
+        &mut h,
+        b"sha3_shadow",
+        record.sha3_shadow.as_deref().unwrap_or("").as_bytes(),
+    );
     hash_field(
         &mut h,
         b"final_decision",
@@ -188,6 +195,7 @@ mod tests {
             trace: serde_json::json!(["Approved"]),
             audit_hash: "abcd".repeat(16),
             hash_algo: "blake3".to_string(),
+            sha3_shadow: None,
             prev_record_hash: None,
             record_hash: None,
         }

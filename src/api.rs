@@ -50,6 +50,7 @@ const DEFAULT_AZURE_API_VERSION: &str = "7.4";
 const DEFAULT_GCP_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_AWS_RUNTIME_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_SHA3_FAILOVER_BPS: u16 = 1_750;
+const DEFAULT_SHA3_SHADOW_ENABLED: bool = false;
 
 const HEADER_SIGNATURE: &str = "x-signature";
 const HEADER_REQUEST_ID: &str = "x-request-id";
@@ -90,6 +91,7 @@ pub struct AppState {
     pub redis_guard: Option<RedisGuardConfig>,
     pub hash_failover_mode: bool,
     pub sha3_failover_bps: u16,
+    pub sha3_shadow_enabled: bool,
     pub last_blake3_hash: Arc<RwLock<Option<String>>>,
 }
 
@@ -172,6 +174,8 @@ pub struct EvaluateResponse {
     pub trace: Vec<Decision>,
     pub audit_hash: String,
     pub hash_algo: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha3_shadow: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -309,6 +313,7 @@ impl AppState {
         let redis_guard = load_redis_guard_from_env();
         let hash_failover_mode = env_bool("NEXO_HASH_FAILOVER_MODE", false);
         let sha3_failover_bps = load_sha3_failover_bps(DEFAULT_SHA3_FAILOVER_BPS);
+        let sha3_shadow_enabled = env_bool("NEXO_SHA3_SHADOW_ENABLED", DEFAULT_SHA3_SHADOW_ENABLED);
 
         Self {
             profile: profile_from_env(),
@@ -336,6 +341,7 @@ impl AppState {
             redis_guard,
             hash_failover_mode,
             sha3_failover_bps,
+            sha3_shadow_enabled,
             last_blake3_hash: Arc::new(RwLock::new(None)),
         }
     }
@@ -370,6 +376,7 @@ impl AppState {
             redis_guard: None,
             hash_failover_mode: false,
             sha3_failover_bps: DEFAULT_SHA3_FAILOVER_BPS,
+            sha3_shadow_enabled: false,
             last_blake3_hash: Arc::new(RwLock::new(None)),
         }
     }
@@ -401,6 +408,7 @@ impl AppState {
             redis_guard: None,
             hash_failover_mode: false,
             sha3_failover_bps: 0,
+            sha3_shadow_enabled: false,
             last_blake3_hash: Arc::new(RwLock::new(None)),
         }
     }
@@ -1437,7 +1445,7 @@ async fn evaluate_handler(
 
     let (final_decision, trace, blake3_hash) =
         evaluate_with_config(&tx, state.profile.engine_config());
-    let (audit_hash, selected_hash_algo) = match resolve_audit_hash(
+    let (audit_hash, selected_hash_algo, sha3_shadow) = match resolve_audit_hash(
         &state,
         &header_request_id,
         &trace,
@@ -1472,6 +1480,7 @@ async fn evaluate_handler(
         trace: serde_json::to_value(&trace).unwrap_or_else(|_| serde_json::json!([])),
         audit_hash: audit_hash.clone(),
         hash_algo: hash_algo.clone(),
+        sha3_shadow: sha3_shadow.clone(),
         prev_record_hash: None,
         record_hash: None,
     };
@@ -1512,6 +1521,7 @@ async fn evaluate_handler(
         trace,
         audit_hash,
         hash_algo,
+        sha3_shadow,
     };
     signed_json_response(StatusCode::OK, &state, &header_request_id, &response)
 }
@@ -2162,11 +2172,16 @@ fn resolve_audit_hash(
     request_id: &str,
     trace: &[Decision],
     blake3_hash: &str,
-) -> Result<(String, AuditHashAlgo), &'static str> {
+) -> Result<(String, AuditHashAlgo, Option<String>), &'static str> {
     remember_last_blake3_hash(state, blake3_hash);
 
     if !state.hash_failover_mode {
-        return Ok((blake3_hash.to_string(), AuditHashAlgo::Blake3));
+        let sha3_shadow = if state.sha3_shadow_enabled {
+            Some(audit_hash_with_algo(trace, AuditHashAlgo::Sha3_256))
+        } else {
+            None
+        };
+        return Ok((blake3_hash.to_string(), AuditHashAlgo::Blake3, sha3_shadow));
     }
 
     if state.sha3_failover_bps == 0 {
@@ -2182,7 +2197,7 @@ fn resolve_audit_hash(
     let bucket = failover_bucket_bps(request_id, &seed);
     if bucket < u32::from(state.sha3_failover_bps) {
         let sha3_hash = audit_hash_with_algo(trace, AuditHashAlgo::Sha3_256);
-        Ok((sha3_hash, AuditHashAlgo::Sha3_256))
+        Ok((sha3_hash, AuditHashAlgo::Sha3_256, None))
     } else {
         Err("hash failover active: request outside SHA3 emergency budget")
     }
@@ -2913,6 +2928,75 @@ mod tests {
             .to_bytes();
         let json: Value = serde_json::from_slice(&body).expect("json");
         assert_eq!(json["hash_algo"], "blake3");
+    }
+
+    #[tokio::test]
+    async fn evaluate_includes_sha3_shadow_when_enabled() {
+        let mut state = test_state();
+        state.hash_failover_mode = false;
+        state.sha3_shadow_enabled = true;
+        let cfg = state.profile.engine_config();
+        let app = app_with_state(state);
+        let now = now_utc_ms();
+        let request_id = "fb6f36f3-8452-4f60-8c6f-327f64ccaa53";
+        let payload = serde_json::json!({
+            "user_id": "u_shadow_on",
+            "amount_cents": 50_000,
+            "is_pep": false,
+            "has_active_kyc": true,
+            "timestamp_utc_ms": now,
+            "risk_bps": 1_000,
+            "ui_hash_valid": true,
+            "request_id": request_id
+        });
+        let req = signed_request(payload, "test_active_secret", "active", request_id, now);
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("body bytes")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["hash_algo"], "blake3");
+        let tx = TransactionIntent::new("u_shadow_on", 50_000, false, true, now, now, 1_000, true)
+            .expect("tx");
+        let (_decision, trace, _blake3_hash) = evaluate_with_config(&tx, cfg);
+        let expected_sha3 = audit_hash_with_algo(&trace, AuditHashAlgo::Sha3_256);
+        assert_eq!(json["sha3_shadow"], expected_sha3);
+    }
+
+    #[tokio::test]
+    async fn evaluate_omits_sha3_shadow_when_disabled() {
+        let mut state = test_state();
+        state.hash_failover_mode = false;
+        state.sha3_shadow_enabled = false;
+        let app = app_with_state(state);
+        let now = now_utc_ms();
+        let request_id = "5ff68fa1-b57e-4afd-be6f-f5cf95fe6f21";
+        let payload = serde_json::json!({
+            "user_id": "u_shadow_off",
+            "amount_cents": 50_000,
+            "is_pep": false,
+            "has_active_kyc": true,
+            "timestamp_utc_ms": now,
+            "risk_bps": 1_000,
+            "ui_hash_valid": true,
+            "request_id": request_id
+        });
+        let req = signed_request(payload, "test_active_secret", "active", request_id, now);
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("body bytes")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["hash_algo"], "blake3");
+        assert!(json.get("sha3_shadow").is_none());
     }
 
     #[test]
