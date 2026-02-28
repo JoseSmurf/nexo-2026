@@ -272,6 +272,10 @@ Response authenticity:
 - `X-Response-Signature`
 - `X-Response-Key-Id`
 
+Production hardening and incident response:
+
+- `docs/SECURITY_OPERATIONS.md`
+
 Operational observability:
 
 - `GET /metrics` now includes:
