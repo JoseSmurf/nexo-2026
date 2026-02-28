@@ -120,10 +120,10 @@ curl -sS -X POST 'http://127.0.0.1:3000/evaluate' \
 - API layer: implemented and active (`POST /evaluate`, health, metrics, audit, security)
 - Security layer: HMAC-BLAKE3, anti-replay, key rotation, rate limit
 - Offline verification: Zig verifier in CI
-- Rust tests: 97
+- Rust tests: 102
 - Julia tests: 118
 - Zig tests: 10
-- Total tests: 225
+- Total tests: 230
 - Jurisdictions covered: 9
 - Currencies covered: 9
 - Regulators covered: 9
@@ -258,6 +258,8 @@ Required environment:
 - `NEXO_RATE_LIMIT_WINDOW_MS` (optional, default `60000`)
 - `NEXO_RATE_LIMIT_IP` (optional, default `600`)
 - `NEXO_RATE_LIMIT_USER` (optional, default `300`)
+- `NEXO_MTLS_REQUIRED` (optional, default `false`)
+- `NEXO_CLIENT_SIG_REQUIRED` (optional, default `false`)
 
 Vault provider (when `NEXO_SECRET_PROVIDER=vault`):
 
@@ -309,8 +311,24 @@ AWS provider (when `NEXO_SECRET_PROVIDER=aws`):
   - `NEXO_AWS_FIELD_ACTIVE_SECRET` (default `hmac_secret`)
   - `NEXO_AWS_FIELD_PREV_SECRET` (default `hmac_secret_prev`)
   - `NEXO_AWS_FIELD_ACTIVE_KEY_ID` (default `hmac_key_id`)
-  - `NEXO_AWS_FIELD_PREV_KEY_ID` (default `hmac_key_id_prev`)
+- `NEXO_AWS_FIELD_PREV_KEY_ID` (default `hmac_key_id_prev`)
 - `NEXO_AWS_RUNTIME_TIMEOUT_MS` (default `5000`)
+
+Optional mTLS attestation policy (edge/gateway integration):
+
+- `NEXO_MTLS_REQUIRED=true`
+- `NEXO_MTLS_VERIFIED_HEADER` (default `x-client-cert-verified`)
+- `NEXO_MTLS_VERIFIED_VALUE` (default `true`)
+- `NEXO_MTLS_CLIENT_ID_HEADER` (default `x-client-id`)
+- `NEXO_MTLS_ALLOWED_CLIENT_IDS` (comma-separated allowlist)
+
+Optional client asymmetric signature (Ed25519):
+
+- `NEXO_CLIENT_SIG_REQUIRED=true`
+- `NEXO_CLIENT_ID_HEADER` (default `x-client-id`)
+- `NEXO_CLIENT_SIGNATURE_HEADER` (default `x-client-signature`)
+- `NEXO_CLIENT_PUBKEYS_JSON` (JSON map: `client_id -> base64(pubkey32)`)
+- or `NEXO_CLIENT_PUBKEYS_FILE` (same JSON content)
 
 Rotation flow:
 

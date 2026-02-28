@@ -22,6 +22,10 @@ Recommended baseline:
 - Prefer TLS 1.3 with modern ciphers.
 - For internal service-to-service traffic, prefer mTLS.
 - Rotate certificates with automation and short validity windows.
+- Optional app-level attestation mode can enforce edge mTLS proof via headers:
+  - `NEXO_MTLS_REQUIRED=true`
+  - `NEXO_MTLS_VERIFIED_HEADER` / `NEXO_MTLS_VERIFIED_VALUE`
+  - `NEXO_MTLS_CLIENT_ID_HEADER` / `NEXO_MTLS_ALLOWED_CLIENT_IDS`
 
 ### 1.3 Secrets Management
 
@@ -56,6 +60,10 @@ GCP runtime variables:
 AWS runtime variables:
 - `NEXO_AWS_REGION`
 - `NEXO_AWS_SECRET_ID`
+
+Client asymmetric signature mode (optional):
+- `NEXO_CLIENT_SIG_REQUIRED=true`
+- `NEXO_CLIENT_PUBKEYS_JSON` or `NEXO_CLIENT_PUBKEYS_FILE`
 
 ### 1.4 Runtime Isolation
 

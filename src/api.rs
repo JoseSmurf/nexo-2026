@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,6 +18,7 @@ use axum::{
 };
 use base64::Engine as _;
 use dashmap::DashMap;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -57,6 +58,9 @@ const HEADER_REAL_IP: &str = "x-real-ip";
 const HEADER_CONTENT_TYPE: &str = "content-type";
 const HEADER_CACHE_CONTROL: &str = "cache-control";
 const HEADER_X_CONTENT_TYPE_OPTIONS: &str = "x-content-type-options";
+const HEADER_CLIENT_CERT_VERIFIED: &str = "x-client-cert-verified";
+const HEADER_CLIENT_ID: &str = "x-client-id";
+const HEADER_CLIENT_SIGNATURE: &str = "x-client-signature";
 
 pub const BENCH_HMAC_SECRET: &str = "bench_hmac_secret";
 pub const BENCH_KEY_ID: &str = "active";
@@ -75,6 +79,8 @@ pub struct AppState {
     pub auth_window_ms: u64,
     pub rate_limiter: Arc<RateLimiter>,
     pub key_usage: Arc<DashMap<String, u64>>,
+    pub mtls: Option<MtlsConfig>,
+    pub client_sig: Option<ClientSignatureConfig>,
 }
 
 #[derive(Clone)]
@@ -103,6 +109,21 @@ pub struct RateLimiter {
 struct WindowCounter {
     window_start_ms: u64,
     count: u32,
+}
+
+#[derive(Clone)]
+pub struct MtlsConfig {
+    pub verified_header: String,
+    pub verified_value: String,
+    pub client_id_header: String,
+    pub allowed_client_ids: Option<HashSet<String>>,
+}
+
+#[derive(Clone)]
+pub struct ClientSignatureConfig {
+    pub client_id_header: String,
+    pub signature_header: String,
+    pub public_keys: HashMap<String, VerifyingKey>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -173,6 +194,8 @@ pub struct SecurityStatusResponse {
     pub p95_latency_ns: f64,
     pub p99_latency_ns: f64,
     pub rotation_mode: String,
+    pub mtls_mode: String,
+    pub client_signature_mode: String,
 }
 
 #[derive(Debug)]
@@ -255,6 +278,8 @@ impl AppState {
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(DEFAULT_RATE_LIMIT_USER);
+        let mtls = load_mtls_config_from_env();
+        let client_sig = load_client_signature_config_from_env();
 
         Self {
             profile: profile_from_env(),
@@ -276,6 +301,8 @@ impl AppState {
                 rate_limit_user,
             )),
             key_usage: Arc::new(DashMap::new()),
+            mtls,
+            client_sig,
         }
     }
 
@@ -303,6 +330,8 @@ impl AppState {
                 10_000,
             )),
             key_usage: Arc::new(DashMap::new()),
+            mtls: None,
+            client_sig: None,
         }
     }
 
@@ -327,6 +356,8 @@ impl AppState {
                 u32::MAX,
             )),
             key_usage: Arc::new(DashMap::new()),
+            mtls: None,
+            client_sig: None,
         }
     }
 }
@@ -344,6 +375,95 @@ fn load_secret_bundle_from_env() -> Option<SecretBundle> {
         "aws" => Some(load_aws_bundle_from_env()),
         other => panic!("unsupported NEXO_SECRET_PROVIDER '{other}'"),
     }
+}
+
+fn env_bool(key: &str, default: bool) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|v| {
+            let value = v.trim().to_ascii_lowercase();
+            value == "1" || value == "true" || value == "yes"
+        })
+        .unwrap_or(default)
+}
+
+fn load_mtls_config_from_env() -> Option<MtlsConfig> {
+    if !env_bool("NEXO_MTLS_REQUIRED", false) {
+        return None;
+    }
+    let verified_header = std::env::var("NEXO_MTLS_VERIFIED_HEADER")
+        .unwrap_or_else(|_| HEADER_CLIENT_CERT_VERIFIED.to_string())
+        .to_ascii_lowercase();
+    let verified_value = std::env::var("NEXO_MTLS_VERIFIED_VALUE")
+        .unwrap_or_else(|_| "true".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    let client_id_header = std::env::var("NEXO_MTLS_CLIENT_ID_HEADER")
+        .unwrap_or_else(|_| HEADER_CLIENT_ID.to_string())
+        .to_ascii_lowercase();
+    let allowed_client_ids = std::env::var("NEXO_MTLS_ALLOWED_CLIENT_IDS")
+        .ok()
+        .map(|v| {
+            v.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+                .collect::<HashSet<String>>()
+        })
+        .filter(|set| !set.is_empty());
+    Some(MtlsConfig {
+        verified_header,
+        verified_value,
+        client_id_header,
+        allowed_client_ids,
+    })
+}
+
+fn load_client_signature_config_from_env() -> Option<ClientSignatureConfig> {
+    if !env_bool("NEXO_CLIENT_SIG_REQUIRED", false) {
+        return None;
+    }
+    let pubkeys_json = std::env::var("NEXO_CLIENT_PUBKEYS_JSON")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            std::env::var("NEXO_CLIENT_PUBKEYS_FILE")
+                .ok()
+                .map(|path| read_secret_file(&path, "NEXO_CLIENT_PUBKEYS_FILE"))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "NEXO_CLIENT_PUBKEYS_JSON or NEXO_CLIENT_PUBKEYS_FILE is required when NEXO_CLIENT_SIG_REQUIRED=true"
+            )
+        });
+    let map: HashMap<String, String> =
+        serde_json::from_str(&pubkeys_json).expect("NEXO_CLIENT_PUBKEYS JSON must be an object");
+    let mut public_keys = HashMap::new();
+    for (client_id, key_b64) in map {
+        let key_bytes = base64::engine::general_purpose::STANDARD
+            .decode(key_b64.trim())
+            .unwrap_or_else(|_| panic!("invalid base64 public key for client '{client_id}'"));
+        let key_bytes: [u8; 32] = key_bytes
+            .as_slice()
+            .try_into()
+            .unwrap_or_else(|_| panic!("public key for client '{client_id}' must be 32 bytes"));
+        let key = VerifyingKey::from_bytes(&key_bytes)
+            .unwrap_or_else(|_| panic!("invalid Ed25519 key bytes for client '{client_id}'"));
+        public_keys.insert(client_id, key);
+    }
+    assert!(
+        !public_keys.is_empty(),
+        "NEXO_CLIENT_PUBKEYS must contain at least one client key."
+    );
+    Some(ClientSignatureConfig {
+        client_id_header: std::env::var("NEXO_CLIENT_ID_HEADER")
+            .unwrap_or_else(|_| HEADER_CLIENT_ID.to_string())
+            .to_ascii_lowercase(),
+        signature_header: std::env::var("NEXO_CLIENT_SIGNATURE_HEADER")
+            .unwrap_or_else(|_| HEADER_CLIENT_SIGNATURE.to_string())
+            .to_ascii_lowercase(),
+        public_keys,
+    })
 }
 
 fn load_vault_bundle_from_env() -> SecretBundle {
@@ -1184,6 +1304,8 @@ async fn evaluate_handler(
         trace: serde_json::to_value(&trace).unwrap_or_else(|_| serde_json::json!([])),
         audit_hash: audit_hash.clone(),
         hash_algo: "blake3".to_string(),
+        prev_record_hash: None,
+        record_hash: None,
     };
 
     if state.audit_enabled {
@@ -1231,6 +1353,7 @@ fn validate_security_headers(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Result<(String, u64, String), AuthError> {
+    verify_mtls_attestation(state, headers)?;
     let signature_hex = extract_header(headers, HEADER_SIGNATURE)
         .ok_or(AuthError::Unauthorized("missing X-Signature header"))?;
     let signature = decode_hex_32(signature_hex)
@@ -1274,6 +1397,8 @@ fn validate_security_headers(
     };
     let key = allowed_key.ok_or(AuthError::Unauthorized("unknown or inactive X-Key-Id"))?;
 
+    verify_client_signature(state, headers, &request_id, timestamp_ms, key_id, body)?;
+
     maybe_purge_replay_cache(state, now);
     enforce_replay_capacity(state);
     if state.replay_cache.contains_key(&request_id) {
@@ -1295,6 +1420,63 @@ fn validate_security_headers(
         .and_modify(|v| *v += 1)
         .or_insert(1);
     Ok((request_id, timestamp_ms, key.id.clone()))
+}
+
+fn verify_mtls_attestation(state: &AppState, headers: &HeaderMap) -> Result<(), AuthError> {
+    let Some(cfg) = &state.mtls else {
+        return Ok(());
+    };
+    let verified = extract_header(headers, &cfg.verified_header)
+        .ok_or(AuthError::Unauthorized("mTLS attestation header missing"))?
+        .to_ascii_lowercase();
+    if verified != cfg.verified_value {
+        return Err(AuthError::Unauthorized("mTLS attestation invalid"));
+    }
+    if let Some(allowed) = &cfg.allowed_client_ids {
+        let client_id = extract_header(headers, &cfg.client_id_header)
+            .ok_or(AuthError::Unauthorized("client id missing for mTLS policy"))?;
+        if !allowed.contains(client_id) {
+            return Err(AuthError::Unauthorized(
+                "client id not allowed by mTLS policy",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_client_signature(
+    state: &AppState,
+    headers: &HeaderMap,
+    request_id: &str,
+    timestamp_ms: u64,
+    key_id: &str,
+    body: &[u8],
+) -> Result<(), AuthError> {
+    let Some(cfg) = &state.client_sig else {
+        return Ok(());
+    };
+    let client_id = extract_header(headers, &cfg.client_id_header)
+        .ok_or(AuthError::Unauthorized("missing client id header"))?;
+    let sig_b64 = extract_header(headers, &cfg.signature_header)
+        .ok_or(AuthError::Unauthorized("missing client signature header"))?;
+    let pubkey = cfg
+        .public_keys
+        .get(client_id)
+        .ok_or(AuthError::Unauthorized("unknown client id"))?;
+
+    let sig_bytes = base64::engine::general_purpose::STANDARD
+        .decode(sig_b64)
+        .map_err(|_| AuthError::Unauthorized("invalid client signature format"))?;
+    let sig_bytes: [u8; 64] = sig_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| AuthError::Unauthorized("invalid client signature length"))?;
+    let signature = Signature::from_bytes(&sig_bytes);
+    let msg = client_signature_message(client_id, key_id, request_id, timestamp_ms, body);
+    pubkey
+        .verify(&msg, &signature)
+        .map_err(|_| AuthError::Unauthorized("invalid client signature"))?;
+    Ok(())
 }
 
 fn maybe_purge_replay_cache(state: &AppState, now_ms: u64) {
@@ -1383,7 +1565,7 @@ fn signed_json_response<T: Serialize>(
     response
 }
 
-fn extract_header<'a>(headers: &'a HeaderMap, name: &'static str) -> Option<&'a str> {
+fn extract_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers
         .get(name)
         .and_then(|v| v.to_str().ok())
@@ -1485,6 +1667,27 @@ fn signing_message(key_id: &str, request_id: &str, timestamp_ms: u64, body: &[u8
         buf.extend_from_slice(part);
     }
     let mut out = Vec::with_capacity(body.len() + 96);
+    push_part(&mut out, key_id.as_bytes());
+    push_part(&mut out, request_id.as_bytes());
+    push_part(&mut out, timestamp_ms.to_string().as_bytes());
+    push_part(&mut out, body);
+    out
+}
+
+fn client_signature_message(
+    client_id: &str,
+    key_id: &str,
+    request_id: &str,
+    timestamp_ms: u64,
+    body: &[u8],
+) -> Vec<u8> {
+    fn push_part(buf: &mut Vec<u8>, part: &[u8]) {
+        buf.extend_from_slice(&(part.len() as u32).to_le_bytes());
+        buf.extend_from_slice(part);
+    }
+    let mut out = Vec::with_capacity(body.len() + 128);
+    push_part(&mut out, b"nexo_client_sig_v1");
+    push_part(&mut out, client_id.as_bytes());
     push_part(&mut out, key_id.as_bytes());
     push_part(&mut out, request_id.as_bytes());
     push_part(&mut out, timestamp_ms.to_string().as_bytes());
@@ -1647,6 +1850,16 @@ async fn security_status_handler(State(state): State<AppState>) -> impl IntoResp
     } else {
         "active_only"
     };
+    let mtls_mode = if state.mtls.is_some() {
+        "required"
+    } else {
+        "disabled"
+    };
+    let client_signature_mode = if state.client_sig.is_some() {
+        "required"
+    } else {
+        "disabled"
+    };
     (
         StatusCode::OK,
         Json(SecurityStatusResponse {
@@ -1668,6 +1881,8 @@ async fn security_status_handler(State(state): State<AppState>) -> impl IntoResp
             p95_latency_ns: metrics.p95_latency_ns,
             p99_latency_ns: metrics.p99_latency_ns,
             rotation_mode: rotation_mode.to_string(),
+            mtls_mode: mtls_mode.to_string(),
+            client_signature_mode: client_signature_mode.to_string(),
         }),
     )
 }
@@ -1684,8 +1899,11 @@ pub fn now_utc_ms() -> u64 {
 mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer, SigningKey};
     use http_body_util::BodyExt;
     use serde_json::Value;
+    use std::collections::HashMap;
     use tower::util::ServiceExt;
 
     use super::*;
@@ -1715,6 +1933,31 @@ mod tests {
             .header("x-key-id", key_id)
             .body(Body::from(body))
             .expect("request")
+    }
+
+    fn signed_request_with_headers(
+        payload: serde_json::Value,
+        secret: &str,
+        key_id: &str,
+        request_id: &str,
+        timestamp_ms: u64,
+        extra_headers: &[(&str, String)],
+    ) -> Request<Body> {
+        let body = payload.to_string();
+        let signature =
+            compute_signature(secret, key_id, request_id, timestamp_ms, body.as_bytes());
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/evaluate")
+            .header("content-type", "application/json")
+            .header("x-signature", signature)
+            .header("x-request-id", request_id)
+            .header("x-timestamp", timestamp_ms.to_string())
+            .header("x-key-id", key_id);
+        for (k, v) in extra_headers {
+            req = req.header(*k, v);
+        }
+        req.body(Body::from(body)).expect("request")
     }
 
     #[tokio::test]
@@ -2064,6 +2307,143 @@ mod tests {
         );
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn mtls_required_rejects_missing_attestation() {
+        let mut state = test_state();
+        state.mtls = Some(MtlsConfig {
+            verified_header: HEADER_CLIENT_CERT_VERIFIED.to_string(),
+            verified_value: "true".to_string(),
+            client_id_header: HEADER_CLIENT_ID.to_string(),
+            allowed_client_ids: None,
+        });
+        let app = app_with_state(state);
+        let now = now_utc_ms();
+        let payload = serde_json::json!({
+            "user_id":"u_mtls",
+            "amount_cents":10_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let req = signed_request(
+            payload,
+            "test_active_secret",
+            "active",
+            "f2bbd501-cf68-468f-8e3f-d07f3a96209d",
+            now,
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn mtls_required_accepts_valid_attestation() {
+        let mut state = test_state();
+        state.mtls = Some(MtlsConfig {
+            verified_header: HEADER_CLIENT_CERT_VERIFIED.to_string(),
+            verified_value: "true".to_string(),
+            client_id_header: HEADER_CLIENT_ID.to_string(),
+            allowed_client_ids: None,
+        });
+        let app = app_with_state(state);
+        let now = now_utc_ms();
+        let payload = serde_json::json!({
+            "user_id":"u_mtls_ok",
+            "amount_cents":10_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let req = signed_request_with_headers(
+            payload,
+            "test_active_secret",
+            "active",
+            "5e09338f-f3e8-4f57-b38f-5f0a61d70ee1",
+            now,
+            &[(HEADER_CLIENT_CERT_VERIFIED, "true".to_string())],
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn client_signature_required_rejects_missing_signature() {
+        let mut state = test_state();
+        let signing = SigningKey::from_bytes(&[7u8; 32]);
+        state.client_sig = Some(ClientSignatureConfig {
+            client_id_header: HEADER_CLIENT_ID.to_string(),
+            signature_header: HEADER_CLIENT_SIGNATURE.to_string(),
+            public_keys: HashMap::from([("client-a".to_string(), signing.verifying_key())]),
+        });
+        let app = app_with_state(state);
+        let now = now_utc_ms();
+        let payload = serde_json::json!({
+            "user_id":"u_sig_missing",
+            "amount_cents":10_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let req = signed_request_with_headers(
+            payload,
+            "test_active_secret",
+            "active",
+            "0f02f7f5-f4c3-4bbf-ac43-9515caa1273c",
+            now,
+            &[(HEADER_CLIENT_ID, "client-a".to_string())],
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn client_signature_required_accepts_valid_signature() {
+        let mut state = test_state();
+        let signing = SigningKey::from_bytes(&[9u8; 32]);
+        let verifying = signing.verifying_key();
+        state.client_sig = Some(ClientSignatureConfig {
+            client_id_header: HEADER_CLIENT_ID.to_string(),
+            signature_header: HEADER_CLIENT_SIGNATURE.to_string(),
+            public_keys: HashMap::from([("client-a".to_string(), verifying)]),
+        });
+        let app = app_with_state(state);
+        let now = now_utc_ms();
+        let request_id = "5c3574e4-3148-4f3f-aad8-08e291f0da4f";
+        let payload = serde_json::json!({
+            "user_id":"u_sig_ok",
+            "amount_cents":10_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let body = payload.to_string();
+        let msg = client_signature_message("client-a", "active", request_id, now, body.as_bytes());
+        let sig = signing.sign(&msg);
+        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+
+        let req = signed_request_with_headers(
+            payload,
+            "test_active_secret",
+            "active",
+            request_id,
+            now,
+            &[
+                (HEADER_CLIENT_ID, "client-a".to_string()),
+                (HEADER_CLIENT_SIGNATURE, sig_b64),
+            ],
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[test]
