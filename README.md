@@ -193,6 +193,7 @@ Rule profiles (versioned, via env):
 - `NEXO_PROFILE=br_default_v1` (default)
 - `NEXO_PROFILE=us_default_v1`
 - `NEXO_PROFILE=eu_default_v1`
+- `NEXO_PROFILE=cn_default_v1`
 
 Per-profile financial thresholds:
 
@@ -201,6 +202,7 @@ Per-profile financial thresholds:
 | BR (`br_default_v1`) | `-180` | `100_000` | `5_000_000` | `9_000` |
 | US (`us_default_v1`) | `-300` | `500_000` | `10_000_000` | `9_000` |
 | EU (`eu_default_v1`) | `60` | `300_000` | `10_000_000` | `9_000` |
+| CN (`cn_default_v1`) | `480` | `400_000` | `10_000_000` | `9_000` |
 
 ## Security (Formal HMAC-BLAKE3 + Anti-Replay + Rotation + Rate Limit)
 
