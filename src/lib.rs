@@ -543,36 +543,47 @@ mod tests {
     fn us_night_400k_is_approved() {
         let cfg = cfg_us();
         let (night, st) = ts_for_local_time(cfg, 22, 0);
-        let tx = TransactionIntent::new("user_us_400k", 400_000, false, true, night, st, 1_000, true)
-            .unwrap();
+        let tx =
+            TransactionIntent::new("user_us_400k", 400_000, false, true, night, st, 1_000, true)
+                .unwrap();
 
         let (decision, trace, _hash) = evaluate_with_config(&tx, cfg);
         assert_eq!(decision, FinalDecision::Approved);
-        assert!(!trace
-            .iter()
-            .any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001")));
+        assert!(!trace.iter().any(
+            |d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001")
+        ));
     }
 
     #[test]
     fn us_night_600k_is_blocked() {
         let cfg = cfg_us();
         let (night, st) = ts_for_local_time(cfg, 22, 0);
-        let tx = TransactionIntent::new("user_us_600k", 600_000, false, true, night, st, 1_000, true)
-            .unwrap();
+        let tx =
+            TransactionIntent::new("user_us_600k", 600_000, false, true, night, st, 1_000, true)
+                .unwrap();
 
         let (decision, trace, _hash) = evaluate_with_config(&tx, cfg);
         assert_eq!(decision, FinalDecision::Blocked);
-        assert!(trace
-            .iter()
-            .any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001")));
+        assert!(trace.iter().any(
+            |d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001")
+        ));
     }
 
     #[test]
     fn us_approves_exactly_at_night_limit() {
         let cfg = cfg_us();
         let (night, st) = ts_for_local_time(cfg, 22, 0);
-        let tx = TransactionIntent::new("user_us_exact", 500_000, false, true, night, st, 1_000, true)
-            .unwrap();
+        let tx = TransactionIntent::new(
+            "user_us_exact",
+            500_000,
+            false,
+            true,
+            night,
+            st,
+            1_000,
+            true,
+        )
+        .unwrap();
 
         let (decision, trace, _hash) = evaluate_with_config(&tx, cfg);
         assert_eq!(decision, FinalDecision::Approved);
@@ -611,36 +622,47 @@ mod tests {
     fn eu_night_250k_is_approved() {
         let cfg = cfg_eu();
         let (night, st) = ts_for_local_time(cfg, 22, 0);
-        let tx = TransactionIntent::new("user_eu_250k", 250_000, false, true, night, st, 1_000, true)
-            .unwrap();
+        let tx =
+            TransactionIntent::new("user_eu_250k", 250_000, false, true, night, st, 1_000, true)
+                .unwrap();
 
         let (decision, trace, _hash) = evaluate_with_config(&tx, cfg);
         assert_eq!(decision, FinalDecision::Approved);
-        assert!(!trace
-            .iter()
-            .any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001")));
+        assert!(!trace.iter().any(
+            |d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001")
+        ));
     }
 
     #[test]
     fn eu_night_400k_is_blocked() {
         let cfg = cfg_eu();
         let (night, st) = ts_for_local_time(cfg, 22, 0);
-        let tx = TransactionIntent::new("user_eu_400k", 400_000, false, true, night, st, 1_000, true)
-            .unwrap();
+        let tx =
+            TransactionIntent::new("user_eu_400k", 400_000, false, true, night, st, 1_000, true)
+                .unwrap();
 
         let (decision, trace, _hash) = evaluate_with_config(&tx, cfg);
         assert_eq!(decision, FinalDecision::Blocked);
-        assert!(trace
-            .iter()
-            .any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001")));
+        assert!(trace.iter().any(
+            |d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001")
+        ));
     }
 
     #[test]
     fn eu_approves_exactly_at_night_limit() {
         let cfg = cfg_eu();
         let (night, st) = ts_for_local_time(cfg, 22, 0);
-        let tx = TransactionIntent::new("user_eu_exact", 300_000, false, true, night, st, 1_000, true)
-            .unwrap();
+        let tx = TransactionIntent::new(
+            "user_eu_exact",
+            300_000,
+            false,
+            true,
+            night,
+            st,
+            1_000,
+            true,
+        )
+        .unwrap();
 
         let (decision, trace, _hash) = evaluate_with_config(&tx, cfg);
         assert_eq!(decision, FinalDecision::Approved);
@@ -679,14 +701,15 @@ mod tests {
     fn br_night_400k_is_blocked() {
         let cfg = cfg_brasil();
         let (night, st) = ts_for_local_time(cfg, 22, 0);
-        let tx = TransactionIntent::new("user_br_400k", 400_000, false, true, night, st, 1_000, true)
-            .unwrap();
+        let tx =
+            TransactionIntent::new("user_br_400k", 400_000, false, true, night, st, 1_000, true)
+                .unwrap();
 
         let (decision, trace, _hash) = evaluate_with_config(&tx, cfg);
         assert_eq!(decision, FinalDecision::Blocked);
-        assert!(trace
-            .iter()
-            .any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001")));
+        assert!(trace.iter().any(
+            |d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001")
+        ));
     }
 
     // ========================================================================
