@@ -66,6 +66,17 @@ pub fn profile_from_env() -> RuleProfile {
             aml_amount_cents: 10_000_000,
             aml_risk_bps: 9_000,
         },
+        "ae_default_v1" => RuleProfile {
+            name: "ae_default_v1",
+            version: "2026.02",
+            country: "AE",
+            tz_offset_minutes: 240,
+            night_start: 22,
+            night_end: 6,
+            night_limit_cents: 300_000,
+            aml_amount_cents: 10_000_000,
+            aml_risk_bps: 9_000,
+        },
         _ => RuleProfile {
             name: "br_default_v1",
             version: "2026.02",

@@ -341,6 +341,17 @@ mod tests {
         }
     }
 
+    fn cfg_ae() -> EngineConfig {
+        EngineConfig {
+            tz_offset_minutes: 240,
+            night_start: 22,
+            night_end: 6,
+            night_limit_cents: 300_000,
+            aml_amount_cents: 10_000_000,
+            aml_risk_bps: 9_000,
+        }
+    }
+
     fn night_ts() -> (u64, u64) {
         let st = server_time();
         let one_day_ms = 86_400_000u64;
@@ -800,6 +811,84 @@ mod tests {
         let tx = TransactionIntent::new(
             "user_cn_one_cent",
             400_001,
+            false,
+            true,
+            night,
+            st,
+            1_000,
+            true,
+        )
+        .unwrap();
+
+        let (decision, trace, _hash) = evaluate_with_config(&tx, cfg);
+        assert_eq!(decision, FinalDecision::Blocked);
+
+        let has_rule = trace
+            .iter()
+            .any(|d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001"));
+        assert!(has_rule);
+    }
+
+    #[test]
+    fn ae_approves_below_night_limit() {
+        let cfg = cfg_ae();
+        let (night, st) = ts_for_local_time(cfg, cfg.night_start, 0);
+        let tx =
+            TransactionIntent::new("user_ae_200k", 200_000, false, true, night, st, 1_000, true)
+                .unwrap();
+
+        let (decision, trace, _hash) = evaluate_with_config(&tx, cfg);
+        assert_eq!(decision, FinalDecision::Approved);
+        assert!(!trace.iter().any(
+            |d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001")
+        ));
+    }
+
+    #[test]
+    fn ae_blocks_above_night_limit() {
+        let cfg = cfg_ae();
+        let (night, st) = ts_for_local_time(cfg, cfg.night_start, 0);
+        let tx =
+            TransactionIntent::new("user_ae_400k", 400_000, false, true, night, st, 1_000, true)
+                .unwrap();
+
+        let (decision, trace, _hash) = evaluate_with_config(&tx, cfg);
+        assert_eq!(decision, FinalDecision::Blocked);
+        assert!(trace.iter().any(
+            |d| matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001")
+        ));
+    }
+
+    #[test]
+    fn ae_approves_exactly_at_night_limit() {
+        let cfg = cfg_ae();
+        let (night, st) = ts_for_local_time(cfg, cfg.night_start, 0);
+        let tx = TransactionIntent::new(
+            "user_ae_exact",
+            300_000,
+            false,
+            true,
+            night,
+            st,
+            1_000,
+            true,
+        )
+        .unwrap();
+
+        let (decision, trace, _hash) = evaluate_with_config(&tx, cfg);
+        assert_eq!(decision, FinalDecision::Approved);
+        assert!(trace.iter().all(|d| {
+            !matches!(d, Decision::Blocked { rule_id, .. } if *rule_id == "BCB-NIGHT-001")
+        }));
+    }
+
+    #[test]
+    fn ae_blocks_one_cent_above_night_limit() {
+        let cfg = cfg_ae();
+        let (night, st) = ts_for_local_time(cfg, cfg.night_start, 0);
+        let tx = TransactionIntent::new(
+            "user_ae_one_cent",
+            300_001,
             false,
             true,
             night,
