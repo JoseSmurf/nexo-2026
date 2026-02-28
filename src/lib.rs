@@ -57,6 +57,8 @@ pub struct TransactionIntent<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct EngineConfig {
     pub tz_offset_minutes: i16,
+    pub night_start: u8,
+    pub night_end: u8,
     pub night_limit_cents: u64,
     pub aml_amount_cents: u64,
     pub aml_risk_bps: u16,
@@ -66,6 +68,8 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             tz_offset_minutes: -180,
+            night_start: 20,
+            night_end: 6,
             night_limit_cents: 100_000,
             aml_amount_cents: 5_000_000,
             aml_risk_bps: 9_000,
@@ -142,7 +146,13 @@ fn rule_ui_integrity(tx: &TransactionIntent) -> Decision {
 
 fn rule_night_limit(tx: &TransactionIntent, cfg: EngineConfig) -> Decision {
     let hour = policy_hour(tx.timestamp_utc_ms, cfg.tz_offset_minutes);
-    if (hour >= 20 || hour <= 6) && tx.amount_cents > cfg.night_limit_cents {
+    let is_night = if cfg.night_start <= cfg.night_end {
+        hour >= cfg.night_start && hour <= cfg.night_end
+    } else {
+        hour >= cfg.night_start || hour <= cfg.night_end
+    };
+
+    if is_night && tx.amount_cents > cfg.night_limit_cents {
         Decision::Blocked {
             rule_id: "BCB-NIGHT-001",
             reason: "Night transaction limit exceeded.",
@@ -290,6 +300,8 @@ mod tests {
     fn cfg_brasil() -> EngineConfig {
         EngineConfig {
             tz_offset_minutes: -180,
+            night_start: 20,
+            night_end: 6,
             night_limit_cents: 100_000,
             aml_amount_cents: 5_000_000,
             aml_risk_bps: 9_000,
@@ -299,6 +311,8 @@ mod tests {
     fn cfg_us() -> EngineConfig {
         EngineConfig {
             tz_offset_minutes: -300,
+            night_start: 23,
+            night_end: 5,
             night_limit_cents: 500_000,
             aml_amount_cents: 10_000_000,
             aml_risk_bps: 9_000,
@@ -308,6 +322,8 @@ mod tests {
     fn cfg_eu() -> EngineConfig {
         EngineConfig {
             tz_offset_minutes: 60,
+            night_start: 22,
+            night_end: 6,
             night_limit_cents: 300_000,
             aml_amount_cents: 10_000_000,
             aml_risk_bps: 9_000,
@@ -317,6 +333,8 @@ mod tests {
     fn cfg_cn() -> EngineConfig {
         EngineConfig {
             tz_offset_minutes: 480,
+            night_start: 23,
+            night_end: 5,
             night_limit_cents: 400_000,
             aml_amount_cents: 10_000_000,
             aml_risk_bps: 9_000,
@@ -551,7 +569,7 @@ mod tests {
     #[test]
     fn us_night_400k_is_approved() {
         let cfg = cfg_us();
-        let (night, st) = ts_for_local_time(cfg, 22, 0);
+        let (night, st) = ts_for_local_time(cfg, cfg.night_start, 0);
         let tx =
             TransactionIntent::new("user_us_400k", 400_000, false, true, night, st, 1_000, true)
                 .unwrap();
@@ -566,7 +584,7 @@ mod tests {
     #[test]
     fn us_night_600k_is_blocked() {
         let cfg = cfg_us();
-        let (night, st) = ts_for_local_time(cfg, 22, 0);
+        let (night, st) = ts_for_local_time(cfg, cfg.night_start, 0);
         let tx =
             TransactionIntent::new("user_us_600k", 600_000, false, true, night, st, 1_000, true)
                 .unwrap();
@@ -581,7 +599,7 @@ mod tests {
     #[test]
     fn us_approves_exactly_at_night_limit() {
         let cfg = cfg_us();
-        let (night, st) = ts_for_local_time(cfg, 22, 0);
+        let (night, st) = ts_for_local_time(cfg, cfg.night_start, 0);
         let tx = TransactionIntent::new(
             "user_us_exact",
             500_000,
@@ -605,7 +623,7 @@ mod tests {
     #[test]
     fn us_blocks_one_cent_above_night_limit() {
         let cfg = cfg_us();
-        let (night, st) = ts_for_local_time(cfg, 22, 0);
+        let (night, st) = ts_for_local_time(cfg, cfg.night_start, 0);
         let tx = TransactionIntent::new(
             "user_us_one_cent",
             500_001,
@@ -630,7 +648,7 @@ mod tests {
     #[test]
     fn eu_night_250k_is_approved() {
         let cfg = cfg_eu();
-        let (night, st) = ts_for_local_time(cfg, 22, 0);
+        let (night, st) = ts_for_local_time(cfg, cfg.night_start, 0);
         let tx =
             TransactionIntent::new("user_eu_250k", 250_000, false, true, night, st, 1_000, true)
                 .unwrap();
@@ -645,7 +663,7 @@ mod tests {
     #[test]
     fn eu_night_400k_is_blocked() {
         let cfg = cfg_eu();
-        let (night, st) = ts_for_local_time(cfg, 22, 0);
+        let (night, st) = ts_for_local_time(cfg, cfg.night_start, 0);
         let tx =
             TransactionIntent::new("user_eu_400k", 400_000, false, true, night, st, 1_000, true)
                 .unwrap();
@@ -660,7 +678,7 @@ mod tests {
     #[test]
     fn eu_approves_exactly_at_night_limit() {
         let cfg = cfg_eu();
-        let (night, st) = ts_for_local_time(cfg, 22, 0);
+        let (night, st) = ts_for_local_time(cfg, cfg.night_start, 0);
         let tx = TransactionIntent::new(
             "user_eu_exact",
             300_000,
@@ -684,7 +702,7 @@ mod tests {
     #[test]
     fn eu_blocks_one_cent_above_night_limit() {
         let cfg = cfg_eu();
-        let (night, st) = ts_for_local_time(cfg, 22, 0);
+        let (night, st) = ts_for_local_time(cfg, cfg.night_start, 0);
         let tx = TransactionIntent::new(
             "user_eu_one_cent",
             300_001,
@@ -709,7 +727,7 @@ mod tests {
     #[test]
     fn br_night_400k_is_blocked() {
         let cfg = cfg_brasil();
-        let (night, st) = ts_for_local_time(cfg, 22, 0);
+        let (night, st) = ts_for_local_time(cfg, cfg.night_start, 0);
         let tx =
             TransactionIntent::new("user_br_400k", 400_000, false, true, night, st, 1_000, true)
                 .unwrap();
@@ -724,7 +742,7 @@ mod tests {
     #[test]
     fn cn_night_350k_is_approved() {
         let cfg = cfg_cn();
-        let (night, st) = ts_for_local_time(cfg, 22, 0);
+        let (night, st) = ts_for_local_time(cfg, cfg.night_start, 0);
         let tx =
             TransactionIntent::new("user_cn_350k", 350_000, false, true, night, st, 1_000, true)
                 .unwrap();
@@ -739,7 +757,7 @@ mod tests {
     #[test]
     fn cn_night_450k_is_blocked() {
         let cfg = cfg_cn();
-        let (night, st) = ts_for_local_time(cfg, 22, 0);
+        let (night, st) = ts_for_local_time(cfg, cfg.night_start, 0);
         let tx =
             TransactionIntent::new("user_cn_450k", 450_000, false, true, night, st, 1_000, true)
                 .unwrap();
@@ -754,7 +772,7 @@ mod tests {
     #[test]
     fn cn_approves_exactly_at_night_limit() {
         let cfg = cfg_cn();
-        let (night, st) = ts_for_local_time(cfg, 22, 0);
+        let (night, st) = ts_for_local_time(cfg, cfg.night_start, 0);
         let tx = TransactionIntent::new(
             "user_cn_exact",
             400_000,
@@ -778,7 +796,7 @@ mod tests {
     #[test]
     fn cn_blocks_one_cent_above_night_limit() {
         let cfg = cfg_cn();
-        let (night, st) = ts_for_local_time(cfg, 22, 0);
+        let (night, st) = ts_for_local_time(cfg, cfg.night_start, 0);
         let tx = TransactionIntent::new(
             "user_cn_one_cent",
             400_001,
@@ -1214,6 +1232,8 @@ mod tests {
             &tx,
             EngineConfig {
                 tz_offset_minutes: -180,
+                night_start: 20,
+                night_end: 6,
                 night_limit_cents: 100_000,
                 aml_amount_cents: 5_000_000,
                 aml_risk_bps: 9_000,
@@ -1223,6 +1243,8 @@ mod tests {
             &tx,
             EngineConfig {
                 tz_offset_minutes: 540,
+                night_start: 20,
+                night_end: 6,
                 night_limit_cents: 100_000,
                 aml_amount_cents: 5_000_000,
                 aml_risk_bps: 9_000,

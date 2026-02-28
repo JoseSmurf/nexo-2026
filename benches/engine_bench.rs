@@ -26,6 +26,8 @@ fn build_tx(
 fn bench_evaluate(c: &mut Criterion) {
     let cfg = EngineConfig {
         tz_offset_minutes: -180,
+        night_start: 20,
+        night_end: 6,
         night_limit_cents: 100_000,
         aml_amount_cents: 5_000_000,
         aml_risk_bps: 9_000,
