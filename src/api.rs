@@ -26,7 +26,10 @@ use uuid::Uuid;
 use crate::audit_store::{AuditRecord, AuditStore};
 use crate::profile::{profile_from_env, RuleProfile};
 use crate::telemetry::{Metrics, MetricsSnapshot};
-use crate::{evaluate_with_config, Decision, FinalDecision, TransactionIntent};
+use crate::{
+    audit_hash_with_algo, evaluate_with_config, AuditHashAlgo, Decision, FinalDecision,
+    TransactionIntent,
+};
 
 const DEFAULT_AUDIT_PATH: &str = "logs/audit_records.jsonl";
 const DEFAULT_RETENTION: usize = 5_000;
@@ -46,6 +49,7 @@ const DEFAULT_AZURE_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_AZURE_API_VERSION: &str = "7.4";
 const DEFAULT_GCP_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_AWS_RUNTIME_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_SHA3_ROLLOUT_BPS: u16 = 1_750;
 
 const HEADER_SIGNATURE: &str = "x-signature";
 const HEADER_REQUEST_ID: &str = "x-request-id";
@@ -84,6 +88,7 @@ pub struct AppState {
     pub client_sig: Option<ClientSignatureConfig>,
     pub edge_guard: Option<EdgeGuardConfig>,
     pub redis_guard: Option<RedisGuardConfig>,
+    pub sha3_rollout_bps: u16,
 }
 
 #[derive(Clone)]
@@ -300,6 +305,7 @@ impl AppState {
         let client_sig = load_client_signature_config_from_env();
         let edge_guard = load_edge_guard_config_from_env();
         let redis_guard = load_redis_guard_from_env();
+        let sha3_rollout_bps = load_sha3_rollout_bps(DEFAULT_SHA3_ROLLOUT_BPS);
 
         Self {
             profile: profile_from_env(),
@@ -325,6 +331,7 @@ impl AppState {
             client_sig,
             edge_guard,
             redis_guard,
+            sha3_rollout_bps,
         }
     }
 
@@ -356,6 +363,7 @@ impl AppState {
             client_sig: None,
             edge_guard: None,
             redis_guard: None,
+            sha3_rollout_bps: 0,
         }
     }
 
@@ -384,8 +392,25 @@ impl AppState {
             client_sig: None,
             edge_guard: None,
             redis_guard: None,
+            sha3_rollout_bps: 0,
         }
     }
+}
+
+fn load_sha3_rollout_bps(default_bps: u16) -> u16 {
+    let raw = match std::env::var("NEXO_SHA3_ROLLOUT_BPS") {
+        Ok(v) => v,
+        Err(_) => return default_bps,
+    };
+    let parsed = raw
+        .trim()
+        .parse::<u16>()
+        .unwrap_or_else(|_| panic!("NEXO_SHA3_ROLLOUT_BPS must be an integer between 0 and 10000"));
+    assert!(
+        parsed <= 10_000,
+        "NEXO_SHA3_ROLLOUT_BPS must be an integer between 0 and 10000"
+    );
+    parsed
 }
 
 fn load_secret_bundle_from_env() -> Option<SecretBundle> {
@@ -1403,8 +1428,11 @@ async fn evaluate_handler(
         }
     };
 
-    let (final_decision, trace, audit_hash) =
+    let (final_decision, trace, _blake3_hash) =
         evaluate_with_config(&tx, state.profile.engine_config());
+    let selected_hash_algo = select_audit_hash_algo(&header_request_id, state.sha3_rollout_bps);
+    let audit_hash = audit_hash_with_algo(&trace, selected_hash_algo);
+    let hash_algo = selected_hash_algo.as_str().to_string();
 
     let record = AuditRecord {
         request_id: header_request_id.clone(),
@@ -1418,7 +1446,7 @@ async fn evaluate_handler(
         final_decision,
         trace: serde_json::to_value(&trace).unwrap_or_else(|_| serde_json::json!([])),
         audit_hash: audit_hash.clone(),
-        hash_algo: "blake3".to_string(),
+        hash_algo: hash_algo.clone(),
         prev_record_hash: None,
         record_hash: None,
     };
@@ -1458,7 +1486,7 @@ async fn evaluate_handler(
         final_decision,
         trace,
         audit_hash,
-        hash_algo: "blake3".to_string(),
+        hash_algo,
     };
     signed_json_response(StatusCode::OK, &state, &header_request_id, &response)
 }
@@ -2104,6 +2132,28 @@ pub fn now_utc_ms() -> u64 {
         .as_millis() as u64
 }
 
+fn select_audit_hash_algo(request_id: &str, sha3_rollout_bps: u16) -> AuditHashAlgo {
+    if sha3_rollout_bps == 0 {
+        return AuditHashAlgo::Blake3;
+    }
+    if sha3_rollout_bps >= 10_000 {
+        return AuditHashAlgo::Sha3_256;
+    }
+    let bucket = rollout_bucket_bps(request_id);
+    if bucket < u32::from(sha3_rollout_bps) {
+        AuditHashAlgo::Sha3_256
+    } else {
+        AuditHashAlgo::Blake3
+    }
+}
+
+fn rollout_bucket_bps(request_id: &str) -> u32 {
+    let digest = blake3::hash(request_id.as_bytes());
+    let bytes = digest.as_bytes();
+    let sample = u16::from_be_bytes([bytes[0], bytes[1]]) as u32;
+    (sample * 10_000) / 65_536
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::Body;
@@ -2712,6 +2762,62 @@ mod tests {
         );
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn evaluate_uses_sha3_when_rollout_is_100_percent() {
+        let mut state = test_state();
+        state.sha3_rollout_bps = 10_000;
+        let cfg = state.profile.engine_config();
+        let app = app_with_state(state);
+        let now = now_utc_ms();
+        let request_id = "13c2321e-745c-4267-bf42-f0e4aaed9e83";
+        let payload = serde_json::json!({
+            "user_id": "u_rollout_sha3",
+            "amount_cents": 50_000,
+            "is_pep": false,
+            "has_active_kyc": true,
+            "timestamp_utc_ms": now,
+            "risk_bps": 1_000,
+            "ui_hash_valid": true,
+            "request_id": request_id
+        });
+        let req = signed_request(payload, "test_active_secret", "active", request_id, now);
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("body bytes")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["hash_algo"], "sha3-256");
+        let tx =
+            TransactionIntent::new("u_rollout_sha3", 50_000, false, true, now, now, 1_000, true)
+                .expect("tx");
+        let (_decision, trace, _blake3_hash) = evaluate_with_config(&tx, cfg);
+        let expected_sha3 = audit_hash_with_algo(&trace, AuditHashAlgo::Sha3_256);
+        assert_eq!(json["audit_hash"], expected_sha3);
+    }
+
+    #[test]
+    fn select_audit_hash_algo_respects_rollout_bounds() {
+        let request_id = "7a9d9f84-ec48-4571-a58f-f38019c53efa";
+        assert_eq!(select_audit_hash_algo(request_id, 0), AuditHashAlgo::Blake3);
+        assert_eq!(
+            select_audit_hash_algo(request_id, 10_000),
+            AuditHashAlgo::Sha3_256
+        );
+    }
+
+    #[test]
+    fn rollout_bucket_is_deterministic() {
+        let request_id = "176da357-cb85-4841-92e4-cc6f12f9f9c9";
+        let a = rollout_bucket_bps(request_id);
+        let b = rollout_bucket_bps(request_id);
+        assert_eq!(a, b);
+        assert!(a <= 9_999);
     }
 
     #[test]

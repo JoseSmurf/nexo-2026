@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha3::{Digest, Sha3_256};
 
 pub mod api;
 pub mod audit_store;
@@ -209,43 +210,122 @@ fn hash_field(h: &mut blake3::Hasher, tag: &[u8], data: &[u8]) {
     h.update(data);
 }
 
-pub fn audit_hash(trace: &[Decision]) -> String {
-    let mut h = blake3::Hasher::new();
-    hash_field(&mut h, b"schema", b"trace_v4");
+fn hash_field_sha3(h: &mut Sha3_256, tag: &[u8], data: &[u8]) {
+    h.update((tag.len() as u32).to_le_bytes());
+    h.update(tag);
+    h.update((data.len() as u32).to_le_bytes());
+    h.update(data);
+}
 
-    for d in trace {
-        match *d {
-            Decision::Approved => hash_field(&mut h, b"D:A", &[]),
-            Decision::FlaggedForReview {
-                rule_id,
-                reason,
-                severity,
-                measured,
-                threshold,
-            } => {
-                hash_field(&mut h, b"D:F", rule_id.as_bytes());
-                hash_field(&mut h, b"R", reason.as_bytes());
-                h.update(&[severity.rank()]);
-                h.update(&measured.to_le_bytes());
-                h.update(&threshold.to_le_bytes());
-            }
-            Decision::Blocked {
-                rule_id,
-                reason,
-                severity,
-                measured,
-                threshold,
-            } => {
-                hash_field(&mut h, b"D:B", rule_id.as_bytes());
-                hash_field(&mut h, b"R", reason.as_bytes());
-                h.update(&[severity.rank()]);
-                h.update(&measured.to_le_bytes());
-                h.update(&threshold.to_le_bytes());
-            }
+fn bytes_to_hex_lower(bytes: &[u8]) -> String {
+    const LUT: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(LUT[(b >> 4) as usize] as char);
+        out.push(LUT[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditHashAlgo {
+    Blake3,
+    Sha3_256,
+}
+
+impl AuditHashAlgo {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuditHashAlgo::Blake3 => "blake3",
+            AuditHashAlgo::Sha3_256 => "sha3-256",
         }
     }
+}
 
-    h.finalize().to_hex().to_string()
+pub fn audit_hash_with_algo(trace: &[Decision], algo: AuditHashAlgo) -> String {
+    match algo {
+        AuditHashAlgo::Blake3 => {
+            let mut h = blake3::Hasher::new();
+            hash_field(&mut h, b"schema", b"trace_v4");
+
+            for d in trace {
+                match *d {
+                    Decision::Approved => hash_field(&mut h, b"D:A", &[]),
+                    Decision::FlaggedForReview {
+                        rule_id,
+                        reason,
+                        severity,
+                        measured,
+                        threshold,
+                    } => {
+                        hash_field(&mut h, b"D:F", rule_id.as_bytes());
+                        hash_field(&mut h, b"R", reason.as_bytes());
+                        h.update(&[severity.rank()]);
+                        h.update(&measured.to_le_bytes());
+                        h.update(&threshold.to_le_bytes());
+                    }
+                    Decision::Blocked {
+                        rule_id,
+                        reason,
+                        severity,
+                        measured,
+                        threshold,
+                    } => {
+                        hash_field(&mut h, b"D:B", rule_id.as_bytes());
+                        hash_field(&mut h, b"R", reason.as_bytes());
+                        h.update(&[severity.rank()]);
+                        h.update(&measured.to_le_bytes());
+                        h.update(&threshold.to_le_bytes());
+                    }
+                }
+            }
+
+            h.finalize().to_hex().to_string()
+        }
+        AuditHashAlgo::Sha3_256 => {
+            let mut h = Sha3_256::new();
+            hash_field_sha3(&mut h, b"schema", b"trace_v4");
+
+            for d in trace {
+                match *d {
+                    Decision::Approved => hash_field_sha3(&mut h, b"D:A", &[]),
+                    Decision::FlaggedForReview {
+                        rule_id,
+                        reason,
+                        severity,
+                        measured,
+                        threshold,
+                    } => {
+                        hash_field_sha3(&mut h, b"D:F", rule_id.as_bytes());
+                        hash_field_sha3(&mut h, b"R", reason.as_bytes());
+                        h.update([severity.rank()]);
+                        h.update(measured.to_le_bytes());
+                        h.update(threshold.to_le_bytes());
+                    }
+                    Decision::Blocked {
+                        rule_id,
+                        reason,
+                        severity,
+                        measured,
+                        threshold,
+                    } => {
+                        hash_field_sha3(&mut h, b"D:B", rule_id.as_bytes());
+                        hash_field_sha3(&mut h, b"R", reason.as_bytes());
+                        h.update([severity.rank()]);
+                        h.update(measured.to_le_bytes());
+                        h.update(threshold.to_le_bytes());
+                    }
+                }
+            }
+
+            let digest = h.finalize();
+            bytes_to_hex_lower(digest.as_slice())
+        }
+    }
+}
+
+pub fn audit_hash(trace: &[Decision]) -> String {
+    audit_hash_with_algo(trace, AuditHashAlgo::Blake3)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1718,6 +1798,24 @@ mod tests {
         let (_d, _t, hash) = evaluate(&tx);
         assert!(!hash.is_empty());
         assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn sha3_hash_is_deterministic() {
+        let tx = base_tx();
+        let (_d, trace, _hash) = evaluate(&tx);
+        let hash1 = audit_hash_with_algo(&trace, AuditHashAlgo::Sha3_256);
+        let hash2 = audit_hash_with_algo(&trace, AuditHashAlgo::Sha3_256);
+        assert_eq!(hash1, hash2);
+        assert_eq!(hash1.len(), 64);
+    }
+
+    #[test]
+    fn blake3_and_sha3_hashes_differ_for_same_trace() {
+        let tx = base_tx();
+        let (_d, trace, hash_blake3) = evaluate(&tx);
+        let hash_sha3 = audit_hash_with_algo(&trace, AuditHashAlgo::Sha3_256);
+        assert_ne!(hash_blake3, hash_sha3);
     }
 
     #[test]

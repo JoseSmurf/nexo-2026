@@ -16,7 +16,6 @@ pub fn verifyLine(alloc: std.mem.Allocator, line: []const u8) schema.VerifyResul
 
     const hash_algo_str = schema.getString(root_obj, "hash_algo") orelse return .SchemaInvalid;
     const hash_algo = crypto.HashAlgorithm.parse(hash_algo_str) orelse return .SchemaInvalid;
-    if (hash_algo != .blake3) return .SchemaInvalid;
 
     const trace_val = root_obj.get("trace") orelse return .SchemaInvalid;
     const trace_arr = switch (trace_val) {
@@ -181,4 +180,13 @@ test "verifyLine rejects final_decision mismatch when hash matches trace" {
 
     const result = verifyLine(std.testing.allocator, line);
     try std.testing.expectEqual(schema.VerifyResult.SchemaInvalid, result);
+}
+
+test "verifyLine accepts sha3 algo and detects hash mismatch as tampering" {
+    const line =
+        \\{"request_id":"d1b13dbd-8ce2-41ea-a2d7-c5294e320fcb","calc_version":null,"profile_name":"br_default_v1","profile_version":"2026.02","timestamp_utc_ms":1771845406862,"user_id":"julia_bridge_user","amount_cents":150000,"risk_bps":9999,"final_decision":"Flagged","trace":["Approved","Approved",{"FlaggedForReview":{"measured":150000,"reason":"Transaction requires AML review.","rule_id":"AML-FATF-REVIEW-001","severity":"Alta","threshold":5000000}}],"hash_algo":"sha3-256","audit_hash":"bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3"}
+    ;
+
+    const result = verifyLine(std.testing.allocator, line);
+    try std.testing.expectEqual(schema.VerifyResult.Tampering, result);
 }

@@ -26,7 +26,7 @@ NEXO 2026 enforces this by design.
 1. Input validation (anti-replay + integrity)
 2. Rule engine (UI + Night limit + AML/KYC/PEP)
 3. Decision trace generation
-4. BLAKE3 cryptographic audit hash
+4. Cryptographic audit hash (`blake3` or `sha3-256`)
 5. Output (FinalDecision + hash)
 
 ---
@@ -107,7 +107,7 @@ curl -sS -X POST 'http://127.0.0.1:3000/evaluate' \
 ## Tech stack
 
 - Rust (core engine + API)
-- BLAKE3 (audit + signatures)
+- BLAKE3 + SHA3-256 (audit hash)
 - Axum + Tokio (HTTP)
 - serde/serde_json (contracts)
 - Julia bridge (precision PLCA scoring)
@@ -177,12 +177,13 @@ MIT
       }
     }
   ],
-  "audit_hash": "64-char-lowercase-hex-blake3",
-  "hash_algo": "blake3"
+  "audit_hash": "64-char-lowercase-hex",
+  "hash_algo": "blake3|sha3-256"
 }
 ```
 
-`audit_hash` is computed from `trace` only, with fixed domain tag `schema=trace_v4`:
+`audit_hash` is computed from `trace` only, with fixed domain tag `schema=trace_v4`.
+`hash_algo` defines which hash implementation is used (`blake3` or `sha3-256`):
 
 1. `hash_field("schema", "trace_v4")`
 2. For each trace entry:
@@ -258,6 +259,7 @@ Required environment:
 - `NEXO_RATE_LIMIT_WINDOW_MS` (optional, default `60000`)
 - `NEXO_RATE_LIMIT_IP` (optional, default `600`)
 - `NEXO_RATE_LIMIT_USER` (optional, default `300`)
+- `NEXO_SHA3_ROLLOUT_BPS` (optional, default `1750`; range `0..10000`)
 - `NEXO_MTLS_REQUIRED` (optional, default `false`)
 - `NEXO_CLIENT_SIG_REQUIRED` (optional, default `false`)
 
