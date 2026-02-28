@@ -12,6 +12,13 @@ target
 # Local runtime audit/log artifacts
 logs/
 
+# Local staging artifacts (TLS certs and secrets)
+staging/certs/*
+!staging/certs/.gitkeep
+staging/secrets/*
+!staging/secrets/.gitkeep
+!staging/secrets/*.example
+
 # Zig local build/cache artifacts
 tools/zig/.zig-cache/
 tools/zig/zig-out/

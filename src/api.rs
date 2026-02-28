@@ -1631,6 +1631,39 @@ pub fn compute_signature(
     bytes_to_hex(&hmac_blake3(secret.as_bytes(), &msg))
 }
 
+pub fn derive_client_public_key_base64(seed_b64: &str) -> String {
+    let seed = base64::engine::general_purpose::STANDARD
+        .decode(seed_b64)
+        .unwrap_or_else(|_| panic!("invalid base64 seed"));
+    let seed: [u8; 32] = seed
+        .as_slice()
+        .try_into()
+        .unwrap_or_else(|_| panic!("client seed must be 32 bytes"));
+    let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+    base64::engine::general_purpose::STANDARD.encode(signing.verifying_key().to_bytes())
+}
+
+pub fn compute_client_signature_base64(
+    seed_b64: &str,
+    client_id: &str,
+    key_id: &str,
+    request_id: &str,
+    timestamp_ms: u64,
+    body: &[u8],
+) -> String {
+    let seed = base64::engine::general_purpose::STANDARD
+        .decode(seed_b64)
+        .unwrap_or_else(|_| panic!("invalid base64 seed"));
+    let seed: [u8; 32] = seed
+        .as_slice()
+        .try_into()
+        .unwrap_or_else(|_| panic!("client seed must be 32 bytes"));
+    let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let msg = client_signature_message(client_id, key_id, request_id, timestamp_ms, body);
+    let sig = ed25519_dalek::Signer::sign(&signing, &msg);
+    base64::engine::general_purpose::STANDARD.encode(sig.to_bytes())
+}
+
 pub fn benchmark_security_check(
     state: &AppState,
     body: &[u8],

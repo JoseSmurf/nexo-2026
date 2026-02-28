@@ -395,6 +395,32 @@ Enforce performance budget (also in CI):
 cargo run --release --bin perf_budget
 ```
 
+## Staging (mTLS + client signature + audit chain)
+
+Bring up a realistic staging stack with edge TLS termination + mTLS attestation and app-level Ed25519 client signatures:
+
+```bash
+chmod +x scripts/staging/gen_certs.sh scripts/staging/run_smoke.sh
+./scripts/staging/gen_certs.sh
+./scripts/staging/run_smoke.sh
+```
+
+Staging entrypoint:
+
+- `https://127.0.0.1:3443/evaluate`
+
+The smoke script builds:
+
+- HMAC header signature (`x-signature`)
+- Ed25519 client signature (`x-client-signature`)
+- mTLS client certificate handshake at the edge
+
+Stop staging:
+
+```bash
+docker compose -f docker-compose.staging.yml down
+```
+
 ## Offline Audit Verification (Zig)
 
 Offline verifier (no Rust runtime, no HTTP, no hot path dependency):
