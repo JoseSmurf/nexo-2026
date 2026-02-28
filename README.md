@@ -36,7 +36,7 @@ NEXO 2026 enforces this by design.
 | Rule | Reference | Action |
 |------|-----------|--------|
 | UI integrity failure | Internal | Blocked (Critica) |
-| Night transaction > R$ 1.000 | BCB 150/2021 | Blocked (Grave) |
+| Night transaction > profile limit | BCB / FinCEN / EBA-AMLD | Blocked (Grave) |
 | PEP without active KYC | FATF / BCB | Blocked (Grave) |
 | High risk + high amount | AML/FATF | Blocked (Critica) |
 | High risk OR high amount | AML/FATF | Flagged (Alta) |
@@ -74,7 +74,7 @@ export NEXO_HMAC_SECRET='dev-secret'
 export NEXO_HMAC_KEY_ID='active'
 
 # Terminal 1: run API
-cargo run
+cargo run --bin syntax-engine
 ```
 
 ```bash
@@ -166,7 +166,8 @@ MIT
       }
     }
   ],
-  "audit_hash": "64-char-lowercase-hex-blake3"
+  "audit_hash": "64-char-lowercase-hex-blake3",
+  "hash_algo": "blake3"
 }
 ```
 
@@ -192,6 +193,14 @@ Rule profiles (versioned, via env):
 - `NEXO_PROFILE=br_default_v1` (default)
 - `NEXO_PROFILE=us_default_v1`
 - `NEXO_PROFILE=eu_default_v1`
+
+Per-profile financial thresholds:
+
+| Profile | Timezone offset | Night limit (cents) | AML amount threshold (cents) | AML risk threshold (bps) |
+|---------|------------------|---------------------|------------------------------|--------------------------|
+| BR (`br_default_v1`) | `-180` | `100_000` | `5_000_000` | `9_000` |
+| US (`us_default_v1`) | `-300` | `500_000` | `10_000_000` | `9_000` |
+| EU (`eu_default_v1`) | `60` | `300_000` | `10_000_000` | `9_000` |
 
 ## Security (Formal HMAC-BLAKE3 + Anti-Replay + Rotation + Rate Limit)
 
@@ -223,6 +232,8 @@ Required environment:
 - `NEXO_HMAC_SECRET_PREV` (optional rotation window)
 - `NEXO_HMAC_KEY_ID` (optional, default `active`)
 - `NEXO_HMAC_KEY_ID_PREV` (optional, default `previous`)
+- `NEXO_AUDIT_PATH` (optional, default `logs/audit_records.jsonl`)
+- `NEXO_AUDIT_RETENTION` (optional, default `5000`)
 - `NEXO_AUTH_WINDOW_MS` (optional, default `60000`)
 - `NEXO_REPLAY_TTL_MS` (optional, default `120000`)
 - `NEXO_REPLAY_MAX_KEYS` (optional, default `100000`)
@@ -309,6 +320,6 @@ Quick run:
 
 ```bash
 julia --project=./julia -e 'using Pkg; Pkg.instantiate()'
-NEXO_HMAC_SECRET='change-me' cargo run
+NEXO_HMAC_SECRET='change-me' cargo run --bin syntax-engine
 NEXO_HMAC_SECRET='change-me' julia --project=./julia julia/plca_bridge.jl
 ```
