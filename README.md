@@ -183,7 +183,7 @@ MIT
 ```
 
 `audit_hash` is computed from `trace` only, with fixed domain tag `schema=trace_v4`.
-`hash_algo` defines which hash implementation is used (`blake3` or `sha3-256`):
+Default path uses `blake3`; `sha3-256` is used only when hash failover mode is enabled:
 
 1. `hash_field("schema", "trace_v4")`
 2. For each trace entry:
@@ -259,7 +259,8 @@ Required environment:
 - `NEXO_RATE_LIMIT_WINDOW_MS` (optional, default `60000`)
 - `NEXO_RATE_LIMIT_IP` (optional, default `600`)
 - `NEXO_RATE_LIMIT_USER` (optional, default `300`)
-- `NEXO_SHA3_ROLLOUT_BPS` (optional, default `1750`; range `0..10000`)
+- `NEXO_HASH_FAILOVER_MODE` (optional, default `false`)
+- `NEXO_SHA3_FAILOVER_BPS` (optional, default `1750`; range `0..10000`)
 - `NEXO_MTLS_REQUIRED` (optional, default `false`)
 - `NEXO_CLIENT_SIG_REQUIRED` (optional, default `false`)
 

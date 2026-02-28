@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use std::time::Instant;
 
@@ -49,7 +49,7 @@ const DEFAULT_AZURE_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_AZURE_API_VERSION: &str = "7.4";
 const DEFAULT_GCP_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_AWS_RUNTIME_TIMEOUT_MS: u64 = 5_000;
-const DEFAULT_SHA3_ROLLOUT_BPS: u16 = 1_750;
+const DEFAULT_SHA3_FAILOVER_BPS: u16 = 1_750;
 
 const HEADER_SIGNATURE: &str = "x-signature";
 const HEADER_REQUEST_ID: &str = "x-request-id";
@@ -88,7 +88,9 @@ pub struct AppState {
     pub client_sig: Option<ClientSignatureConfig>,
     pub edge_guard: Option<EdgeGuardConfig>,
     pub redis_guard: Option<RedisGuardConfig>,
-    pub sha3_rollout_bps: u16,
+    pub hash_failover_mode: bool,
+    pub sha3_failover_bps: u16,
+    pub last_blake3_hash: Arc<RwLock<Option<String>>>,
 }
 
 #[derive(Clone)]
@@ -305,7 +307,8 @@ impl AppState {
         let client_sig = load_client_signature_config_from_env();
         let edge_guard = load_edge_guard_config_from_env();
         let redis_guard = load_redis_guard_from_env();
-        let sha3_rollout_bps = load_sha3_rollout_bps(DEFAULT_SHA3_ROLLOUT_BPS);
+        let hash_failover_mode = env_bool("NEXO_HASH_FAILOVER_MODE", false);
+        let sha3_failover_bps = load_sha3_failover_bps(DEFAULT_SHA3_FAILOVER_BPS);
 
         Self {
             profile: profile_from_env(),
@@ -331,7 +334,9 @@ impl AppState {
             client_sig,
             edge_guard,
             redis_guard,
-            sha3_rollout_bps,
+            hash_failover_mode,
+            sha3_failover_bps,
+            last_blake3_hash: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -363,7 +368,9 @@ impl AppState {
             client_sig: None,
             edge_guard: None,
             redis_guard: None,
-            sha3_rollout_bps: 0,
+            hash_failover_mode: false,
+            sha3_failover_bps: DEFAULT_SHA3_FAILOVER_BPS,
+            last_blake3_hash: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -392,23 +399,23 @@ impl AppState {
             client_sig: None,
             edge_guard: None,
             redis_guard: None,
-            sha3_rollout_bps: 0,
+            hash_failover_mode: false,
+            sha3_failover_bps: 0,
+            last_blake3_hash: Arc::new(RwLock::new(None)),
         }
     }
 }
 
-fn load_sha3_rollout_bps(default_bps: u16) -> u16 {
-    let raw = match std::env::var("NEXO_SHA3_ROLLOUT_BPS") {
-        Ok(v) => v,
-        Err(_) => return default_bps,
-    };
-    let parsed = raw
-        .trim()
-        .parse::<u16>()
-        .unwrap_or_else(|_| panic!("NEXO_SHA3_ROLLOUT_BPS must be an integer between 0 and 10000"));
+fn load_sha3_failover_bps(default_bps: u16) -> u16 {
+    let raw = std::env::var("NEXO_SHA3_FAILOVER_BPS")
+        .or_else(|_| std::env::var("NEXO_SHA3_ROLLOUT_BPS"))
+        .unwrap_or_else(|_| default_bps.to_string());
+    let parsed = raw.trim().parse::<u16>().unwrap_or_else(|_| {
+        panic!("NEXO_SHA3_FAILOVER_BPS (or legacy NEXO_SHA3_ROLLOUT_BPS) must be integer 0..10000")
+    });
     assert!(
         parsed <= 10_000,
-        "NEXO_SHA3_ROLLOUT_BPS must be an integer between 0 and 10000"
+        "NEXO_SHA3_FAILOVER_BPS (or legacy NEXO_SHA3_ROLLOUT_BPS) must be integer 0..10000"
     );
     parsed
 }
@@ -1428,10 +1435,28 @@ async fn evaluate_handler(
         }
     };
 
-    let (final_decision, trace, _blake3_hash) =
+    let (final_decision, trace, blake3_hash) =
         evaluate_with_config(&tx, state.profile.engine_config());
-    let selected_hash_algo = select_audit_hash_algo(&header_request_id, state.sha3_rollout_bps);
-    let audit_hash = audit_hash_with_algo(&trace, selected_hash_algo);
+    let (audit_hash, selected_hash_algo) = match resolve_audit_hash(
+        &state,
+        &header_request_id,
+        &trace,
+        &blake3_hash,
+    ) {
+        Ok(v) => v,
+        Err(err) => {
+            state
+                .metrics
+                .observe_error(start.elapsed().as_nanos() as u64);
+            warn!(request_id = %header_request_id, error = %err, "hash failover rejected request");
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &state,
+                &header_request_id,
+                err,
+            );
+        }
+    };
     let hash_algo = selected_hash_algo.as_str().to_string();
 
     let record = AuditRecord {
@@ -2132,23 +2157,49 @@ pub fn now_utc_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn select_audit_hash_algo(request_id: &str, sha3_rollout_bps: u16) -> AuditHashAlgo {
-    if sha3_rollout_bps == 0 {
-        return AuditHashAlgo::Blake3;
+fn resolve_audit_hash(
+    state: &AppState,
+    request_id: &str,
+    trace: &[Decision],
+    blake3_hash: &str,
+) -> Result<(String, AuditHashAlgo), &'static str> {
+    remember_last_blake3_hash(state, blake3_hash);
+
+    if !state.hash_failover_mode {
+        return Ok((blake3_hash.to_string(), AuditHashAlgo::Blake3));
     }
-    if sha3_rollout_bps >= 10_000 {
-        return AuditHashAlgo::Sha3_256;
+
+    if state.sha3_failover_bps == 0 {
+        return Err("hash failover active but SHA3 budget is 0 bps");
     }
-    let bucket = rollout_bucket_bps(request_id);
-    if bucket < u32::from(sha3_rollout_bps) {
-        AuditHashAlgo::Sha3_256
+
+    let seed = state
+        .last_blake3_hash
+        .read()
+        .ok()
+        .and_then(|v| v.clone())
+        .unwrap_or_else(|| blake3_hash.to_string());
+    let bucket = failover_bucket_bps(request_id, &seed);
+    if bucket < u32::from(state.sha3_failover_bps) {
+        let sha3_hash = audit_hash_with_algo(trace, AuditHashAlgo::Sha3_256);
+        Ok((sha3_hash, AuditHashAlgo::Sha3_256))
     } else {
-        AuditHashAlgo::Blake3
+        Err("hash failover active: request outside SHA3 emergency budget")
     }
 }
 
-fn rollout_bucket_bps(request_id: &str) -> u32 {
-    let digest = blake3::hash(request_id.as_bytes());
+fn remember_last_blake3_hash(state: &AppState, blake3_hash: &str) {
+    if let Ok(mut slot) = state.last_blake3_hash.write() {
+        *slot = Some(blake3_hash.to_string());
+    }
+}
+
+fn failover_bucket_bps(request_id: &str, last_blake3_hash: &str) -> u32 {
+    let mut material = Vec::with_capacity(request_id.len() + 1 + last_blake3_hash.len());
+    material.extend_from_slice(request_id.as_bytes());
+    material.push(b'|');
+    material.extend_from_slice(last_blake3_hash.as_bytes());
+    let digest = blake3::hash(&material);
     let bytes = digest.as_bytes();
     let sample = u16::from_be_bytes([bytes[0], bytes[1]]) as u32;
     (sample * 10_000) / 65_536
@@ -2765,15 +2816,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn evaluate_uses_sha3_when_rollout_is_100_percent() {
+    async fn evaluate_uses_sha3_when_failover_is_100_percent() {
         let mut state = test_state();
-        state.sha3_rollout_bps = 10_000;
+        state.hash_failover_mode = true;
+        state.sha3_failover_bps = 10_000;
         let cfg = state.profile.engine_config();
         let app = app_with_state(state);
         let now = now_utc_ms();
         let request_id = "13c2321e-745c-4267-bf42-f0e4aaed9e83";
         let payload = serde_json::json!({
-            "user_id": "u_rollout_sha3",
+            "user_id": "u_failover_sha3",
             "amount_cents": 50_000,
             "is_pep": false,
             "has_active_kyc": true,
@@ -2793,29 +2845,82 @@ mod tests {
             .to_bytes();
         let json: Value = serde_json::from_slice(&body).expect("json");
         assert_eq!(json["hash_algo"], "sha3-256");
-        let tx =
-            TransactionIntent::new("u_rollout_sha3", 50_000, false, true, now, now, 1_000, true)
-                .expect("tx");
+        let tx = TransactionIntent::new(
+            "u_failover_sha3",
+            50_000,
+            false,
+            true,
+            now,
+            now,
+            1_000,
+            true,
+        )
+        .expect("tx");
         let (_decision, trace, _blake3_hash) = evaluate_with_config(&tx, cfg);
         let expected_sha3 = audit_hash_with_algo(&trace, AuditHashAlgo::Sha3_256);
         assert_eq!(json["audit_hash"], expected_sha3);
     }
 
-    #[test]
-    fn select_audit_hash_algo_respects_rollout_bounds() {
-        let request_id = "7a9d9f84-ec48-4571-a58f-f38019c53efa";
-        assert_eq!(select_audit_hash_algo(request_id, 0), AuditHashAlgo::Blake3);
-        assert_eq!(
-            select_audit_hash_algo(request_id, 10_000),
-            AuditHashAlgo::Sha3_256
-        );
+    #[tokio::test]
+    async fn evaluate_returns_503_when_failover_budget_is_zero() {
+        let mut state = test_state();
+        state.hash_failover_mode = true;
+        state.sha3_failover_bps = 0;
+        let app = app_with_state(state);
+        let now = now_utc_ms();
+        let request_id = "06a39f8f-0c89-4fcb-9cbf-e8bb4ac13d8d";
+        let payload = serde_json::json!({
+            "user_id": "u_failover_off_budget",
+            "amount_cents": 50_000,
+            "is_pep": false,
+            "has_active_kyc": true,
+            "timestamp_utc_ms": now,
+            "risk_bps": 1_000,
+            "ui_hash_valid": true,
+            "request_id": request_id
+        });
+        let req = signed_request(payload, "test_active_secret", "active", request_id, now);
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn evaluate_uses_blake3_when_failover_mode_is_disabled() {
+        let mut state = test_state();
+        state.hash_failover_mode = false;
+        state.sha3_failover_bps = 10_000;
+        let app = app_with_state(state);
+        let now = now_utc_ms();
+        let request_id = "4ea0b45e-5987-4300-b17a-7c8bfab6c8f4";
+        let payload = serde_json::json!({
+            "user_id": "u_blake3_default",
+            "amount_cents": 50_000,
+            "is_pep": false,
+            "has_active_kyc": true,
+            "timestamp_utc_ms": now,
+            "risk_bps": 1_000,
+            "ui_hash_valid": true,
+            "request_id": request_id
+        });
+        let req = signed_request(payload, "test_active_secret", "active", request_id, now);
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("body bytes")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["hash_algo"], "blake3");
     }
 
     #[test]
-    fn rollout_bucket_is_deterministic() {
+    fn failover_bucket_is_deterministic() {
         let request_id = "176da357-cb85-4841-92e4-cc6f12f9f9c9";
-        let a = rollout_bucket_bps(request_id);
-        let b = rollout_bucket_bps(request_id);
+        let seed = "bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3";
+        let a = failover_bucket_bps(request_id, seed);
+        let b = failover_bucket_bps(request_id, seed);
         assert_eq!(a, b);
         assert!(a <= 9_999);
     }
