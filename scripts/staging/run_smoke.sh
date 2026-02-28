@@ -40,7 +40,7 @@ curl --fail-with-body -sS \
   --cacert "${CERT_DIR}/ca.crt" \
   --cert "${CERT_DIR}/client.crt" \
   --key "${CERT_DIR}/client.key" \
-  -X POST "https://127.0.0.1:3443/evaluate" \
+  -X POST "https://localhost:3443/evaluate" \
   -H "content-type: application/json" \
   -H "x-signature: ${SIG}" \
   -H "x-request-id: ${REQ_ID}" \
