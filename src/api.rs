@@ -3,6 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 
 use axum::{
@@ -36,6 +37,8 @@ const MAX_REQUEST_BODY_BYTES: usize = 1_048_576;
 const MAX_REQUEST_ID_LEN: usize = 64;
 const MAX_KEY_ID_LEN: usize = 64;
 const MAX_USER_ID_LEN: usize = 128;
+const DEFAULT_SECRET_PROVIDER: &str = "none";
+const DEFAULT_VAULT_TIMEOUT_MS: u64 = 2_000;
 
 const HEADER_SIGNATURE: &str = "x-signature";
 const HEADER_REQUEST_ID: &str = "x-request-id";
@@ -173,6 +176,14 @@ enum AuthError {
     Conflict(&'static str),
 }
 
+#[derive(Debug, Clone, Default)]
+struct SecretBundle {
+    active_secret: Option<String>,
+    previous_secret: Option<String>,
+    active_key_id: Option<String>,
+    previous_key_id: Option<String>,
+}
+
 impl AppState {
     pub fn from_env() -> Self {
         let path =
@@ -181,14 +192,29 @@ impl AppState {
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(DEFAULT_RETENTION);
-        let active_secret = load_required_secret("NEXO_HMAC_SECRET");
-        let active_id = load_key_id("NEXO_HMAC_KEY_ID", BENCH_KEY_ID);
+        let bundle = load_secret_bundle_from_env();
+        let active_secret = load_required_secret(
+            "NEXO_HMAC_SECRET",
+            bundle.as_ref().and_then(|b| b.active_secret.as_deref()),
+        );
+        let active_id = load_key_id(
+            "NEXO_HMAC_KEY_ID",
+            BENCH_KEY_ID,
+            bundle.as_ref().and_then(|b| b.active_key_id.as_deref()),
+        );
         assert!(
             !active_id.trim().is_empty(),
             "NEXO_HMAC_KEY_ID must not be empty."
         );
-        let previous_secret = load_optional_secret("NEXO_HMAC_SECRET_PREV");
-        let previous_id = load_key_id("NEXO_HMAC_KEY_ID_PREV", "previous");
+        let previous_secret = load_optional_secret(
+            "NEXO_HMAC_SECRET_PREV",
+            bundle.as_ref().and_then(|b| b.previous_secret.as_deref()),
+        );
+        let previous_id = load_key_id(
+            "NEXO_HMAC_KEY_ID_PREV",
+            "previous",
+            bundle.as_ref().and_then(|b| b.previous_key_id.as_deref()),
+        );
         if previous_secret.is_some() {
             assert!(
                 !previous_id.trim().is_empty(),
@@ -299,40 +325,157 @@ impl AppState {
     }
 }
 
-fn load_key_id(env_key: &str, default: &str) -> String {
-    let file_key = format!("{env_key}_FILE");
-    if let Ok(path) = std::env::var(&file_key) {
-        let value = read_secret_file(&path, &file_key);
-        assert!(
-            is_valid_key_id(&value),
-            "{env_key} loaded from {file_key} is invalid."
-        );
-        return value;
+fn load_secret_bundle_from_env() -> Option<SecretBundle> {
+    let provider = std::env::var("NEXO_SECRET_PROVIDER")
+        .unwrap_or_else(|_| DEFAULT_SECRET_PROVIDER.to_string())
+        .to_ascii_lowercase();
+
+    match provider.as_str() {
+        "" | "none" => None,
+        "vault" => Some(load_vault_bundle_from_env()),
+        other => panic!("unsupported NEXO_SECRET_PROVIDER '{other}'"),
     }
-    std::env::var(env_key).unwrap_or_else(|_| default.to_string())
 }
 
-fn load_required_secret(env_key: &str) -> String {
-    load_optional_secret(env_key).unwrap_or_else(|| {
+fn load_vault_bundle_from_env() -> SecretBundle {
+    let addr = std::env::var("NEXO_VAULT_ADDR")
+        .expect("NEXO_VAULT_ADDR is required when NEXO_SECRET_PROVIDER=vault");
+    let token = std::env::var("NEXO_VAULT_TOKEN")
+        .expect("NEXO_VAULT_TOKEN is required when NEXO_SECRET_PROVIDER=vault");
+    let mount = std::env::var("NEXO_VAULT_MOUNT").unwrap_or_else(|_| "secret".to_string());
+    let path = std::env::var("NEXO_VAULT_PATH")
+        .expect("NEXO_VAULT_PATH is required when NEXO_SECRET_PROVIDER=vault");
+    let timeout_ms = std::env::var("NEXO_VAULT_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_VAULT_TIMEOUT_MS);
+    let field_active_secret =
+        std::env::var("NEXO_VAULT_FIELD_ACTIVE_SECRET").unwrap_or_else(|_| "hmac_secret".into());
+    let field_prev_secret =
+        std::env::var("NEXO_VAULT_FIELD_PREV_SECRET").unwrap_or_else(|_| "hmac_secret_prev".into());
+    let field_active_key_id =
+        std::env::var("NEXO_VAULT_FIELD_ACTIVE_KEY_ID").unwrap_or_else(|_| "hmac_key_id".into());
+    let field_prev_key_id =
+        std::env::var("NEXO_VAULT_FIELD_PREV_KEY_ID").unwrap_or_else(|_| "hmac_key_id_prev".into());
+
+    let url = format!(
+        "{}/v1/{}/data/{}",
+        addr.trim_end_matches('/'),
+        mount.trim_matches('/'),
+        path.trim_matches('/')
+    );
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        .build()
+        .expect("failed to build vault HTTP client");
+
+    let response = client
+        .get(url)
+        .header("X-Vault-Token", token)
+        .send()
+        .expect("failed to fetch secrets from Vault");
+    assert!(
+        response.status().is_success(),
+        "vault returned HTTP {} while fetching secrets",
+        response.status()
+    );
+    let payload: serde_json::Value = response
+        .json()
+        .expect("failed to parse Vault JSON response");
+    parse_vault_bundle(
+        &payload,
+        &field_active_secret,
+        &field_prev_secret,
+        &field_active_key_id,
+        &field_prev_key_id,
+    )
+    .expect("invalid Vault payload for security secrets")
+}
+
+fn parse_vault_bundle(
+    payload: &serde_json::Value,
+    field_active_secret: &str,
+    field_prev_secret: &str,
+    field_active_key_id: &str,
+    field_prev_key_id: &str,
+) -> Result<SecretBundle, &'static str> {
+    let top = payload
+        .as_object()
+        .ok_or("vault payload is not an object")?;
+    let data_node = top.get("data").ok_or("vault payload missing data field")?;
+    let map_v2 = data_node
+        .get("data")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .or_else(|| data_node.as_object().cloned())
+        .ok_or("vault payload data field is not an object")?;
+
+    Ok(SecretBundle {
+        active_secret: map_v2
+            .get(field_active_secret)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        previous_secret: map_v2
+            .get(field_prev_secret)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        active_key_id: map_v2
+            .get(field_active_key_id)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        previous_key_id: map_v2
+            .get(field_prev_key_id)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+    })
+}
+
+fn pick_secret_source(
+    from_bundle: Option<&str>,
+    from_file: Option<String>,
+    from_env: Option<String>,
+) -> Option<String> {
+    from_bundle
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or(from_file)
+        .or(from_env)
+}
+
+fn load_key_id(env_key: &str, default: &str, from_bundle: Option<&str>) -> String {
+    let file_key = format!("{env_key}_FILE");
+    let from_file = std::env::var(&file_key)
+        .ok()
+        .map(|path| read_secret_file(&path, &file_key));
+    let from_env = std::env::var(env_key).ok();
+    let selected =
+        pick_secret_source(from_bundle, from_file, from_env).unwrap_or_else(|| default.to_string());
+    assert!(is_valid_key_id(&selected), "{env_key} has invalid format.");
+    selected
+}
+
+fn load_required_secret(env_key: &str, from_bundle: Option<&str>) -> String {
+    load_optional_secret(env_key, from_bundle).unwrap_or_else(|| {
         panic!("{env_key} or {env_key}_FILE is required. Refusing to start without HMAC secret.")
     })
 }
 
-fn load_optional_secret(env_key: &str) -> Option<String> {
+fn load_optional_secret(env_key: &str, from_bundle: Option<&str>) -> Option<String> {
     let file_key = format!("{env_key}_FILE");
-    if let Ok(path) = std::env::var(&file_key) {
-        let value = read_secret_file(&path, &file_key);
-        assert!(
-            !value.trim().is_empty(),
-            "{env_key} loaded from {file_key} is empty."
-        );
-        return Some(value);
-    }
-
-    std::env::var(env_key)
+    let from_file = std::env::var(&file_key)
+        .ok()
+        .map(|path| read_secret_file(&path, &file_key));
+    let from_env = std::env::var(env_key)
         .ok()
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty());
+
+    pick_secret_source(from_bundle, from_file, from_env)
 }
 
 fn read_secret_file(path: &str, file_key: &str) -> String {
@@ -1483,5 +1626,94 @@ mod tests {
         );
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn parse_vault_bundle_kv_v2_layout() {
+        let payload = serde_json::json!({
+            "data": {
+                "data": {
+                    "hmac_secret": "active_secret",
+                    "hmac_secret_prev": "prev_secret",
+                    "hmac_key_id": "active",
+                    "hmac_key_id_prev": "previous"
+                },
+                "metadata": {
+                    "version": 1
+                }
+            }
+        });
+        let bundle = parse_vault_bundle(
+            &payload,
+            "hmac_secret",
+            "hmac_secret_prev",
+            "hmac_key_id",
+            "hmac_key_id_prev",
+        )
+        .expect("bundle");
+        assert_eq!(bundle.active_secret.as_deref(), Some("active_secret"));
+        assert_eq!(bundle.previous_secret.as_deref(), Some("prev_secret"));
+        assert_eq!(bundle.active_key_id.as_deref(), Some("active"));
+        assert_eq!(bundle.previous_key_id.as_deref(), Some("previous"));
+    }
+
+    #[test]
+    fn parse_vault_bundle_kv_v1_layout() {
+        let payload = serde_json::json!({
+            "data": {
+                "hmac_secret": "active_secret",
+                "hmac_key_id": "active"
+            }
+        });
+        let bundle = parse_vault_bundle(
+            &payload,
+            "hmac_secret",
+            "hmac_secret_prev",
+            "hmac_key_id",
+            "hmac_key_id_prev",
+        )
+        .expect("bundle");
+        assert_eq!(bundle.active_secret.as_deref(), Some("active_secret"));
+        assert_eq!(bundle.active_key_id.as_deref(), Some("active"));
+        assert!(bundle.previous_secret.is_none());
+        assert!(bundle.previous_key_id.is_none());
+    }
+
+    #[test]
+    fn pick_secret_source_uses_priority_bundle_file_env() {
+        assert_eq!(
+            pick_secret_source(
+                Some("bundle_secret"),
+                Some("file_secret".to_string()),
+                Some("env_secret".to_string())
+            ),
+            Some("bundle_secret".to_string())
+        );
+        assert_eq!(
+            pick_secret_source(
+                None,
+                Some("file_secret".to_string()),
+                Some("env_secret".to_string())
+            ),
+            Some("file_secret".to_string())
+        );
+        assert_eq!(
+            pick_secret_source(None, None, Some("env_secret".to_string())),
+            Some("env_secret".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_vault_bundle_rejects_invalid_shape() {
+        let payload = serde_json::json!({"no_data": {}});
+        let err = parse_vault_bundle(
+            &payload,
+            "hmac_secret",
+            "hmac_secret_prev",
+            "hmac_key_id",
+            "hmac_key_id_prev",
+        )
+        .expect_err("expected parse error");
+        assert_eq!(err, "vault payload missing data field");
     }
 }

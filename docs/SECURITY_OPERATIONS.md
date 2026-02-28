@@ -26,6 +26,7 @@ Recommended baseline:
 ### 1.3 Secrets Management
 
 - Store `NEXO_HMAC_SECRET` in a secret manager (not plaintext files).
+- Optionally enable Vault as source-of-truth with `NEXO_SECRET_PROVIDER=vault`.
 - Prefer mounted secret files for runtime injection:
   - `NEXO_HMAC_SECRET_FILE`
   - `NEXO_HMAC_SECRET_PREV_FILE`
@@ -34,6 +35,13 @@ Recommended baseline:
 - Keep active and previous key IDs distinct.
 - Rotate keys with overlap window (`active_plus_previous`) and then remove previous.
 - Never log key values or HMAC material.
+
+Vault runtime variables:
+- `NEXO_VAULT_ADDR`
+- `NEXO_VAULT_TOKEN`
+- `NEXO_VAULT_PATH`
+- `NEXO_VAULT_MOUNT` (default `secret`)
+- `NEXO_VAULT_TIMEOUT_MS` (default `2000`)
 
 ### 1.4 Runtime Isolation
 

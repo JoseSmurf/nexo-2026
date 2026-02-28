@@ -120,10 +120,10 @@ curl -sS -X POST 'http://127.0.0.1:3000/evaluate' \
 - API layer: implemented and active (`POST /evaluate`, health, metrics, audit, security)
 - Security layer: HMAC-BLAKE3, anti-replay, key rotation, rate limit
 - Offline verification: Zig verifier in CI
-- Rust tests: 81
+- Rust tests: 89
 - Julia tests: 118
 - Zig tests: 10
-- Total tests: 209
+- Total tests: 217
 - Jurisdictions covered: 9
 - Currencies covered: 9
 - Regulators covered: 9
@@ -241,6 +241,7 @@ Status codes:
 
 Required environment:
 
+- `NEXO_SECRET_PROVIDER` (`none` default, or `vault`)
 - `NEXO_HMAC_SECRET` (required unless `NEXO_HMAC_SECRET_FILE` is set)
 - `NEXO_HMAC_SECRET_FILE` (path to mounted secret file, preferred for production)
 - `NEXO_HMAC_SECRET_PREV` (optional rotation window)
@@ -257,6 +258,18 @@ Required environment:
 - `NEXO_RATE_LIMIT_WINDOW_MS` (optional, default `60000`)
 - `NEXO_RATE_LIMIT_IP` (optional, default `600`)
 - `NEXO_RATE_LIMIT_USER` (optional, default `300`)
+
+Vault provider (when `NEXO_SECRET_PROVIDER=vault`):
+
+- `NEXO_VAULT_ADDR` (e.g. `https://vault.internal:8200`)
+- `NEXO_VAULT_TOKEN`
+- `NEXO_VAULT_PATH` (secret path)
+- `NEXO_VAULT_MOUNT` (optional, default `secret`)
+- `NEXO_VAULT_TIMEOUT_MS` (optional, default `2000`)
+- `NEXO_VAULT_FIELD_ACTIVE_SECRET` (optional, default `hmac_secret`)
+- `NEXO_VAULT_FIELD_PREV_SECRET` (optional, default `hmac_secret_prev`)
+- `NEXO_VAULT_FIELD_ACTIVE_KEY_ID` (optional, default `hmac_key_id`)
+- `NEXO_VAULT_FIELD_PREV_KEY_ID` (optional, default `hmac_key_id_prev`)
 
 Rotation flow:
 
