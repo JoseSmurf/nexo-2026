@@ -421,6 +421,10 @@ Stop staging:
 docker compose -f docker-compose.staging.yml down
 ```
 
+CI option:
+
+- Run GitHub Actions workflow `Staging Security` manually (`workflow_dispatch`) to validate mTLS + HMAC + Ed25519 end-to-end in CI.
+
 ## Offline Audit Verification (Zig)
 
 Offline verifier (no Rust runtime, no HTTP, no hot path dependency):

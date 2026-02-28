@@ -1,0 +1,42 @@
+name: Staging Security
+
+on:
+  workflow_dispatch:
+
+jobs:
+  staging-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Validate security binaries build
+      run: cargo build --release --bin syntax-engine --bin sign_request --bin sign_client_request --bin client_pubkey
+
+    - name: Generate staging certificates
+      run: |
+        chmod +x scripts/staging/gen_certs.sh scripts/staging/run_smoke.sh
+        ./scripts/staging/gen_certs.sh
+
+    - name: Run staging smoke test (mTLS + HMAC + Ed25519)
+      run: ./scripts/staging/run_smoke.sh
+
+    - name: Show recent audit records
+      if: always()
+      run: |
+        if [ -f logs/audit_records.jsonl ]; then
+          tail -n 5 logs/audit_records.jsonl || true
+        fi
+
+    - name: Collect container logs on failure
+      if: failure()
+      run: docker compose -f docker-compose.staging.yml logs --no-color || true
+
+    - name: Teardown staging
+      if: always()
+      run: docker compose -f docker-compose.staging.yml down -v --remove-orphans || true
