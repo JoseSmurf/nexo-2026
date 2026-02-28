@@ -61,6 +61,7 @@ const HEADER_X_CONTENT_TYPE_OPTIONS: &str = "x-content-type-options";
 const HEADER_CLIENT_CERT_VERIFIED: &str = "x-client-cert-verified";
 const HEADER_CLIENT_ID: &str = "x-client-id";
 const HEADER_CLIENT_SIGNATURE: &str = "x-client-signature";
+const HEADER_EDGE_AUTH: &str = "x-edge-auth";
 
 pub const BENCH_HMAC_SECRET: &str = "bench_hmac_secret";
 pub const BENCH_KEY_ID: &str = "active";
@@ -81,6 +82,8 @@ pub struct AppState {
     pub key_usage: Arc<DashMap<String, u64>>,
     pub mtls: Option<MtlsConfig>,
     pub client_sig: Option<ClientSignatureConfig>,
+    pub edge_guard: Option<EdgeGuardConfig>,
+    pub redis_guard: Option<RedisGuardConfig>,
 }
 
 #[derive(Clone)]
@@ -109,6 +112,18 @@ pub struct RateLimiter {
 struct WindowCounter {
     window_start_ms: u64,
     count: u32,
+}
+
+#[derive(Clone)]
+pub struct EdgeGuardConfig {
+    pub header: String,
+    secret: String,
+}
+
+#[derive(Clone)]
+pub struct RedisGuardConfig {
+    pub client: redis::Client,
+    pub key_prefix: String,
 }
 
 #[derive(Clone)]
@@ -196,6 +211,8 @@ pub struct SecurityStatusResponse {
     pub rotation_mode: String,
     pub mtls_mode: String,
     pub client_signature_mode: String,
+    pub edge_guard_mode: String,
+    pub distributed_guard_mode: String,
 }
 
 #[derive(Debug)]
@@ -203,6 +220,7 @@ enum AuthError {
     Unauthorized(&'static str),
     RequestTimeout(&'static str),
     Conflict(&'static str),
+    ServiceUnavailable(&'static str),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -280,6 +298,8 @@ impl AppState {
             .unwrap_or(DEFAULT_RATE_LIMIT_USER);
         let mtls = load_mtls_config_from_env();
         let client_sig = load_client_signature_config_from_env();
+        let edge_guard = load_edge_guard_config_from_env();
+        let redis_guard = load_redis_guard_from_env();
 
         Self {
             profile: profile_from_env(),
@@ -303,6 +323,8 @@ impl AppState {
             key_usage: Arc::new(DashMap::new()),
             mtls,
             client_sig,
+            edge_guard,
+            redis_guard,
         }
     }
 
@@ -332,6 +354,8 @@ impl AppState {
             key_usage: Arc::new(DashMap::new()),
             mtls: None,
             client_sig: None,
+            edge_guard: None,
+            redis_guard: None,
         }
     }
 
@@ -358,6 +382,8 @@ impl AppState {
             key_usage: Arc::new(DashMap::new()),
             mtls: None,
             client_sig: None,
+            edge_guard: None,
+            redis_guard: None,
         }
     }
 }
@@ -464,6 +490,29 @@ fn load_client_signature_config_from_env() -> Option<ClientSignatureConfig> {
             .to_ascii_lowercase(),
         public_keys,
     })
+}
+
+fn load_edge_guard_config_from_env() -> Option<EdgeGuardConfig> {
+    if !env_bool("NEXO_EDGE_REQUIRED", false) {
+        return None;
+    }
+    let header = std::env::var("NEXO_EDGE_HEADER")
+        .unwrap_or_else(|_| HEADER_EDGE_AUTH.to_string())
+        .to_ascii_lowercase();
+    let secret = load_required_secret("NEXO_EDGE_SHARED_SECRET", None);
+    Some(EdgeGuardConfig { header, secret })
+}
+
+fn load_redis_guard_from_env() -> Option<RedisGuardConfig> {
+    let url = std::env::var("NEXO_REDIS_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())?;
+    let key_prefix = std::env::var("NEXO_REDIS_PREFIX")
+        .unwrap_or_else(|_| "nexo".to_string())
+        .trim()
+        .to_string();
+    let client = redis::Client::open(url).expect("NEXO_REDIS_URL is invalid");
+    Some(RedisGuardConfig { client, key_prefix })
 }
 
 fn load_vault_bundle_from_env() -> SecretBundle {
@@ -1112,6 +1161,58 @@ impl RateLimiter {
     }
 }
 
+fn distributed_rate_limit_allow(
+    state: &AppState,
+    ip_key: &str,
+    user_key: &str,
+    now_ms: u64,
+) -> Result<bool, &'static str> {
+    let Some(redis_guard) = &state.redis_guard else {
+        return Ok(state.rate_limiter.allow(ip_key, user_key, now_ms));
+    };
+    let window_id = now_ms / state.rate_limiter.window_ms.max(1);
+    let key_ip = format!("{}:rl:ip:{}:{}", redis_guard.key_prefix, ip_key, window_id);
+    let key_user = format!(
+        "{}:rl:user:{}:{}",
+        redis_guard.key_prefix, user_key, window_id
+    );
+    let ttl_ms = (state.rate_limiter.window_ms.saturating_mul(2)).max(1000);
+
+    let mut conn = redis_guard
+        .client
+        .get_connection()
+        .map_err(|_| "rate limit backend unavailable")?;
+    let ip_count: i64 = redis::cmd("INCR")
+        .arg(&key_ip)
+        .query(&mut conn)
+        .map_err(|_| "rate limit backend unavailable")?;
+    if ip_count == 1 {
+        let _: () = redis::cmd("PEXPIRE")
+            .arg(&key_ip)
+            .arg(ttl_ms)
+            .query(&mut conn)
+            .map_err(|_| "rate limit backend unavailable")?;
+    }
+    let user_count: i64 = redis::cmd("INCR")
+        .arg(&key_user)
+        .query(&mut conn)
+        .map_err(|_| "rate limit backend unavailable")?;
+    if user_count == 1 {
+        let _: () = redis::cmd("PEXPIRE")
+            .arg(&key_user)
+            .arg(ttl_ms)
+            .query(&mut conn)
+            .map_err(|_| "rate limit backend unavailable")?;
+    }
+
+    let allowed = ip_count <= state.rate_limiter.limit_per_ip as i64
+        && user_count <= state.rate_limiter.limit_per_user as i64;
+    if !allowed {
+        state.rate_limiter.hits.fetch_add(1, Ordering::Relaxed);
+    }
+    Ok(allowed)
+}
+
 pub fn app() -> Router {
     app_with_state(AppState::from_env())
 }
@@ -1168,7 +1269,21 @@ async fn rate_limit_middleware(
         );
     }
 
-    if !state.rate_limiter.allow(&ip, &user_id, now) {
+    let allow_result = if state.redis_guard.is_some() {
+        distributed_rate_limit_allow(&state, &ip, &user_id, now)
+    } else {
+        Ok(state.rate_limiter.allow(&ip, &user_id, now))
+    };
+    let allowed = match allow_result {
+        Ok(v) => v,
+        Err(msg) => {
+            let request_id = extract_header(&parts.headers, HEADER_REQUEST_ID)
+                .map(ToString::to_string)
+                .unwrap_or_else(|| Uuid::new_v4().to_string());
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, &state, &request_id, msg);
+        }
+    };
+    if !allowed {
         let request_id = extract_header(&parts.headers, HEADER_REQUEST_ID)
             .map(ToString::to_string)
             .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -1353,6 +1468,7 @@ fn validate_security_headers(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Result<(String, u64, String), AuthError> {
+    verify_edge_guard(state, headers)?;
     verify_mtls_attestation(state, headers)?;
     let signature_hex = extract_header(headers, HEADER_SIGNATURE)
         .ok_or(AuthError::Unauthorized("missing X-Signature header"))?;
@@ -1399,12 +1515,16 @@ fn validate_security_headers(
 
     verify_client_signature(state, headers, &request_id, timestamp_ms, key_id, body)?;
 
-    maybe_purge_replay_cache(state, now);
-    enforce_replay_capacity(state);
-    if state.replay_cache.contains_key(&request_id) {
-        return Err(AuthError::Conflict(
-            "replay detected: X-Request-Id already used",
-        ));
+    if state.redis_guard.is_some() {
+        distributed_replay_check_and_store(state, &request_id, now)?;
+    } else {
+        maybe_purge_replay_cache(state, now);
+        enforce_replay_capacity(state);
+        if state.replay_cache.contains_key(&request_id) {
+            return Err(AuthError::Conflict(
+                "replay detected: X-Request-Id already used",
+            ));
+        }
     }
 
     let signing_bytes = signing_message(key_id, &request_id, timestamp_ms, body);
@@ -1413,13 +1533,27 @@ fn validate_security_headers(
         return Err(AuthError::Unauthorized("invalid request signature"));
     }
 
-    state.replay_cache.insert(request_id.clone(), now);
+    if state.redis_guard.is_none() {
+        state.replay_cache.insert(request_id.clone(), now);
+    }
     state
         .key_usage
         .entry(key.id.clone())
         .and_modify(|v| *v += 1)
         .or_insert(1);
     Ok((request_id, timestamp_ms, key.id.clone()))
+}
+
+fn verify_edge_guard(state: &AppState, headers: &HeaderMap) -> Result<(), AuthError> {
+    let Some(cfg) = &state.edge_guard else {
+        return Ok(());
+    };
+    let provided = extract_header(headers, &cfg.header)
+        .ok_or(AuthError::Unauthorized("missing edge attestation header"))?;
+    if provided != cfg.secret {
+        return Err(AuthError::Unauthorized("invalid edge attestation header"));
+    }
+    Ok(())
 }
 
 fn verify_mtls_attestation(state: &AppState, headers: &HeaderMap) -> Result<(), AuthError> {
@@ -1508,11 +1642,41 @@ fn enforce_replay_capacity(state: &AppState) {
     }
 }
 
+fn distributed_replay_check_and_store(
+    state: &AppState,
+    request_id: &str,
+    _now_ms: u64,
+) -> Result<(), AuthError> {
+    let Some(redis_guard) = &state.redis_guard else {
+        return Ok(());
+    };
+    let key = format!("{}:replay:{}", redis_guard.key_prefix, request_id);
+    let mut conn = redis_guard
+        .client
+        .get_connection()
+        .map_err(|_| AuthError::ServiceUnavailable("replay backend unavailable"))?;
+    let result: Option<String> = redis::cmd("SET")
+        .arg(&key)
+        .arg("1")
+        .arg("PX")
+        .arg(state.replay_ttl_ms)
+        .arg("NX")
+        .query(&mut conn)
+        .map_err(|_| AuthError::ServiceUnavailable("replay backend unavailable"))?;
+    if result.is_none() {
+        return Err(AuthError::Conflict(
+            "replay detected: X-Request-Id already used",
+        ));
+    }
+    Ok(())
+}
+
 fn auth_error_response(state: &AppState, request_id: String, err: AuthError) -> Response {
     let (status, message) = match err {
         AuthError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg),
         AuthError::RequestTimeout(msg) => (StatusCode::REQUEST_TIMEOUT, msg),
         AuthError::Conflict(msg) => (StatusCode::CONFLICT, msg),
+        AuthError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg),
     };
     error_response(status, state, &request_id, message)
 }
@@ -1893,6 +2057,16 @@ async fn security_status_handler(State(state): State<AppState>) -> impl IntoResp
     } else {
         "disabled"
     };
+    let edge_guard_mode = if state.edge_guard.is_some() {
+        "required"
+    } else {
+        "disabled"
+    };
+    let distributed_guard_mode = if state.redis_guard.is_some() {
+        "redis"
+    } else {
+        "in_memory"
+    };
     (
         StatusCode::OK,
         Json(SecurityStatusResponse {
@@ -1916,6 +2090,8 @@ async fn security_status_handler(State(state): State<AppState>) -> impl IntoResp
             rotation_mode: rotation_mode.to_string(),
             mtls_mode: mtls_mode.to_string(),
             client_signature_mode: client_signature_mode.to_string(),
+            edge_guard_mode: edge_guard_mode.to_string(),
+            distributed_guard_mode: distributed_guard_mode.to_string(),
         }),
     )
 }
@@ -2371,6 +2547,65 @@ mod tests {
         );
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn edge_guard_required_rejects_missing_header() {
+        let mut state = test_state();
+        state.edge_guard = Some(EdgeGuardConfig {
+            header: HEADER_EDGE_AUTH.to_string(),
+            secret: "edge-secret".to_string(),
+        });
+        let app = app_with_state(state);
+        let now = now_utc_ms();
+        let payload = serde_json::json!({
+            "user_id":"u_edge",
+            "amount_cents":10_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let req = signed_request(
+            payload,
+            "test_active_secret",
+            "active",
+            "31b930a1-0725-4011-8bf0-27f061203377",
+            now,
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn edge_guard_required_accepts_valid_header() {
+        let mut state = test_state();
+        state.edge_guard = Some(EdgeGuardConfig {
+            header: HEADER_EDGE_AUTH.to_string(),
+            secret: "edge-secret".to_string(),
+        });
+        let app = app_with_state(state);
+        let now = now_utc_ms();
+        let payload = serde_json::json!({
+            "user_id":"u_edge_ok",
+            "amount_cents":10_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let req = signed_request_with_headers(
+            payload,
+            "test_active_secret",
+            "active",
+            "95fb761d-b798-4381-b0f1-9037c8a43f8a",
+            now,
+            &[(HEADER_EDGE_AUTH, "edge-secret".to_string())],
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]
