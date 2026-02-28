@@ -26,6 +26,11 @@ Recommended baseline:
 ### 1.3 Secrets Management
 
 - Store `NEXO_HMAC_SECRET` in a secret manager (not plaintext files).
+- Prefer mounted secret files for runtime injection:
+  - `NEXO_HMAC_SECRET_FILE`
+  - `NEXO_HMAC_SECRET_PREV_FILE`
+  - `NEXO_HMAC_KEY_ID_FILE`
+  - `NEXO_HMAC_KEY_ID_PREV_FILE`
 - Keep active and previous key IDs distinct.
 - Rotate keys with overlap window (`active_plus_previous`) and then remove previous.
 - Never log key values or HMAC material.
@@ -106,8 +111,8 @@ Tune per environment, but start with:
 
 ## 5. Key Rotation Procedure
 
-1. Set new `NEXO_HMAC_SECRET` and keep old as `NEXO_HMAC_SECRET_PREV`.
-2. Set/verify `NEXO_HMAC_KEY_ID` and `NEXO_HMAC_KEY_ID_PREV`.
+1. Set new `NEXO_HMAC_SECRET_FILE` and keep old as `NEXO_HMAC_SECRET_PREV_FILE` (or env equivalents).
+2. Set/verify `NEXO_HMAC_KEY_ID[_FILE]` and `NEXO_HMAC_KEY_ID_PREV[_FILE]`.
 3. Deploy server.
 4. Migrate clients to new key id.
 5. Monitor 401/408/409 during migration.

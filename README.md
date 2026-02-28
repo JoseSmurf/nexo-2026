@@ -241,10 +241,14 @@ Status codes:
 
 Required environment:
 
-- `NEXO_HMAC_SECRET` (required, startup panic if missing)
+- `NEXO_HMAC_SECRET` (required unless `NEXO_HMAC_SECRET_FILE` is set)
+- `NEXO_HMAC_SECRET_FILE` (path to mounted secret file, preferred for production)
 - `NEXO_HMAC_SECRET_PREV` (optional rotation window)
+- `NEXO_HMAC_SECRET_PREV_FILE` (optional path to previous key secret file)
 - `NEXO_HMAC_KEY_ID` (optional, default `active`)
+- `NEXO_HMAC_KEY_ID_FILE` (optional path to active key id file)
 - `NEXO_HMAC_KEY_ID_PREV` (optional, default `previous`)
+- `NEXO_HMAC_KEY_ID_PREV_FILE` (optional path to previous key id file)
 - `NEXO_AUDIT_PATH` (optional, default `logs/audit_records.jsonl`)
 - `NEXO_AUDIT_RETENTION` (optional, default `5000`)
 - `NEXO_AUTH_WINDOW_MS` (optional, default `60000`)
@@ -263,7 +267,7 @@ Rotation flow:
 
 Rotation hardening (fail-closed startup checks):
 
-- `NEXO_HMAC_SECRET` must be present and non-empty
+- `NEXO_HMAC_SECRET` or `NEXO_HMAC_SECRET_FILE` must be present and non-empty
 - `NEXO_HMAC_KEY_ID` must be non-empty
 - if `NEXO_HMAC_SECRET_PREV` is set:
   - `NEXO_HMAC_KEY_ID_PREV` must be non-empty

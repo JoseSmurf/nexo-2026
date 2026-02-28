@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -180,23 +181,14 @@ impl AppState {
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(DEFAULT_RETENTION);
-        let active_secret = std::env::var("NEXO_HMAC_SECRET")
-            .expect("NEXO_HMAC_SECRET is required. Refusing to start without HMAC secret.");
-        assert!(
-            !active_secret.trim().is_empty(),
-            "NEXO_HMAC_SECRET is empty. Refusing to start with empty HMAC secret."
-        );
-        let active_id =
-            std::env::var("NEXO_HMAC_KEY_ID").unwrap_or_else(|_| BENCH_KEY_ID.to_string());
+        let active_secret = load_required_secret("NEXO_HMAC_SECRET");
+        let active_id = load_key_id("NEXO_HMAC_KEY_ID", BENCH_KEY_ID);
         assert!(
             !active_id.trim().is_empty(),
             "NEXO_HMAC_KEY_ID must not be empty."
         );
-        let previous_secret = std::env::var("NEXO_HMAC_SECRET_PREV")
-            .ok()
-            .filter(|s| !s.trim().is_empty());
-        let previous_id =
-            std::env::var("NEXO_HMAC_KEY_ID_PREV").unwrap_or_else(|_| "previous".to_string());
+        let previous_secret = load_optional_secret("NEXO_HMAC_SECRET_PREV");
+        let previous_id = load_key_id("NEXO_HMAC_KEY_ID_PREV", "previous");
         if previous_secret.is_some() {
             assert!(
                 !previous_id.trim().is_empty(),
@@ -305,6 +297,48 @@ impl AppState {
             key_usage: Arc::new(DashMap::new()),
         }
     }
+}
+
+fn load_key_id(env_key: &str, default: &str) -> String {
+    let file_key = format!("{env_key}_FILE");
+    if let Ok(path) = std::env::var(&file_key) {
+        let value = read_secret_file(&path, &file_key);
+        assert!(
+            is_valid_key_id(&value),
+            "{env_key} loaded from {file_key} is invalid."
+        );
+        return value;
+    }
+    std::env::var(env_key).unwrap_or_else(|_| default.to_string())
+}
+
+fn load_required_secret(env_key: &str) -> String {
+    load_optional_secret(env_key).unwrap_or_else(|| {
+        panic!("{env_key} or {env_key}_FILE is required. Refusing to start without HMAC secret.")
+    })
+}
+
+fn load_optional_secret(env_key: &str) -> Option<String> {
+    let file_key = format!("{env_key}_FILE");
+    if let Ok(path) = std::env::var(&file_key) {
+        let value = read_secret_file(&path, &file_key);
+        assert!(
+            !value.trim().is_empty(),
+            "{env_key} loaded from {file_key} is empty."
+        );
+        return Some(value);
+    }
+
+    std::env::var(env_key)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn read_secret_file(path: &str, file_key: &str) -> String {
+    let content = fs::read_to_string(path)
+        .unwrap_or_else(|err| panic!("failed to read {file_key} at '{path}': {err}"));
+    content.trim_end_matches(['\r', '\n']).trim().to_string()
 }
 
 impl AuthKey {
