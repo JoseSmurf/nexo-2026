@@ -2,37 +2,99 @@ const std = @import("std");
 
 pub const HashAlgorithm = enum {
     blake3,
-    sha3_256,
+    blake3_256,
+    shake256_256,
+    shake256_384,
+    shake256_512,
+    hybrid_shake512_blake3_256,
 
     pub fn parse(s: []const u8) ?HashAlgorithm {
         if (std.mem.eql(u8, s, "blake3")) return .blake3;
-        if (std.mem.eql(u8, s, "sha3-256")) return .sha3_256;
+        if (std.mem.eql(u8, s, "blake3-256")) return .blake3_256;
+        if (std.mem.eql(u8, s, "shake256-256")) return .shake256_256;
+        if (std.mem.eql(u8, s, "shake256-384")) return .shake256_384;
+        if (std.mem.eql(u8, s, "shake256-512")) return .shake256_512;
+        if (std.mem.eql(u8, s, "shake256-512+blake3-256")) return .hybrid_shake512_blake3_256;
         return null;
+    }
+
+    pub fn outputLenHex(self: HashAlgorithm) usize {
+        return switch (self) {
+            .blake3, .blake3_256 => 64,
+            .shake256_256 => 64,
+            .shake256_384 => 96,
+            .shake256_512 => 128,
+            .hybrid_shake512_blake3_256 => 192,
+        };
+    }
+
+    pub fn isHybrid(self: HashAlgorithm) bool {
+        return self == .hybrid_shake512_blake3_256;
     }
 };
 
 pub const Hasher = union(HashAlgorithm) {
     blake3: std.crypto.hash.Blake3,
-    sha3_256: std.crypto.hash.sha3.Sha3_256,
+    blake3_256: std.crypto.hash.Blake3,
+    shake256_256: std.crypto.hash.sha3.Shake256,
+    shake256_384: std.crypto.hash.sha3.Shake256,
+    shake256_512: std.crypto.hash.sha3.Shake256,
+    hybrid_shake512_blake3_256: void,
 
     pub fn init(algo: HashAlgorithm) Hasher {
         return switch (algo) {
             .blake3 => .{ .blake3 = std.crypto.hash.Blake3.init(.{}) },
-            .sha3_256 => .{ .sha3_256 = std.crypto.hash.sha3.Sha3_256.init(.{}) },
+            .blake3_256 => .{ .blake3_256 = std.crypto.hash.Blake3.init(.{}) },
+            .shake256_256 => .{ .shake256_256 = std.crypto.hash.sha3.Shake256.init(.{}) },
+            .shake256_384 => .{ .shake256_384 = std.crypto.hash.sha3.Shake256.init(.{}) },
+            .shake256_512 => .{ .shake256_512 = std.crypto.hash.sha3.Shake256.init(.{}) },
+            .hybrid_shake512_blake3_256 => .{ .hybrid_shake512_blake3_256 = {} },
         };
     }
 
     pub fn update(self: *Hasher, data: []const u8) void {
         switch (self.*) {
             .blake3 => |*h| h.update(data),
-            .sha3_256 => |*h| h.update(data),
+            .blake3_256 => |*h| h.update(data),
+            .shake256_256 => |*h| h.update(data),
+            .shake256_384 => |*h| h.update(data),
+            .shake256_512 => |*h| h.update(data),
+            .hybrid_shake512_blake3_256 => unreachable,
         }
     }
 
-    pub fn final(self: *Hasher, out: *[32]u8) void {
+    pub fn finalAlloc(self: *Hasher, alloc: std.mem.Allocator) ![]u8 {
         switch (self.*) {
-            .blake3 => |*h| h.final(out),
-            .sha3_256 => |*h| h.final(out),
+            .blake3 => |*h| {
+                var tmp: [32]u8 = undefined;
+                h.final(&tmp);
+                const out = try alloc.alloc(u8, 32);
+                @memcpy(out, &tmp);
+                return out;
+            },
+            .blake3_256 => |*h| {
+                var tmp: [32]u8 = undefined;
+                h.final(&tmp);
+                const out = try alloc.alloc(u8, 32);
+                @memcpy(out, &tmp);
+                return out;
+            },
+            .shake256_256 => |*h| {
+                const out = try alloc.alloc(u8, 32);
+                h.final(out);
+                return out;
+            },
+            .shake256_384 => |*h| {
+                const out = try alloc.alloc(u8, 48);
+                h.final(out);
+                return out;
+            },
+            .shake256_512 => |*h| {
+                const out = try alloc.alloc(u8, 64);
+                h.final(out);
+                return out;
+            },
+            .hybrid_shake512_blake3_256 => unreachable,
         }
     }
 };

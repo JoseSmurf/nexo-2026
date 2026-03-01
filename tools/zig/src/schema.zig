@@ -30,8 +30,8 @@ pub const Severity = enum {
     }
 };
 
-pub fn isHexLower64(s: []const u8) bool {
-    if (s.len != 64) return false;
+pub fn isHexLowerN(s: []const u8, expected_len: usize) bool {
+    if (s.len != expected_len) return false;
     for (s) |c| {
         const ok = (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f');
         if (!ok) return false;
