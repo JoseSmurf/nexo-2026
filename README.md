@@ -178,13 +178,17 @@ MIT
     }
   ],
   "audit_hash": "64-char-lowercase-hex",
-  "hash_algo": "blake3|sha3-256",
+  "hash_algo": "blake3|shake256-256|shake256-384|shake256-512|shake256-512+blake3-256",
   "sha3_shadow": "optional-64-char-lowercase-hex"
 }
 ```
 
 `audit_hash` is computed from `trace` only, with fixed domain tag `schema=trace_v4`.
-Default path uses `blake3`; `sha3-256` is used only when hash failover mode is enabled:
+Default path uses `blake3`.
+Adaptive deterministic policy:
+- `INCIDENT` => hybrid (`shake256-512 + blake3-256`)
+- otherwise, if `risk_bps >= 8000` OR `amount_cents >= NEXO_AUDIT_HIGH_THRESHOLD_CENTS` => `shake256-{bits}`
+- else => `blake3`
 
 1. `hash_field("schema", "trace_v4")`
 2. For each trace entry:
@@ -260,8 +264,9 @@ Required environment:
 - `NEXO_RATE_LIMIT_WINDOW_MS` (optional, default `60000`)
 - `NEXO_RATE_LIMIT_IP` (optional, default `600`)
 - `NEXO_RATE_LIMIT_USER` (optional, default `300`)
-- `NEXO_HASH_FAILOVER_MODE` (optional, default `false`)
-- `NEXO_SHA3_FAILOVER_BPS` (optional, default `1750`; range `0..10000`)
+- `NEXO_SECURITY_LEVEL` (optional, default `NORMAL`; `NORMAL|ELEVATED|INCIDENT`)
+- `NEXO_AUDIT_HIGH_THRESHOLD_CENTS` (optional, default `5000000`)
+- `NEXO_AUDIT_SHAKE_BITS` (optional, default `512`; one of `256|384|512`)
 - `NEXO_SHA3_SHADOW_ENABLED` (optional, default `false`; when `true`, keeps `hash_algo=blake3` and adds `sha3_shadow`)
 - `NEXO_MTLS_REQUIRED` (optional, default `false`)
 - `NEXO_CLIENT_SIG_REQUIRED` (optional, default `false`)
