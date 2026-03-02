@@ -5,6 +5,8 @@ use axum::http::Request;
 use serde_json::json;
 use tower::util::ServiceExt;
 use uuid::Uuid;
+
+use syntax_engine::telemetry::MetricsSnapshot;
 fn percentile(sorted: &[u128], pct: f64) -> f64 {
     if sorted.is_empty() {
         return 0.0;
@@ -29,8 +31,24 @@ async fn main() {
     let max_p99_us: Option<f64> = std::env::var("NEXO_LOAD_MAX_P99_US")
         .ok()
         .and_then(|v| v.parse().ok());
+    let max_error_rate_pct: Option<f64> = std::env::var("NEXO_ALERT_MAX_ERROR_RATE_PCT")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    let max_401: Option<u64> = std::env::var("NEXO_ALERT_MAX_401")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    let max_408: Option<u64> = std::env::var("NEXO_ALERT_MAX_408")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    let max_409: Option<u64> = std::env::var("NEXO_ALERT_MAX_409")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    let max_429: Option<u64> = std::env::var("NEXO_ALERT_MAX_429")
+        .ok()
+        .and_then(|v| v.parse().ok());
 
     let state = syntax_engine::api::AppState::for_bench();
+    let metrics = state.metrics.clone();
     let app = syntax_engine::api::app_with_state(state);
 
     let mut latencies_ns = Vec::with_capacity(total_requests);
@@ -100,6 +118,23 @@ async fn main() {
     println!("ok_responses={ok}/{}", total_requests);
     println!("latency_us avg={avg:.2} p50={p50:.2} p95={p95:.2} p99={p99:.2}");
 
+    let snapshot: MetricsSnapshot = metrics.snapshot();
+    let error_rate_pct = if snapshot.requests_total == 0 {
+        0.0
+    } else {
+        (snapshot.requests_error as f64 / snapshot.requests_total as f64) * 100.0
+    };
+    println!(
+        "ops_metrics total={} errors={} error_rate_pct={:.4} unauthorized={} timeout={} conflict={} too_many={}",
+        snapshot.requests_total,
+        snapshot.requests_error,
+        error_rate_pct,
+        snapshot.unauthorized_total,
+        snapshot.request_timeout_total,
+        snapshot.conflict_total,
+        snapshot.too_many_requests_total
+    );
+
     if let Some(max) = max_p95_us {
         if p95 > max {
             eprintln!("p95 budget exceeded: {p95:.2}us > {max:.2}us");
@@ -109,6 +144,48 @@ async fn main() {
     if let Some(max) = max_p99_us {
         if p99 > max {
             eprintln!("p99 budget exceeded: {p99:.2}us > {max:.2}us");
+            std::process::exit(1);
+        }
+    }
+    if let Some(max) = max_error_rate_pct {
+        if error_rate_pct > max {
+            eprintln!("error_rate budget exceeded: {error_rate_pct:.4}% > {max:.4}%");
+            std::process::exit(1);
+        }
+    }
+    if let Some(max) = max_401 {
+        if snapshot.unauthorized_total > max {
+            eprintln!(
+                "unauthorized budget exceeded: {} > {}",
+                snapshot.unauthorized_total, max
+            );
+            std::process::exit(1);
+        }
+    }
+    if let Some(max) = max_408 {
+        if snapshot.request_timeout_total > max {
+            eprintln!(
+                "request_timeout budget exceeded: {} > {}",
+                snapshot.request_timeout_total, max
+            );
+            std::process::exit(1);
+        }
+    }
+    if let Some(max) = max_409 {
+        if snapshot.conflict_total > max {
+            eprintln!(
+                "conflict budget exceeded: {} > {}",
+                snapshot.conflict_total, max
+            );
+            std::process::exit(1);
+        }
+    }
+    if let Some(max) = max_429 {
+        if snapshot.too_many_requests_total > max {
+            eprintln!(
+                "too_many_requests budget exceeded: {} > {}",
+                snapshot.too_many_requests_total, max
+            );
             std::process::exit(1);
         }
     }

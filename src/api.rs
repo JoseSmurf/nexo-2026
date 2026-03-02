@@ -2560,7 +2560,10 @@ mod tests {
         state.admin_api_token = Some("admin-test-token".to_string());
         let app = app_with_state(state);
         let resp = app
-            .oneshot(admin_get_request("/metrics", Some("Bearer admin-test-token")))
+            .oneshot(admin_get_request(
+                "/metrics",
+                Some("Bearer admin-test-token"),
+            ))
             .await
             .expect("metrics");
         assert_eq!(resp.status(), StatusCode::OK);

@@ -146,4 +146,9 @@ jobs:
         NEXO_LOAD_CONCURRENCY=60 \
         NEXO_LOAD_MAX_P95_US=400 \
         NEXO_LOAD_MAX_P99_US=1200 \
+        NEXO_ALERT_MAX_ERROR_RATE_PCT=0.00 \
+        NEXO_ALERT_MAX_401=0 \
+        NEXO_ALERT_MAX_408=0 \
+        NEXO_ALERT_MAX_409=0 \
+        NEXO_ALERT_MAX_429=0 \
         cargo run --release --bin load_test
