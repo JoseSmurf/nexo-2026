@@ -3,6 +3,7 @@ const std = @import("std");
 pub const HashAlgorithm = enum {
     blake3,
     blake3_256,
+    sha3_256_legacy,
     shake256_256,
     shake256_384,
     shake256_512,
@@ -20,7 +21,7 @@ pub const HashAlgorithm = enum {
 
     pub fn outputLenHex(self: HashAlgorithm) usize {
         return switch (self) {
-            .blake3, .blake3_256 => 64,
+            .blake3, .blake3_256, .sha3_256_legacy => 64,
             .shake256_256 => 64,
             .shake256_384 => 96,
             .shake256_512 => 128,
@@ -36,6 +37,7 @@ pub const HashAlgorithm = enum {
 pub const Hasher = union(HashAlgorithm) {
     blake3: std.crypto.hash.Blake3,
     blake3_256: std.crypto.hash.Blake3,
+    sha3_256_legacy: std.crypto.hash.sha3.Sha3_256,
     shake256_256: std.crypto.hash.sha3.Shake256,
     shake256_384: std.crypto.hash.sha3.Shake256,
     shake256_512: std.crypto.hash.sha3.Shake256,
@@ -45,6 +47,7 @@ pub const Hasher = union(HashAlgorithm) {
         return switch (algo) {
             .blake3 => .{ .blake3 = std.crypto.hash.Blake3.init(.{}) },
             .blake3_256 => .{ .blake3_256 = std.crypto.hash.Blake3.init(.{}) },
+            .sha3_256_legacy => .{ .sha3_256_legacy = std.crypto.hash.sha3.Sha3_256.init(.{}) },
             .shake256_256 => .{ .shake256_256 = std.crypto.hash.sha3.Shake256.init(.{}) },
             .shake256_384 => .{ .shake256_384 = std.crypto.hash.sha3.Shake256.init(.{}) },
             .shake256_512 => .{ .shake256_512 = std.crypto.hash.sha3.Shake256.init(.{}) },
@@ -56,6 +59,7 @@ pub const Hasher = union(HashAlgorithm) {
         switch (self.*) {
             .blake3 => |*h| h.update(data),
             .blake3_256 => |*h| h.update(data),
+            .sha3_256_legacy => |*h| h.update(data),
             .shake256_256 => |*h| h.update(data),
             .shake256_384 => |*h| h.update(data),
             .shake256_512 => |*h| h.update(data),
@@ -73,6 +77,13 @@ pub const Hasher = union(HashAlgorithm) {
                 return out;
             },
             .blake3_256 => |*h| {
+                var tmp: [32]u8 = undefined;
+                h.final(&tmp);
+                const out = try alloc.alloc(u8, 32);
+                @memcpy(out, &tmp);
+                return out;
+            },
+            .sha3_256_legacy => |*h| {
                 var tmp: [32]u8 = undefined;
                 h.final(&tmp);
                 const out = try alloc.alloc(u8, 32);

@@ -240,6 +240,8 @@ fn bytes_to_hex_lower(bytes: &[u8]) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditHashAlgo {
     Blake3,
+    // LEGACY / NOT USED IN RUNTIME POLICY:
+    // kept only for historical offline verification of old audit records.
     Sha3_256,
     Shake256_256,
     Shake256_384,

@@ -49,6 +49,8 @@ fn usage() void {
 }
 
 fn verifyFile(alloc: std.mem.Allocator, path: []const u8) !u8 {
+    const options = verifyOptionsFromEnv(alloc);
+
     var file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
 
@@ -71,7 +73,7 @@ fn verifyFile(alloc: std.mem.Allocator, path: []const u8) !u8 {
         if (raw.len == 0) continue;
 
         total += 1;
-        const res = verify_mod.verifyLine(alloc, raw);
+        const res = verify_mod.verifyLineWithOptions(alloc, raw, options);
         switch (res) {
             .Ok => ok += 1,
             .SchemaInvalid => {
@@ -93,4 +95,18 @@ fn verifyFile(alloc: std.mem.Allocator, path: []const u8) !u8 {
     if (any_tamper) return 3;
     if (any_schema) return 2;
     return 0;
+}
+
+fn verifyOptionsFromEnv(alloc: std.mem.Allocator) verify_mod.VerifyOptions {
+    var options = verify_mod.VerifyOptions{};
+    const raw = std.process.getEnvVarOwned(alloc, "NEXO_ZIG_LEGACY_SHA3_256") catch return options;
+    defer alloc.free(raw);
+
+    if (std.ascii.eqlIgnoreCase(raw, "1") or
+        std.ascii.eqlIgnoreCase(raw, "true") or
+        std.ascii.eqlIgnoreCase(raw, "yes"))
+    {
+        options.allow_legacy_sha3_256 = true;
+    }
+    return options;
 }

@@ -3062,6 +3062,53 @@ mod tests {
     }
 
     #[test]
+    fn runtime_policy_never_selects_sha3_256() {
+        let levels = [
+            SecurityLevel::Normal,
+            SecurityLevel::Elevated,
+            SecurityLevel::Incident,
+        ];
+        let risk_values = [0u16, 7_999, 8_000, 10_000];
+        let amount_values = [0u64, 4_999_999, 5_000_000, 9_999_999];
+        let shake_bits_values = [256u16, 384, 512];
+
+        for level in levels {
+            for risk_bps in risk_values {
+                for amount_cents in amount_values {
+                    for shake_bits in shake_bits_values {
+                        let selected = select_audit_hash_algo(
+                            level,
+                            risk_bps,
+                            amount_cents,
+                            5_000_000,
+                            shake_bits,
+                        );
+                        assert_ne!(
+                            selected,
+                            AuditHashAlgo::Sha3_256,
+                            "runtime policy must never emit sha3-256"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn runtime_policy_hash_algo_strings_do_not_include_sha3_256() {
+        let emitted = [
+            select_audit_hash_algo(SecurityLevel::Normal, 1_000, 10_000, 5_000_000, 256),
+            select_audit_hash_algo(SecurityLevel::Normal, 9_000, 10_000, 5_000_000, 384),
+            select_audit_hash_algo(SecurityLevel::Normal, 1_000, 5_000_000, 5_000_000, 512),
+            select_audit_hash_algo(SecurityLevel::Incident, 1_000, 10_000, 5_000_000, 512),
+        ];
+
+        for algo in emitted {
+            assert_ne!(algo.as_str(), "sha3-256");
+        }
+    }
+
+    #[test]
     fn parse_vault_bundle_kv_v2_layout() {
         let payload = serde_json::json!({
             "data": {

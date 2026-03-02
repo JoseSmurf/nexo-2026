@@ -2,6 +2,10 @@ const std = @import("std");
 const schema = @import("schema.zig");
 const crypto = @import("crypto.zig");
 
+pub const VerifyOptions = struct {
+    allow_legacy_sha3_256: bool = false,
+};
+
 fn toHexLower(alloc: std.mem.Allocator, bytes: []const u8) ![]u8 {
     const out = try alloc.alloc(u8, bytes.len * 2);
     errdefer alloc.free(out);
@@ -112,6 +116,21 @@ fn hashTraceItems(hasher: *crypto.Hasher, trace_arr: std.json.Array) !void {
 }
 
 pub fn verifyLine(alloc: std.mem.Allocator, line: []const u8) schema.VerifyResult {
+    return verifyLineWithOptions(alloc, line, .{});
+}
+
+fn parseHashAlgorithm(hash_algo_str: []const u8, options: VerifyOptions) ?crypto.HashAlgorithm {
+    if (std.mem.eql(u8, hash_algo_str, "sha3-256")) {
+        return if (options.allow_legacy_sha3_256) .sha3_256_legacy else null;
+    }
+    return crypto.HashAlgorithm.parse(hash_algo_str);
+}
+
+pub fn verifyLineWithOptions(
+    alloc: std.mem.Allocator,
+    line: []const u8,
+    options: VerifyOptions,
+) schema.VerifyResult {
     var parsed = std.json.parseFromSlice(std.json.Value, alloc, line, .{}) catch return .SchemaInvalid;
     defer parsed.deinit();
 
@@ -122,7 +141,7 @@ pub fn verifyLine(alloc: std.mem.Allocator, line: []const u8) schema.VerifyResul
 
     const audit_hash_str = schema.getString(root_obj, "audit_hash") orelse return .SchemaInvalid;
     const hash_algo_str = schema.getString(root_obj, "hash_algo") orelse return .SchemaInvalid;
-    const hash_algo = crypto.HashAlgorithm.parse(hash_algo_str) orelse return .SchemaInvalid;
+    const hash_algo = parseHashAlgorithm(hash_algo_str, options) orelse return .SchemaInvalid;
     if (!schema.isHexLowerN(audit_hash_str, hash_algo.outputLenHex())) return .SchemaInvalid;
 
     const trace_val = root_obj.get("trace") orelse return .SchemaInvalid;
@@ -201,6 +220,19 @@ const TRACE_FLAGGED_JSON =
     \\["Approved","Approved",{"FlaggedForReview":{"measured":150000,"reason":"Transaction requires AML review.","rule_id":"AML-FATF-REVIEW-001","severity":"Alta","threshold":5000000}}]
 ;
 
+fn readFirstNonEmptyLine(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
+    const content = try std.fs.cwd().readFileAlloc(alloc, path, 1024 * 1024);
+    errdefer alloc.free(content);
+
+    var it = std.mem.splitScalar(u8, content, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0) continue;
+        return try alloc.dupe(u8, line);
+    }
+    return error.EmptyFixture;
+}
+
 fn buildLineWithComputedHash(
     alloc: std.mem.Allocator,
     request_id: []const u8,
@@ -208,7 +240,9 @@ fn buildLineWithComputedHash(
     hash_algo_str: []const u8,
     trace_json: []const u8,
 ) ![]u8 {
-    const hash_algo = crypto.HashAlgorithm.parse(hash_algo_str) orelse return error.InvalidHashAlgo;
+    const hash_algo = parseHashAlgorithm(hash_algo_str, .{
+        .allow_legacy_sha3_256 = true,
+    }) orelse return error.InvalidHashAlgo;
     var parsed_trace = try std.json.parseFromSlice(std.json.Value, alloc, trace_json, .{});
     defer parsed_trace.deinit();
 
@@ -381,4 +415,47 @@ test "verifyLine rejects sha3-256 now unsupported in contract" {
 
     const result = verifyLine(std.testing.allocator, line);
     try std.testing.expectEqual(schema.VerifyResult.SchemaInvalid, result);
+}
+
+test "verifyLine accepts sha3-256 only with legacy support enabled" {
+    const line = try buildLineWithComputedHash(
+        std.testing.allocator,
+        "legacy-sha3-fixture-001",
+        "Flagged",
+        "sha3-256",
+        TRACE_FLAGGED_JSON,
+    );
+    defer std.testing.allocator.free(line);
+
+    const rejected = verifyLine(std.testing.allocator, line);
+    try std.testing.expectEqual(schema.VerifyResult.SchemaInvalid, rejected);
+
+    const accepted = verifyLineWithOptions(std.testing.allocator, line, .{
+        .allow_legacy_sha3_256 = true,
+    });
+    try std.testing.expectEqual(schema.VerifyResult.Ok, accepted);
+}
+
+test "verifyLine accepts Rust-generated blake3 fixture file" {
+    const line = try readFirstNonEmptyLine(std.testing.allocator, "../../fixtures/audit_rust_blake3.jsonl");
+    defer std.testing.allocator.free(line);
+
+    const result = verifyLine(std.testing.allocator, line);
+    try std.testing.expectEqual(schema.VerifyResult.Ok, result);
+}
+
+test "verifyLine accepts Rust-generated shake512 fixture file" {
+    const line = try readFirstNonEmptyLine(std.testing.allocator, "../../fixtures/audit_rust_shake512.jsonl");
+    defer std.testing.allocator.free(line);
+
+    const result = verifyLine(std.testing.allocator, line);
+    try std.testing.expectEqual(schema.VerifyResult.Ok, result);
+}
+
+test "verifyLine accepts Rust-generated hybrid fixture file" {
+    const line = try readFirstNonEmptyLine(std.testing.allocator, "../../fixtures/audit_rust_hybrid.jsonl");
+    defer std.testing.allocator.free(line);
+
+    const result = verifyLine(std.testing.allocator, line);
+    try std.testing.expectEqual(schema.VerifyResult.Ok, result);
 }

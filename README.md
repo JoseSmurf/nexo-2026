@@ -26,7 +26,7 @@ NEXO 2026 enforces this by design.
 1. Input validation (anti-replay + integrity)
 2. Rule engine (UI + Night limit + AML/KYC/PEP)
 3. Decision trace generation
-4. Cryptographic audit hash (`blake3` or `sha3-256`)
+4. Cryptographic audit hash (`blake3`, `shake256-*`, or hybrid in INCIDENT)
 5. Output (FinalDecision + hash)
 
 ---
@@ -189,6 +189,12 @@ Adaptive deterministic policy:
 - `INCIDENT` => hybrid (`shake256-512 + blake3-256`)
 - otherwise, if `risk_bps >= 8000` OR `amount_cents >= NEXO_AUDIT_HIGH_THRESHOLD_CENTS` => `shake256-{bits}`
 - else => `blake3`
+
+Legacy migration note:
+- runtime API contract emits only: `blake3`, `shake256-256`, `shake256-384`, `shake256-512`, `shake256-512+blake3-256` (never `sha3-256`).
+- historical records with `hash_algo = "sha3-256"` are no longer emitted by Rust policy.
+- Zig verifier rejects `sha3-256` by default (fail-closed).
+- to validate legacy `sha3-256` archives offline, set `NEXO_ZIG_LEGACY_SHA3_256=1` when running Zig verifier.
 
 1. `hash_field("schema", "trace_v4")`
 2. For each trace entry:
@@ -453,6 +459,9 @@ zig build run -- verify ../../logs/audit_records.jsonl
 
 # Verify pinned fixture used in CI
 zig build run -- verify ../../fixtures/audit_sample.jsonl
+
+# Optional: validate legacy records with hash_algo="sha3-256"
+NEXO_ZIG_LEGACY_SHA3_256=1 zig build run -- verify ../../logs/audit_records.jsonl
 ```
 
 Expected output includes:
