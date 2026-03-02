@@ -107,7 +107,7 @@ curl -sS -X POST 'http://127.0.0.1:3000/evaluate' \
 ## Tech stack
 
 - Rust (core engine + API)
-- BLAKE3 + SHA3-256 (audit hash)
+- BLAKE3 + SHAKE256 (audit hash, with deterministic hybrid mode in INCIDENT)
 - Axum + Tokio (HTTP)
 - serde/serde_json (contracts)
 - Julia bridge (precision PLCA scoring)
@@ -120,10 +120,10 @@ curl -sS -X POST 'http://127.0.0.1:3000/evaluate' \
 - API layer: implemented and active (`POST /evaluate`, health, metrics, audit, security)
 - Security layer: HMAC-BLAKE3, anti-replay, key rotation, rate limit
 - Offline verification: Zig verifier in CI
-- Rust tests: 104
+- Rust tests: 127
 - Julia tests: 124
-- Zig tests: 10
-- Total tests: 238
+- Zig tests: 20
+- Total tests: 271
 - Jurisdictions covered: 9
 - Currencies covered: 9
 - Regulators covered: 9
