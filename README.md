@@ -281,3 +281,5 @@ Use `.env.example` provider sections as the canonical reference for required var
 ## License
 
 MIT
+
+NEXO is not a probabilistic AI compliance engine. It is a deterministic, auditable decision system designed for environments where reproducibility matters more than heuristics.
