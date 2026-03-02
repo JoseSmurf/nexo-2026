@@ -2174,9 +2174,15 @@ async fn ready_handler(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
+async fn metrics_handler(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if !state.admin_api_enabled {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if !is_valid_admin_bearer_token(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
     let snapshot: MetricsSnapshot = state.metrics.snapshot();
-    (StatusCode::OK, Json(snapshot))
+    (StatusCode::OK, Json(snapshot)).into_response()
 }
 
 async fn audit_recent_handler(
@@ -2522,6 +2528,42 @@ mod tests {
             .await
             .expect("security/status");
         assert_eq!(r2.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn metrics_is_404_by_default() {
+        let app = app_with_state(test_state());
+        let resp = app
+            .oneshot(admin_get_request("/metrics", None))
+            .await
+            .expect("metrics");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn metrics_is_401_when_enabled_without_token() {
+        let mut state = test_state();
+        state.admin_api_enabled = true;
+        state.admin_api_token = Some("admin-test-token".to_string());
+        let app = app_with_state(state);
+        let resp = app
+            .oneshot(admin_get_request("/metrics", None))
+            .await
+            .expect("metrics");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn metrics_is_200_with_valid_token() {
+        let mut state = test_state();
+        state.admin_api_enabled = true;
+        state.admin_api_token = Some("admin-test-token".to_string());
+        let app = app_with_state(state);
+        let resp = app
+            .oneshot(admin_get_request("/metrics", Some("Bearer admin-test-token")))
+            .await
+            .expect("metrics");
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]
