@@ -151,4 +151,20 @@ jobs:
         NEXO_ALERT_MAX_408=0 \
         NEXO_ALERT_MAX_409=0 \
         NEXO_ALERT_MAX_429=0 \
-        cargo run --release --bin load_test
+        cargo run --release --bin load_test | tee bench_load_test.log
+    - name: Bench summary
+      if: always()
+      run: |
+        echo "## Bench Operational Summary" >> "$GITHUB_STEP_SUMMARY"
+        if [ -f bench_load_test.log ]; then
+          grep -E "^(load_test|ok_responses|latency_us|ops_metrics)" bench_load_test.log >> "$GITHUB_STEP_SUMMARY" || true
+        else
+          echo "bench_load_test.log not found" >> "$GITHUB_STEP_SUMMARY"
+        fi
+    - name: Upload bench log artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: bench-load-test-log
+        path: bench_load_test.log
+        if-no-files-found: warn
