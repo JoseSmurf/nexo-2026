@@ -50,6 +50,7 @@ const DEFAULT_AZURE_API_VERSION: &str = "7.4";
 const DEFAULT_GCP_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_AWS_RUNTIME_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_SHA3_SHADOW_ENABLED: bool = false;
+const DEFAULT_ADMIN_API_ENABLED: bool = false;
 const DEFAULT_HIGH_THRESHOLD_CENTS: u64 = 5_000_000;
 const DEFAULT_SHAKE_BITS: u16 = 512;
 const ADAPTIVE_RISK_BPS_THRESHOLD: u16 = 8_000;
@@ -69,6 +70,7 @@ const HEADER_CLIENT_CERT_VERIFIED: &str = "x-client-cert-verified";
 const HEADER_CLIENT_ID: &str = "x-client-id";
 const HEADER_CLIENT_SIGNATURE: &str = "x-client-signature";
 const HEADER_EDGE_AUTH: &str = "x-edge-auth";
+const HEADER_AUTHORIZATION: &str = "authorization";
 
 pub const BENCH_HMAC_SECRET: &str = "bench_hmac_secret";
 pub const BENCH_KEY_ID: &str = "active";
@@ -95,6 +97,8 @@ pub struct AppState {
     pub high_threshold_cents: u64,
     pub shake_bits: u16,
     pub sha3_shadow_enabled: bool,
+    pub admin_api_enabled: bool,
+    pub admin_api_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,6 +348,20 @@ impl AppState {
             .unwrap_or(DEFAULT_HIGH_THRESHOLD_CENTS);
         let shake_bits = load_shake_bits(DEFAULT_SHAKE_BITS);
         let sha3_shadow_enabled = env_bool("NEXO_SHA3_SHADOW_ENABLED", DEFAULT_SHA3_SHADOW_ENABLED);
+        let admin_api_enabled = env_bool("NEXO_ADMIN_API_ENABLED", DEFAULT_ADMIN_API_ENABLED);
+        let admin_api_token = if admin_api_enabled {
+            let token = std::env::var("NEXO_ADMIN_API_TOKEN")
+                .expect("NEXO_ADMIN_API_TOKEN is required when NEXO_ADMIN_API_ENABLED=true")
+                .trim()
+                .to_string();
+            assert!(
+                !token.is_empty(),
+                "NEXO_ADMIN_API_TOKEN must not be empty when NEXO_ADMIN_API_ENABLED=true"
+            );
+            Some(token)
+        } else {
+            None
+        };
 
         Self {
             profile: profile_from_env(),
@@ -373,6 +391,8 @@ impl AppState {
             high_threshold_cents,
             shake_bits,
             sha3_shadow_enabled,
+            admin_api_enabled,
+            admin_api_token,
         }
     }
 
@@ -408,6 +428,8 @@ impl AppState {
             high_threshold_cents: DEFAULT_HIGH_THRESHOLD_CENTS,
             shake_bits: DEFAULT_SHAKE_BITS,
             sha3_shadow_enabled: false,
+            admin_api_enabled: false,
+            admin_api_token: None,
         }
     }
 
@@ -440,6 +462,8 @@ impl AppState {
             high_threshold_cents: DEFAULT_HIGH_THRESHOLD_CENTS,
             shake_bits: DEFAULT_SHAKE_BITS,
             sha3_shadow_enabled: false,
+            admin_api_enabled: false,
+            admin_api_token: None,
         }
     }
 }
@@ -2099,8 +2123,16 @@ async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn audit_recent_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<AuditQuery>,
 ) -> impl IntoResponse {
+    if !state.admin_api_enabled {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if !is_valid_admin_bearer_token(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
     let limit = query.limit.unwrap_or(50).clamp(1, 500);
     match state.audit_store.recent(limit) {
         Ok(records) => (StatusCode::OK, Json(AuditRecentResponse { records })).into_response(),
@@ -2115,7 +2147,17 @@ async fn audit_recent_handler(
     }
 }
 
-async fn security_status_handler(State(state): State<AppState>) -> impl IntoResponse {
+async fn security_status_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !state.admin_api_enabled {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if !is_valid_admin_bearer_token(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
     let mut usage = HashMap::new();
     for entry in state.key_usage.iter() {
         usage.insert(entry.key().clone(), *entry.value());
@@ -2173,6 +2215,20 @@ async fn security_status_handler(State(state): State<AppState>) -> impl IntoResp
             distributed_guard_mode: distributed_guard_mode.to_string(),
         }),
     )
+        .into_response()
+}
+
+fn is_valid_admin_bearer_token(state: &AppState, headers: &HeaderMap) -> bool {
+    let Some(expected) = state.admin_api_token.as_deref() else {
+        return false;
+    };
+    let Some(raw) = extract_header(headers, HEADER_AUTHORIZATION) else {
+        return false;
+    };
+    let Some(provided) = raw.strip_prefix("Bearer ") else {
+        return false;
+    };
+    provided == expected
 }
 
 pub fn now_utc_ms() -> u64 {
@@ -2300,6 +2356,14 @@ mod tests {
         req.body(Body::from(body)).expect("request")
     }
 
+    fn admin_get_request(path: &str, auth: Option<&str>) -> Request<Body> {
+        let mut req = Request::builder().method("GET").uri(path);
+        if let Some(value) = auth {
+            req = req.header(HEADER_AUTHORIZATION, value);
+        }
+        req.body(Body::empty()).expect("request")
+    }
+
     #[tokio::test]
     async fn evaluate_contract_returns_expected_fields() {
         let app = app_with_state(test_state());
@@ -2335,6 +2399,68 @@ mod tests {
         let json: Value = serde_json::from_slice(&body).expect("json");
         assert_eq!(json["request_id"], "564a7218-13e5-46c9-84f6-bf4c53ff533f");
         assert_eq!(json["auth_key_id"], "active");
+    }
+
+    #[tokio::test]
+    async fn admin_endpoints_are_404_by_default() {
+        let app = app_with_state(test_state());
+
+        let r1 = app
+            .clone()
+            .oneshot(admin_get_request("/audit/recent", None))
+            .await
+            .expect("audit/recent");
+        assert_eq!(r1.status(), StatusCode::NOT_FOUND);
+
+        let r2 = app
+            .oneshot(admin_get_request("/security/status", None))
+            .await
+            .expect("security/status");
+        assert_eq!(r2.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn admin_endpoints_return_401_when_enabled_without_token() {
+        let mut state = test_state();
+        state.admin_api_enabled = true;
+        state.admin_api_token = Some("admin-test-token".to_string());
+        let app = app_with_state(state);
+
+        let r1 = app
+            .clone()
+            .oneshot(admin_get_request("/audit/recent", None))
+            .await
+            .expect("audit/recent");
+        assert_eq!(r1.status(), StatusCode::UNAUTHORIZED);
+
+        let r2 = app
+            .oneshot(admin_get_request("/security/status", None))
+            .await
+            .expect("security/status");
+        assert_eq!(r2.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn admin_endpoints_return_200_with_valid_bearer_token() {
+        let mut state = test_state();
+        state.admin_api_enabled = true;
+        state.admin_api_token = Some("admin-test-token".to_string());
+        let app = app_with_state(state);
+
+        let auth = "Bearer admin-test-token";
+
+        let r1 = app
+            .clone()
+            .oneshot(admin_get_request("/audit/recent", Some(auth)))
+            .await
+            .expect("audit/recent");
+        assert_eq!(r1.status(), StatusCode::OK);
+
+        let r2 = app
+            .oneshot(admin_get_request("/security/status", Some(auth)))
+            .await
+            .expect("security/status");
+        assert_eq!(r2.status(), StatusCode::OK);
     }
 
     #[tokio::test]
