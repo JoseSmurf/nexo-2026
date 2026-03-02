@@ -19,6 +19,8 @@ jobs:
       uses: julia-actions/setup-julia@v2
       with:
         version: '1.12'
+    - name: Instantiate Julia project
+      run: julia --project=./julia -e 'using Pkg; Pkg.instantiate()'
     - name: Verify README consistency
       run: scripts/check_readme_consistency.sh
 
