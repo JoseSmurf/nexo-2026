@@ -28,7 +28,7 @@ base64 = "0.22"
 aws-config = { version = "1.8", default-features = false, features = ["rustls"] }
 aws-sdk-secretsmanager = { version = "1.95", default-features = false, features = ["rustls"] }
 ed25519-dalek = "2.2"
-redis = "0.32"
+redis = { version = "0.32", features = ["aio", "tokio-comp"] }
 
 [dev-dependencies]
 criterion = "0.5"

@@ -51,6 +51,7 @@ const DEFAULT_GCP_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_AWS_RUNTIME_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_SHA3_SHADOW_ENABLED: bool = false;
 const DEFAULT_ADMIN_API_ENABLED: bool = false;
+const DEFAULT_REDIS_OP_TIMEOUT_MS: u64 = 100;
 const DEFAULT_HIGH_THRESHOLD_CENTS: u64 = 5_000_000;
 const DEFAULT_SHAKE_BITS: u16 = 512;
 const ADAPTIVE_RISK_BPS_THRESHOLD: u16 = 8_000;
@@ -93,6 +94,7 @@ pub struct AppState {
     pub client_sig: Option<ClientSignatureConfig>,
     pub edge_guard: Option<EdgeGuardConfig>,
     pub redis_guard: Option<RedisGuardConfig>,
+    pub redis_op_timeout_ms: u64,
     pub security_level: SecurityLevel,
     pub high_threshold_cents: u64,
     pub shake_bits: u16,
@@ -341,6 +343,10 @@ impl AppState {
         let client_sig = load_client_signature_config_from_env();
         let edge_guard = load_edge_guard_config_from_env();
         let redis_guard = load_redis_guard_from_env();
+        let redis_op_timeout_ms = std::env::var("NEXO_REDIS_OP_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_REDIS_OP_TIMEOUT_MS);
         let security_level = SecurityLevel::from_env();
         let high_threshold_cents = std::env::var("NEXO_AUDIT_HIGH_THRESHOLD_CENTS")
             .ok()
@@ -387,6 +393,7 @@ impl AppState {
             client_sig,
             edge_guard,
             redis_guard,
+            redis_op_timeout_ms,
             security_level,
             high_threshold_cents,
             shake_bits,
@@ -424,6 +431,7 @@ impl AppState {
             client_sig: None,
             edge_guard: None,
             redis_guard: None,
+            redis_op_timeout_ms: DEFAULT_REDIS_OP_TIMEOUT_MS,
             security_level: SecurityLevel::Normal,
             high_threshold_cents: DEFAULT_HIGH_THRESHOLD_CENTS,
             shake_bits: DEFAULT_SHAKE_BITS,
@@ -458,6 +466,7 @@ impl AppState {
             client_sig: None,
             edge_guard: None,
             redis_guard: None,
+            redis_op_timeout_ms: DEFAULT_REDIS_OP_TIMEOUT_MS,
             security_level: SecurityLevel::Normal,
             high_threshold_cents: DEFAULT_HIGH_THRESHOLD_CENTS,
             shake_bits: DEFAULT_SHAKE_BITS,
@@ -1254,7 +1263,7 @@ impl RateLimiter {
     }
 }
 
-fn distributed_rate_limit_allow(
+async fn distributed_rate_limit_allow(
     state: &AppState,
     ip_key: &str,
     user_key: &str,
@@ -1271,31 +1280,52 @@ fn distributed_rate_limit_allow(
     );
     let ttl_ms = (state.rate_limiter.window_ms.saturating_mul(2)).max(1000);
 
-    let mut conn = redis_guard
-        .client
-        .get_connection()
-        .map_err(|_| "rate limit backend unavailable")?;
-    let ip_count: i64 = redis::cmd("INCR")
-        .arg(&key_ip)
-        .query(&mut conn)
-        .map_err(|_| "rate limit backend unavailable")?;
+    let mut conn = tokio::time::timeout(
+        Duration::from_millis(state.redis_op_timeout_ms),
+        redis_guard.client.get_multiplexed_async_connection(),
+    )
+    .await
+    .map_err(|_| "rate limit backend unavailable")?
+    .map_err(|_| "rate limit backend unavailable")?;
+    let mut cmd_ip_incr = redis::cmd("INCR");
+    cmd_ip_incr.arg(&key_ip);
+    let ip_count: i64 = tokio::time::timeout(
+        Duration::from_millis(state.redis_op_timeout_ms),
+        cmd_ip_incr.query_async(&mut conn),
+    )
+    .await
+    .map_err(|_| "rate limit backend unavailable")?
+    .map_err(|_| "rate limit backend unavailable")?;
     if ip_count == 1 {
-        let _: () = redis::cmd("PEXPIRE")
-            .arg(&key_ip)
-            .arg(ttl_ms)
-            .query(&mut conn)
-            .map_err(|_| "rate limit backend unavailable")?;
-    }
-    let user_count: i64 = redis::cmd("INCR")
-        .arg(&key_user)
-        .query(&mut conn)
+        let mut cmd_ip_expire = redis::cmd("PEXPIRE");
+        cmd_ip_expire.arg(&key_ip).arg(ttl_ms);
+        let _: () = tokio::time::timeout(
+            Duration::from_millis(state.redis_op_timeout_ms),
+            cmd_ip_expire.query_async(&mut conn),
+        )
+        .await
+        .map_err(|_| "rate limit backend unavailable")?
         .map_err(|_| "rate limit backend unavailable")?;
+    }
+    let mut cmd_user_incr = redis::cmd("INCR");
+    cmd_user_incr.arg(&key_user);
+    let user_count: i64 = tokio::time::timeout(
+        Duration::from_millis(state.redis_op_timeout_ms),
+        cmd_user_incr.query_async(&mut conn),
+    )
+    .await
+    .map_err(|_| "rate limit backend unavailable")?
+    .map_err(|_| "rate limit backend unavailable")?;
     if user_count == 1 {
-        let _: () = redis::cmd("PEXPIRE")
-            .arg(&key_user)
-            .arg(ttl_ms)
-            .query(&mut conn)
-            .map_err(|_| "rate limit backend unavailable")?;
+        let mut cmd_user_expire = redis::cmd("PEXPIRE");
+        cmd_user_expire.arg(&key_user).arg(ttl_ms);
+        let _: () = tokio::time::timeout(
+            Duration::from_millis(state.redis_op_timeout_ms),
+            cmd_user_expire.query_async(&mut conn),
+        )
+        .await
+        .map_err(|_| "rate limit backend unavailable")?
+        .map_err(|_| "rate limit backend unavailable")?;
     }
 
     let allowed = ip_count <= state.rate_limiter.limit_per_ip as i64
@@ -1363,7 +1393,7 @@ async fn rate_limit_middleware(
     }
 
     let allow_result = if state.redis_guard.is_some() {
-        distributed_rate_limit_allow(&state, &ip, &user_id, now)
+        distributed_rate_limit_allow(&state, &ip, &user_id, now).await
     } else {
         Ok(state.rate_limiter.allow(&ip, &user_id, now))
     };
@@ -1411,6 +1441,15 @@ async fn evaluate_handler(
                 return auth_error_response(&state, request_id, err);
             }
         };
+
+    if state.redis_guard.is_some() {
+        if let Err(err) = distributed_replay_check_and_store(&state, &header_request_id).await {
+            state
+                .metrics
+                .observe_error(start.elapsed().as_nanos() as u64);
+            return auth_error_response(&state, header_request_id, err);
+        }
+    }
 
     let req: EvaluateRequest = match serde_json::from_slice(&body) {
         Ok(req) => req,
@@ -1631,9 +1670,7 @@ fn validate_security_headers(
 
     verify_client_signature(state, headers, &request_id, timestamp_ms, key_id, body)?;
 
-    if state.redis_guard.is_some() {
-        distributed_replay_check_and_store(state, &request_id, now)?;
-    } else {
+    if state.redis_guard.is_none() {
         maybe_purge_replay_cache(state, now);
         enforce_replay_capacity(state);
         if state.replay_cache.contains_key(&request_id) {
@@ -1758,27 +1795,35 @@ fn enforce_replay_capacity(state: &AppState) {
     }
 }
 
-fn distributed_replay_check_and_store(
+async fn distributed_replay_check_and_store(
     state: &AppState,
     request_id: &str,
-    _now_ms: u64,
 ) -> Result<(), AuthError> {
     let Some(redis_guard) = &state.redis_guard else {
         return Ok(());
     };
     let key = format!("{}:replay:{}", redis_guard.key_prefix, request_id);
-    let mut conn = redis_guard
-        .client
-        .get_connection()
-        .map_err(|_| AuthError::ServiceUnavailable("replay backend unavailable"))?;
-    let result: Option<String> = redis::cmd("SET")
+    let mut conn = tokio::time::timeout(
+        Duration::from_millis(state.redis_op_timeout_ms),
+        redis_guard.client.get_multiplexed_async_connection(),
+    )
+    .await
+    .map_err(|_| AuthError::ServiceUnavailable("replay backend unavailable"))?
+    .map_err(|_| AuthError::ServiceUnavailable("replay backend unavailable"))?;
+    let mut cmd_set = redis::cmd("SET");
+    cmd_set
         .arg(&key)
         .arg("1")
         .arg("PX")
         .arg(state.replay_ttl_ms)
-        .arg("NX")
-        .query(&mut conn)
-        .map_err(|_| AuthError::ServiceUnavailable("replay backend unavailable"))?;
+        .arg("NX");
+    let result: Option<String> = tokio::time::timeout(
+        Duration::from_millis(state.redis_op_timeout_ms),
+        cmd_set.query_async(&mut conn),
+    )
+    .await
+    .map_err(|_| AuthError::ServiceUnavailable("replay backend unavailable"))?
+    .map_err(|_| AuthError::ServiceUnavailable("replay backend unavailable"))?;
     if result.is_none() {
         return Err(AuthError::Conflict(
             "replay detected: X-Request-Id already used",
@@ -2608,6 +2653,36 @@ mod tests {
         );
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn redis_backend_unavailable_fails_closed_with_503() {
+        let mut state = test_state();
+        state.redis_guard = Some(RedisGuardConfig {
+            client: redis::Client::open("redis://127.0.0.1:1/").expect("redis client"),
+            key_prefix: "nexo_test".to_string(),
+        });
+        state.redis_op_timeout_ms = 10;
+        let app = app_with_state(state);
+        let now = now_utc_ms();
+        let req_body = serde_json::json!({
+            "user_id":"redis_unavailable",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let req = signed_request(
+            req_body,
+            "test_active_secret",
+            "active",
+            "a527aca8-a4db-4119-8838-15029e5135f2",
+            now,
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
