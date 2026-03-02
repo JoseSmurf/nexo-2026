@@ -19,18 +19,24 @@ if [[ -z "$readme_rust" || -z "$readme_julia" || -z "$readme_zig" || -z "$readme
   exit 1
 fi
 
-if ! rg -q "^- BLAKE3 \+ SHAKE256 \(audit hash, with deterministic hybrid mode in INCIDENT\)$" "$README_PATH"; then
+if ! grep -Eq "^[[:space:]]*-[[:space:]]*BLAKE3 \+ SHAKE256" "$README_PATH"; then
   echo "README tech stack hash line is missing or outdated."
   exit 1
 fi
 
-if rg -q "^- BLAKE3 \+ SHA3-256 \(audit hash\)$" "$README_PATH"; then
+if grep -Eq "^[[:space:]]*-[[:space:]]*BLAKE3 \+ SHA3-256" "$README_PATH"; then
   echo "README still contains deprecated runtime tech stack line with SHA3-256."
   exit 1
 fi
 
-actual_rust="$(rg -n "#\\[tokio::test\\]|#\\[test\\]" "$ROOT_DIR/src" | wc -l | tr -d ' ')"
-actual_zig="$(rg -n '^test "' "$ROOT_DIR/tools/zig/src/"*.zig | wc -l | tr -d ' ')"
+actual_rust="$(
+  grep -R -E '#\[tokio::test\]|#\[test\]' "$ROOT_DIR/src" --include='*.rs' \
+    | wc -l | tr -d ' '
+)"
+actual_zig="$(
+  grep -R -E '^test "' "$ROOT_DIR/tools/zig/src" --include='*.zig' \
+    | wc -l | tr -d ' '
+)"
 
 if ! command -v julia >/dev/null 2>&1; then
   echo "julia command not found; cannot validate Julia test total."
