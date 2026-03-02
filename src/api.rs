@@ -200,6 +200,8 @@ pub struct EvaluateResponse {
     pub hash_algo: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha3_shadow: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow_hash_algo: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1530,6 +1532,11 @@ async fn evaluate_handler(
         trace,
         audit_hash,
         hash_algo,
+        shadow_hash_algo: if sha3_shadow.is_some() {
+            Some(shake_algo_from_bits(state.shake_bits).as_str().to_string())
+        } else {
+            None
+        },
         sha3_shadow,
     };
     signed_json_response(StatusCode::OK, &state, &header_request_id, &response)
@@ -3015,6 +3022,7 @@ mod tests {
         let (_decision, trace, _blake3_hash) = evaluate_with_config(&tx, cfg);
         let expected_sha3 = audit_hash_with_algo(&trace, AuditHashAlgo::Shake256_512);
         assert_eq!(json["sha3_shadow"], expected_sha3);
+        assert_eq!(json["shadow_hash_algo"], "shake256-512");
     }
 
     #[tokio::test]

@@ -179,7 +179,8 @@ MIT
   ],
   "audit_hash": "64-char-lowercase-hex",
   "hash_algo": "blake3|shake256-256|shake256-384|shake256-512|shake256-512+blake3-256",
-  "sha3_shadow": "optional-64-char-lowercase-hex"
+  "sha3_shadow": "optional-legacy-field-name; shadow hash value",
+  "shadow_hash_algo": "optional; actual algorithm used by sha3_shadow"
 }
 ```
 
@@ -193,6 +194,8 @@ Adaptive deterministic policy:
 Legacy migration note:
 - runtime API contract emits only: `blake3`, `shake256-256`, `shake256-384`, `shake256-512`, `shake256-512+blake3-256` (never `sha3-256`).
 - historical records with `hash_algo = "sha3-256"` are no longer emitted by Rust policy.
+- `sha3_shadow` is a legacy field name kept for backward compatibility and may carry SHAKE-based output.
+- when `sha3_shadow` is present, `shadow_hash_algo` is also present and declares the real algorithm used.
 - Zig verifier rejects `sha3-256` by default (fail-closed).
 - to validate legacy `sha3-256` archives offline, set `NEXO_ZIG_LEGACY_SHA3_256=1` when running Zig verifier.
 
