@@ -2625,7 +2625,10 @@ mod tests {
             "active",
             "6ce9d8e5-6f0d-4fe4-bf6c-dfa8d06d2e6f",
             now,
-            &[("x-request-id", "4a8587a3-b0ef-4607-9bd9-2be42f645e7f".to_string())],
+            &[(
+                "x-request-id",
+                "4a8587a3-b0ef-4607-9bd9-2be42f645e7f".to_string(),
+            )],
         );
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
