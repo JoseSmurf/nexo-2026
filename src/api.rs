@@ -1571,6 +1571,19 @@ fn validate_security_headers(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Result<(String, u64, String), AuthError> {
+    if headers.get_all(HEADER_SIGNATURE).iter().count() > 1 {
+        return Err(AuthError::Unauthorized("duplicate X-Signature header"));
+    }
+    if headers.get_all(HEADER_REQUEST_ID).iter().count() > 1 {
+        return Err(AuthError::Unauthorized("duplicate X-Request-Id header"));
+    }
+    if headers.get_all(HEADER_KEY_ID).iter().count() > 1 {
+        return Err(AuthError::Unauthorized("duplicate X-Key-Id header"));
+    }
+    if headers.get_all(HEADER_TIMESTAMP).iter().count() > 1 {
+        return Err(AuthError::Unauthorized("duplicate X-Timestamp header"));
+    }
+
     verify_edge_guard(state, headers)?;
     verify_mtls_attestation(state, headers)?;
     let signature_hex = extract_header(headers, HEADER_SIGNATURE)
@@ -2219,6 +2232,9 @@ async fn security_status_handler(
 }
 
 fn is_valid_admin_bearer_token(state: &AppState, headers: &HeaderMap) -> bool {
+    if headers.get_all(HEADER_AUTHORIZATION).iter().count() > 1 {
+        return false;
+    }
     let Some(expected) = state.admin_api_token.as_deref() else {
         return false;
     };
@@ -2518,6 +2534,80 @@ mod tests {
             .expect("request");
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn duplicate_x_signature_header_is_rejected() {
+        let app = app_with_state(test_state());
+        let now = now_utc_ms();
+        let req_body = serde_json::json!({
+            "user_id":"dup_sig",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let req = signed_request_with_headers(
+            req_body,
+            "test_active_secret",
+            "active",
+            "304deece-b224-4d16-8e1d-3efca0327ec4",
+            now,
+            &[("x-signature", "deadbeef".to_string())],
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn duplicate_x_request_id_header_is_rejected() {
+        let app = app_with_state(test_state());
+        let now = now_utc_ms();
+        let req_body = serde_json::json!({
+            "user_id":"dup_reqid",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let req = signed_request_with_headers(
+            req_body,
+            "test_active_secret",
+            "active",
+            "6ce9d8e5-6f0d-4fe4-bf6c-dfa8d06d2e6f",
+            now,
+            &[("x-request-id", "4a8587a3-b0ef-4607-9bd9-2be42f645e7f".to_string())],
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn single_critical_headers_still_work() {
+        let app = app_with_state(test_state());
+        let now = now_utc_ms();
+        let req_body = serde_json::json!({
+            "user_id":"single_ok",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let req = signed_request(
+            req_body,
+            "test_active_secret",
+            "active",
+            "4d0bcf2f-df5f-45f5-b5f9-a56336ef8f02",
+            now,
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]
