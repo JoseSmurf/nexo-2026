@@ -189,18 +189,23 @@ pub fn verifyLineWithOptions(
             else => return .SchemaInvalid,
         }
     }
-    const out_bytes = blk: {
-        if (schema.getString(root_obj, "trace_bytes")) |trace_bytes_b64| {
-            // If producer provides canonical trace_bytes (base64), prefer exact bytes over reconstructed framing.
-            const decoded_len = std.base64.standard.Decoder.calcSizeForSlice(trace_bytes_b64) catch return .SchemaInvalid;
-            const decoded = alloc.alloc(u8, decoded_len) catch return .SchemaInvalid;
-            defer alloc.free(decoded);
-            std.base64.standard.Decoder.decode(decoded, trace_bytes_b64) catch return .SchemaInvalid;
-            break :blk hashCanonicalBytes(alloc, hash_algo, decoded) catch return .SchemaInvalid;
-        }
-        break :blk hashTrace(alloc, hash_algo, trace_arr) catch return .SchemaInvalid;
-    };
-    defer alloc.free(out_bytes);
+    const out_bytes_from_trace = hashTrace(alloc, hash_algo, trace_arr) catch return .SchemaInvalid;
+    defer alloc.free(out_bytes_from_trace);
+
+    var out_bytes = out_bytes_from_trace;
+    if (schema.getString(root_obj, "trace_bytes")) |trace_bytes_b64| {
+        // When trace_bytes is present, require it to match the semantic trace framing.
+        // This prevents accepting records where trace JSON diverges from canonical bytes.
+        const decoded_len = std.base64.standard.Decoder.calcSizeForSlice(trace_bytes_b64) catch return .SchemaInvalid;
+        const decoded = alloc.alloc(u8, decoded_len) catch return .SchemaInvalid;
+        defer alloc.free(decoded);
+        std.base64.standard.Decoder.decode(decoded, trace_bytes_b64) catch return .SchemaInvalid;
+
+        const out_bytes_from_trace_bytes = hashCanonicalBytes(alloc, hash_algo, decoded) catch return .SchemaInvalid;
+        defer alloc.free(out_bytes_from_trace_bytes);
+        if (!std.mem.eql(u8, out_bytes_from_trace, out_bytes_from_trace_bytes)) return .SchemaInvalid;
+        out_bytes = out_bytes_from_trace_bytes;
+    }
     const out_hex = toHexLower(alloc, out_bytes) catch return .SchemaInvalid;
     defer alloc.free(out_hex);
 
@@ -458,4 +463,27 @@ test "verifyLine accepts Rust-generated hybrid fixture file" {
 
     const result = verifyLine(std.testing.allocator, line);
     try std.testing.expectEqual(schema.VerifyResult.Ok, result);
+}
+
+test "verifyLine rejects diverging trace and trace_bytes" {
+    const canonical = "evil-canonical-bytes";
+    const hash_bytes = try hashCanonicalBytes(std.testing.allocator, .blake3_256, canonical);
+    defer std.testing.allocator.free(hash_bytes);
+    const hash_hex = try toHexLower(std.testing.allocator, hash_bytes);
+    defer std.testing.allocator.free(hash_hex);
+
+    const b64_len = std.base64.standard.Encoder.calcSize(canonical.len);
+    const trace_b64 = try std.testing.allocator.alloc(u8, b64_len);
+    defer std.testing.allocator.free(trace_b64);
+    _ = std.base64.standard.Encoder.encode(trace_b64, canonical);
+
+    const line = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"request_id\":\"diverge-001\",\"final_decision\":\"Flagged\",\"trace\":{s},\"trace_bytes\":\"{s}\",\"hash_algo\":\"blake3-256\",\"audit_hash\":\"{s}\"}}",
+        .{ TRACE_FLAGGED_JSON, trace_b64, hash_hex },
+    );
+    defer std.testing.allocator.free(line);
+
+    const result = verifyLine(std.testing.allocator, line);
+    try std.testing.expectEqual(schema.VerifyResult.SchemaInvalid, result);
 }
