@@ -137,9 +137,9 @@ MIT
 - `POST /evaluate`
 - `GET /healthz`
 - `GET /readyz`
-- `GET /metrics`
-- `GET /audit/recent?limit=50`
-- `GET /security/status`
+- `GET /metrics` (admin-gated)
+- `GET /audit/recent?limit=50` (admin-gated)
+- `GET /security/status` (admin-gated)
 
 ## Audit Contract (Fixed Schema)
 
@@ -253,6 +253,13 @@ Status codes:
 - `409` replayed `X-Request-Id`
 - `429` rate limit exceeded
 - `415` invalid content type
+- `503` security backend unavailable (Redis distributed replay/rate-limit fail-closed path)
+
+Admin endpoint protection:
+
+- default is off: `NEXO_ADMIN_API_ENABLED=false`
+- when disabled, `GET /metrics`, `GET /audit/recent`, `GET /security/status` return `404`
+- when enabled, these endpoints require `Authorization: Bearer <NEXO_ADMIN_API_TOKEN>` and return `401` on missing/invalid token
 
 Required environment:
 
@@ -273,10 +280,13 @@ Required environment:
 - `NEXO_RATE_LIMIT_WINDOW_MS` (optional, default `60000`)
 - `NEXO_RATE_LIMIT_IP` (optional, default `600`)
 - `NEXO_RATE_LIMIT_USER` (optional, default `300`)
+- `NEXO_REDIS_OP_TIMEOUT_MS` (optional, default `100`; timeout in ms for each Redis distributed guard operation)
 - `NEXO_SECURITY_LEVEL` (optional, default `NORMAL`; `NORMAL|ELEVATED|INCIDENT`)
 - `NEXO_AUDIT_HIGH_THRESHOLD_CENTS` (optional, default `5000000`)
 - `NEXO_AUDIT_SHAKE_BITS` (optional, default `512`; one of `256|384|512`)
 - `NEXO_SHA3_SHADOW_ENABLED` (optional, default `false`; when `true`, keeps `hash_algo=blake3` and adds `sha3_shadow`)
+- `NEXO_ADMIN_API_ENABLED` (optional, default `false`)
+- `NEXO_ADMIN_API_TOKEN` (required when `NEXO_ADMIN_API_ENABLED=true`)
 - `NEXO_MTLS_REQUIRED` (optional, default `false`)
 - `NEXO_CLIENT_SIG_REQUIRED` (optional, default `false`)
 
