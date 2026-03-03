@@ -2283,7 +2283,8 @@ async fn security_status_handler(
 }
 
 fn is_valid_admin_bearer_token(state: &AppState, headers: &HeaderMap) -> bool {
-    if headers.get_all(HEADER_AUTHORIZATION).iter().count() > 1 {
+    let auth_count = headers.get_all(HEADER_AUTHORIZATION).iter().count();
+    if auth_count != 1 {
         return false;
     }
     let Some(expected) = state.admin_api_token.as_deref() else {
