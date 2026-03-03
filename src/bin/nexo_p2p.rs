@@ -23,7 +23,7 @@ mod network_cli {
         msg: String,
         retries: u8,
         ack_timeout_ms: u64,
-        db: Option<String>,
+        db: String,
         seen_ttl_ms: u64,
     }
 
@@ -31,7 +31,7 @@ mod network_cli {
         "nexo_p2p (network feature)\n\
          usage:\n\
            nexo_p2p listen --bind 127.0.0.1:9001 --db /tmp/nexo_a.db [--seen-ttl-ms 120000]\n\
-           nexo_p2p send --bind 127.0.0.1:9002 --peer 127.0.0.1:9001 --sender node_b --msg \"hello\" [--db /tmp/nexo_b.db] [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000]"
+           nexo_p2p send --bind 127.0.0.1:9002 --peer 127.0.0.1:9001 --sender node_b --msg \"hello\" --db /tmp/nexo_b.db [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000]"
     }
 
     pub fn parse_listen(args: &[String]) -> Result<ListenArgs, String> {
@@ -54,10 +54,10 @@ mod network_cli {
             .map_err(|_| "invalid --peer socket addr".to_string())?;
         let sender = required(&flags, "sender")?;
         let msg = required(&flags, "msg")?;
+        let db = required(&flags, "db")?;
         let retries = parse_u8(flags.get("retries"), 3, "retries")?;
         let ack_timeout_ms = parse_u64(flags.get("ack-timeout-ms"), 200, "ack-timeout-ms")?;
         let seen_ttl_ms = parse_u64(flags.get("seen-ttl-ms"), 120_000, "seen-ttl-ms")?;
-        let db = flags.get("db").cloned();
         Ok(SendArgs {
             bind,
             peer,
@@ -109,9 +109,12 @@ mod network_cli {
         let node = UdpNode::bind(&args.bind)
             .await
             .map_err(|e| format!("bind failed: {e}"))?;
+        let store = OfflineStore::open(&args.db).map_err(|e| format!("db open failed: {e}"))?;
 
         let now = now_utc_ms();
-        let nonce = now;
+        let nonce = store
+            .next_nonce(&args.sender)
+            .map_err(|e| format!("next_nonce failed: {e}"))?;
         let msg = CanonicalMessage::new_with_nonce(args.sender, now, nonce, args.msg.as_bytes())
             .map_err(|e| e.to_string())?;
         let ehash = event_hash(&msg);
@@ -128,13 +131,10 @@ mod network_cli {
             args.peer, ehash, msg.content
         );
 
-        if let Some(db_path) = args.db {
-            let store = OfflineStore::open(&db_path).map_err(|e| format!("db open failed: {e}"))?;
-            let status = store
-                .insert_message(&msg, now_utc_ms(), args.seen_ttl_ms)
-                .map_err(|e| format!("store insert failed: {e}"))?;
-            println!("stored local {:?} db={}", status, db_path);
-        }
+        let status = store
+            .insert_message(&msg, now_utc_ms(), args.seen_ttl_ms)
+            .map_err(|e| format!("store insert failed: {e}"))?;
+        println!("stored local {:?} db={}", status, args.db);
 
         Ok(())
     }

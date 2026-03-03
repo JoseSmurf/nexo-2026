@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::message::{content_hash, event_hash, CanonicalMessage};
 
@@ -66,6 +66,58 @@ impl OfflineStore {
         Ok(rows.next()?.is_some())
     }
 
+    pub fn next_nonce(&self, sender_id: &str) -> Result<u64, rusqlite::Error> {
+        if sender_id.trim().is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "sender_id".to_string(),
+            ));
+        }
+
+        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION;")?;
+
+        let result = (|| -> Result<u64, rusqlite::Error> {
+            let last: Option<i64> = self
+                .conn
+                .query_row(
+                    "SELECT last_nonce FROM sender_counters WHERE sender_id = ?1",
+                    params![sender_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+
+            let next = match last {
+                Some(last_nonce) => last_nonce.checked_add(1).ok_or_else(|| {
+                    rusqlite::Error::InvalidParameterName("nonce_overflow".to_string())
+                })?,
+                None => {
+                    self.conn.execute(
+                        "INSERT INTO sender_counters(sender_id, last_nonce) VALUES (?1, 0)",
+                        params![sender_id],
+                    )?;
+                    1
+                }
+            };
+
+            self.conn.execute(
+                "UPDATE sender_counters SET last_nonce = ?2 WHERE sender_id = ?1",
+                params![sender_id, next],
+            )?;
+
+            Ok(next as u64)
+        })();
+
+        match result {
+            Ok(next) => {
+                self.conn.execute_batch("COMMIT;")?;
+                Ok(next)
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK;");
+                Err(err)
+            }
+        }
+    }
+
     fn purge_seen_expired(&self, now_ms: u64) -> Result<(), rusqlite::Error> {
         self.conn.execute(
             "DELETE FROM seen_hashes WHERE expires_at_utc_ms <= ?1",
@@ -89,6 +141,10 @@ impl OfflineStore {
                 expires_at_utc_ms INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_seen_hashes_expires ON seen_hashes(expires_at_utc_ms);
+            CREATE TABLE IF NOT EXISTS sender_counters (
+                sender_id TEXT PRIMARY KEY NOT NULL,
+                last_nonce INTEGER NOT NULL
+            );
             "#,
         )?;
         Ok(())
@@ -121,5 +177,14 @@ mod tests {
         assert_eq!(status, StoreInsertStatus::Inserted);
         assert!(store.is_seen(&ehash, 1_050).expect("seen"));
         assert!(!store.is_seen(&ehash, 1_100).expect("seen"));
+    }
+
+    #[test]
+    fn next_nonce_is_monotonic_per_sender() {
+        let store = OfflineStore::open_in_memory().expect("store");
+        let n1 = store.next_nonce("alice").expect("n1");
+        let n2 = store.next_nonce("alice").expect("n2");
+        assert_eq!(n1, 1);
+        assert_eq!(n2, 2);
     }
 }
