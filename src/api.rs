@@ -2570,6 +2570,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admin_endpoint_rejects_duplicate_authorization_header() {
+        let mut state = test_state();
+        state.admin_api_enabled = true;
+        state.admin_api_token = Some("admin-test-token".to_string());
+        let app = app_with_state(state);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/security/status")
+            .header(HEADER_AUTHORIZATION, "Bearer admin-test-token")
+            .header(HEADER_AUTHORIZATION, "Bearer admin-test-token")
+            .body(Body::empty())
+            .expect("request");
+
+        let resp = app.oneshot(req).await.expect("security/status");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn request_without_signature_returns_401() {
         let app = app_with_state(test_state());
         let now = now_utc_ms();
