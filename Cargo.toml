@@ -11,6 +11,11 @@ keywords = ["aml", "audit", "deterministic", "security", "compliance"]
 name = "syntax_engine"
 path = "src/lib.rs"
 
+[features]
+default = []
+network = ["dep:rusqlite"]
+julia = []
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 blake3 = "1.5"
@@ -29,6 +34,7 @@ aws-config = { version = "1.8", default-features = false, features = ["rustls"] 
 aws-sdk-secretsmanager = { version = "1.95", default-features = false, features = ["rustls"] }
 ed25519-dalek = "2.2"
 redis = { version = "0.32", features = ["aio", "tokio-comp"] }
+rusqlite = { version = "0.32", optional = true, features = ["bundled"] }
 
 [dev-dependencies]
 criterion = "0.5"
