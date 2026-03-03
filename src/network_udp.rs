@@ -60,7 +60,8 @@ impl UdpNode {
     pub async fn recv_event(&self) -> io::Result<(CanonicalMessage, SocketAddr)> {
         let mut buf = [0u8; 1024];
         let (n, from) = self.socket.recv_from(&mut buf).await?;
-        let msg = decode_event(&buf[..n]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let msg =
+            decode_event(&buf[..n]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         Ok((msg, from))
     }
 
@@ -98,8 +99,8 @@ fn decode_event(buf: &[u8]) -> Result<CanonicalMessage, &'static str> {
     if sender_end >= buf.len() {
         return Err("REJECTED: malformed sender");
     }
-    let sender = std::str::from_utf8(&buf[sender_start..sender_end])
-        .map_err(|_| "REJECTED: sender utf8")?;
+    let sender =
+        std::str::from_utf8(&buf[sender_start..sender_end]).map_err(|_| "REJECTED: sender utf8")?;
     let content_len = buf[sender_end] as usize;
     let content_start = sender_end + 1;
     let content_end = content_start + content_len;

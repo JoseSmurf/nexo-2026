@@ -7,12 +7,12 @@ use sha3::{
 pub mod api;
 pub mod audit_store;
 pub mod message;
-pub mod profile;
-pub mod telemetry;
 #[cfg(feature = "network")]
 pub mod network_udp;
 #[cfg(feature = "network")]
 pub mod offline_store;
+pub mod profile;
+pub mod telemetry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Severity {
