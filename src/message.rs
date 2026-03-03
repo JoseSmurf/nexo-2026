@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub struct CanonicalMessage {
     pub sender_id: String,
     pub timestamp_utc_ms: u64,
+    pub nonce: u64,
     pub content: Vec<u8>,
 }
 
@@ -13,6 +14,15 @@ impl CanonicalMessage {
     pub fn new(
         sender_id: impl Into<String>,
         timestamp_utc_ms: u64,
+        content: impl AsRef<[u8]>,
+    ) -> Result<Self, &'static str> {
+        Self::new_with_nonce(sender_id, timestamp_utc_ms, 0, content)
+    }
+
+    pub fn new_with_nonce(
+        sender_id: impl Into<String>,
+        timestamp_utc_ms: u64,
+        nonce: u64,
         content: impl AsRef<[u8]>,
     ) -> Result<Self, &'static str> {
         let sender_id = sender_id.into();
@@ -29,6 +39,7 @@ impl CanonicalMessage {
         Ok(Self {
             sender_id,
             timestamp_utc_ms,
+            nonce,
             content: content.to_vec(),
         })
     }
@@ -58,6 +69,7 @@ pub fn event_hash_bytes(message: &CanonicalMessage) -> [u8; 32] {
         b"timestamp_utc_ms",
         &message.timestamp_utc_ms.to_le_bytes(),
     );
+    hash_field(&mut h, b"nonce", &message.nonce.to_le_bytes());
     hash_field(&mut h, b"content", &message.content);
     *h.finalize().as_bytes()
 }
@@ -96,8 +108,10 @@ mod tests {
 
     #[test]
     fn event_hash_changes_when_content_changes() {
-        let a = CanonicalMessage::new("u", 10, b"hello").expect("valid");
-        let b = CanonicalMessage::new("u", 10, b"world").expect("valid");
+        let a = CanonicalMessage::new_with_nonce("u", 10, 1, b"hello").expect("valid");
+        let b = CanonicalMessage::new_with_nonce("u", 10, 1, b"world").expect("valid");
         assert_ne!(event_hash(&a), event_hash(&b));
+        let c = CanonicalMessage::new_with_nonce("u", 10, 2, b"hello").expect("valid");
+        assert_ne!(event_hash(&a), event_hash(&c));
     }
 }

@@ -75,9 +75,10 @@ impl UdpNode {
 fn encode_event(msg: &CanonicalMessage) -> Vec<u8> {
     let sender = msg.sender_id.as_bytes();
     let content = &msg.content;
-    let mut out = Vec::with_capacity(1 + 8 + 1 + sender.len() + 1 + content.len());
+    let mut out = Vec::with_capacity(1 + 8 + 8 + 1 + sender.len() + 1 + content.len());
     out.push(PACKET_EVENT);
     out.extend_from_slice(&msg.timestamp_utc_ms.to_le_bytes());
+    out.extend_from_slice(&msg.nonce.to_le_bytes());
     out.push(sender.len() as u8);
     out.extend_from_slice(sender);
     out.push(content.len() as u8);
@@ -86,15 +87,18 @@ fn encode_event(msg: &CanonicalMessage) -> Vec<u8> {
 }
 
 fn decode_event(buf: &[u8]) -> Result<CanonicalMessage, &'static str> {
-    if buf.len() < 11 || buf[0] != PACKET_EVENT {
+    if buf.len() < 19 || buf[0] != PACKET_EVENT {
         return Err("REJECTED: invalid event packet");
     }
     let mut ts = [0u8; 8];
     ts.copy_from_slice(&buf[1..9]);
     let timestamp_utc_ms = u64::from_le_bytes(ts);
+    let mut nonce = [0u8; 8];
+    nonce.copy_from_slice(&buf[9..17]);
+    let nonce = u64::from_le_bytes(nonce);
 
-    let sender_len = buf[9] as usize;
-    let sender_start = 10;
+    let sender_len = buf[17] as usize;
+    let sender_start = 18;
     let sender_end = sender_start + sender_len;
     if sender_end >= buf.len() {
         return Err("REJECTED: malformed sender");
@@ -107,7 +111,12 @@ fn decode_event(buf: &[u8]) -> Result<CanonicalMessage, &'static str> {
     if content_end != buf.len() {
         return Err("REJECTED: malformed content");
     }
-    CanonicalMessage::new(sender, timestamp_utc_ms, &buf[content_start..content_end])
+    CanonicalMessage::new_with_nonce(
+        sender,
+        timestamp_utc_ms,
+        nonce,
+        &buf[content_start..content_end],
+    )
 }
 
 fn encode_ack(hash: [u8; 32]) -> [u8; 33] {
