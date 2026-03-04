@@ -123,6 +123,32 @@ pub fn analyze_bytes(input: &[u8]) -> Analysis {
     analyze_text(&text)
 }
 
+pub fn deterministic_ai_response(prompt: &[u8]) -> String {
+    let analysis = analyze_bytes(prompt);
+    let topics = if analysis.topics.is_empty() {
+        "none".to_string()
+    } else {
+        analysis.topics.join(",")
+    };
+    match analysis.intent {
+        "transaction" => format!(
+            "deterministic_ai intent=transaction action=review_payment topics={topics} policy=strict"
+        ),
+        "security" => format!(
+            "deterministic_ai intent=security action=escalate_validation topics={topics} policy=fail_closed"
+        ),
+        "support" => format!(
+            "deterministic_ai intent=support action=provide_steps topics={topics} policy=deterministic"
+        ),
+        "greeting" => format!(
+            "deterministic_ai intent=greeting action=acknowledge topics={topics} policy=deterministic"
+        ),
+        _ => format!(
+            "deterministic_ai intent=unknown action=request_clarification topics={topics} policy=deterministic"
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,5 +195,14 @@ mod tests {
         let b = analyze_text(input);
         assert_eq!(a, b);
         assert_eq!(a.intent, "transaction");
+    }
+
+    #[test]
+    fn deterministic_ai_response_is_stable() {
+        let prompt = b"help invalid signature";
+        let a = deterministic_ai_response(prompt);
+        let b = deterministic_ai_response(prompt);
+        assert_eq!(a, b);
+        assert!(a.contains("intent=security"));
     }
 }

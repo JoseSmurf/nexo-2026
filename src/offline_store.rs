@@ -2,7 +2,9 @@ use ed25519_dalek::SigningKey;
 use getrandom::getrandom;
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::message::{content_hash, event_hash, CanonicalMessage};
+use crate::message::{
+    content_hash, content_hash_bytes, event_hash, event_hash_bytes_from_parts, CanonicalMessage,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreInsertStatus {
@@ -14,6 +16,7 @@ pub enum StoreInsertStatus {
 pub struct StoredMessage {
     pub event_hash: String,
     pub sender_id: String,
+    pub channel: String,
     pub timestamp_utc_ms: u64,
     pub nonce: u64,
     pub content: Vec<u8>,
@@ -44,19 +47,71 @@ impl OfflineStore {
         now_ms: u64,
         seen_ttl_ms: u64,
     ) -> Result<StoreInsertStatus, rusqlite::Error> {
+        self.insert_message_with_channel(msg, "global", now_ms, seen_ttl_ms)
+    }
+
+    pub fn insert_message_with_channel(
+        &self,
+        msg: &CanonicalMessage,
+        channel: &str,
+        now_ms: u64,
+        seen_ttl_ms: u64,
+    ) -> Result<StoreInsertStatus, rusqlite::Error> {
+        validate_channel(channel)?;
         self.purge_seen_expired(now_ms)?;
         let ehash = event_hash(msg);
         let chash = content_hash(&msg.content);
         let inserted = self.conn.execute(
-            "INSERT OR IGNORE INTO messages(event_hash, content_hash, sender_id, timestamp_utc_ms, nonce, content_blob)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT OR IGNORE INTO messages(event_hash, content_hash, sender_id, channel, timestamp_utc_ms, nonce, content_blob)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 ehash,
                 chash,
                 msg.sender_id,
+                channel,
                 msg.timestamp_utc_ms as i64,
                 msg.nonce as i64,
                 msg.content
+            ],
+        )?;
+        if inserted == 0 {
+            return Ok(StoreInsertStatus::Duplicate);
+        }
+        self.conn.execute(
+            "INSERT OR REPLACE INTO seen_hashes(event_hash, expires_at_utc_ms) VALUES (?1, ?2)",
+            params![ehash, now_ms.saturating_add(seen_ttl_ms) as i64],
+        )?;
+        Ok(StoreInsertStatus::Inserted)
+    }
+
+    pub fn insert_raw_message_with_channel(
+        &self,
+        sender_id: &str,
+        timestamp_utc_ms: u64,
+        nonce: u64,
+        content: &[u8],
+        channel: &str,
+        now_ms: u64,
+        seen_ttl_ms: u64,
+    ) -> Result<StoreInsertStatus, rusqlite::Error> {
+        validate_channel(channel)?;
+        self.purge_seen_expired(now_ms)?;
+        let chash = content_hash(content);
+        let chash_bytes = content_hash_bytes(content);
+        let ehash_bytes =
+            event_hash_bytes_from_parts(sender_id, timestamp_utc_ms, nonce, &chash_bytes);
+        let ehash = blake3::Hash::from(ehash_bytes).to_hex().to_string();
+        let inserted = self.conn.execute(
+            "INSERT OR IGNORE INTO messages(event_hash, content_hash, sender_id, channel, timestamp_utc_ms, nonce, content_blob)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                ehash,
+                chash,
+                sender_id,
+                channel,
+                timestamp_utc_ms as i64,
+                nonce as i64,
+                content
             ],
         )?;
         if inserted == 0 {
@@ -126,7 +181,7 @@ impl OfflineStore {
         }
         let limit = limit.min(1000);
         let mut stmt = self.conn.prepare(
-            "SELECT event_hash, sender_id, timestamp_utc_ms, nonce, content_blob
+            "SELECT event_hash, sender_id, channel, timestamp_utc_ms, nonce, content_blob
              FROM messages
              ORDER BY rowid DESC
              LIMIT ?1",
@@ -137,9 +192,10 @@ impl OfflineStore {
             out.push(StoredMessage {
                 event_hash: row.get(0)?,
                 sender_id: row.get(1)?,
-                timestamp_utc_ms: row.get(2)?,
-                nonce: row.get(3)?,
-                content: row.get(4)?,
+                channel: row.get(2)?,
+                timestamp_utc_ms: row.get(3)?,
+                nonce: row.get(4)?,
+                content: row.get(5)?,
             });
         }
         Ok(out)
@@ -155,7 +211,7 @@ impl OfflineStore {
         }
         let limit = limit.min(1000);
         let mut stmt = self.conn.prepare(
-            "SELECT event_hash, sender_id, timestamp_utc_ms, nonce, content_blob
+            "SELECT event_hash, sender_id, channel, timestamp_utc_ms, nonce, content_blob
              FROM messages
              WHERE timestamp_utc_ms >= ?1
              ORDER BY timestamp_utc_ms ASC, rowid ASC
@@ -167,9 +223,10 @@ impl OfflineStore {
             out.push(StoredMessage {
                 event_hash: row.get(0)?,
                 sender_id: row.get(1)?,
-                timestamp_utc_ms: row.get(2)?,
-                nonce: row.get(3)?,
-                content: row.get(4)?,
+                channel: row.get(2)?,
+                timestamp_utc_ms: row.get(3)?,
+                nonce: row.get(4)?,
+                content: row.get(5)?,
             });
         }
         Ok(out)
@@ -280,6 +337,7 @@ impl OfflineStore {
                 event_hash TEXT PRIMARY KEY NOT NULL,
                 content_hash TEXT NOT NULL,
                 sender_id TEXT NOT NULL,
+                channel TEXT NOT NULL DEFAULT 'global',
                 timestamp_utc_ms INTEGER NOT NULL,
                 nonce INTEGER NOT NULL,
                 content_blob BLOB NOT NULL
@@ -313,8 +371,24 @@ impl OfflineStore {
                 if msg.contains("duplicate column name") => {}
             Err(e) => return Err(e),
         }
+        match self.conn.execute(
+            "ALTER TABLE messages ADD COLUMN channel TEXT NOT NULL DEFAULT 'global'",
+            [],
+        ) {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+                if msg.contains("duplicate column name") => {}
+            Err(e) => return Err(e),
+        }
         Ok(())
     }
+}
+
+fn validate_channel(channel: &str) -> Result<(), rusqlite::Error> {
+    if channel == "global" || channel == "ai" {
+        return Ok(());
+    }
+    Err(rusqlite::Error::InvalidParameterName("channel".to_string()))
 }
 
 #[cfg(test)]
@@ -413,5 +487,17 @@ mod tests {
         assert!(!store.is_forwarded("abc").expect("not forwarded"));
         store.mark_forwarded("abc", 123).expect("mark");
         assert!(store.is_forwarded("abc").expect("forwarded"));
+    }
+
+    #[test]
+    fn ai_channel_is_persisted() {
+        let store = OfflineStore::open_in_memory().expect("store");
+        let msg = CanonicalMessage::new_with_nonce("alice", 100, 1, b"prompt").expect("msg");
+        let status = store
+            .insert_message_with_channel(&msg, "ai", 1000, 1000)
+            .expect("insert");
+        assert_eq!(status, StoreInsertStatus::Inserted);
+        let rows = store.last_messages(1).expect("rows");
+        assert_eq!(rows[0].channel, "ai");
     }
 }

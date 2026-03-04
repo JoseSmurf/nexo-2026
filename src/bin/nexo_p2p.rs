@@ -6,7 +6,7 @@ mod network_cli {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tokio::time::timeout;
 
-    use syntax_engine::analyzer::analyze_bytes;
+    use syntax_engine::analyzer::{analyze_bytes, deterministic_ai_response};
     use syntax_engine::message::{
         content_hash_bytes, event_hash, event_hash_bytes_from_parts, sign_event_hash,
         signed_envelope_hash_bytes, verify_event_hash_signature, CanonicalMessage,
@@ -78,6 +78,12 @@ mod network_cli {
         shared_key_hex: Option<String>,
     }
 
+    #[derive(Debug)]
+    pub struct AiArgs {
+        db: String,
+        sender: String,
+    }
+
     pub fn usage() -> &'static str {
         "nexo_p2p (network feature)\n\
          usage:\n\
@@ -85,6 +91,7 @@ mod network_cli {
           nexo_p2p send --bind 127.0.0.1:9002 --peer 127.0.0.1:9001 --sender node_b --msg \"hello\" --db /tmp/nexo_b.db [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000] [--crypto --shared-key-hex <64hex>]\n\
           nexo_p2p chat --bind 127.0.0.1:9001 --peer 127.0.0.1:9002 --sender node_a --db /tmp/nexo_a.db [--daemon] [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000] [--crypto --shared-key-hex <64hex>]\n\
           nexo_p2p chat --bind 0.0.0.0:9001 --discover --broadcast 255.255.255.255:9001 --discover-timeout-ms 800 --sender node_a --db /tmp/nexo_a.db [--sync-on-start --since-ms 0] [--crypto --shared-key-hex <64hex>]\n\
+          nexo_p2p ai --db /tmp/nexo_ai.db --sender node_a\n\
           nexo_p2p sync --bind 127.0.0.1:9010 --peer 127.0.0.1:9001 --db /tmp/nexo_b.db --since-ms 0 [--timeout-ms 800] [--crypto --shared-key-hex <64hex>]\n\
           nexo_p2p discover --bind 0.0.0.0:9001 --broadcast 255.255.255.255:9001 [--timeout-ms 800]"
     }
@@ -238,6 +245,13 @@ mod network_cli {
             crypto,
             shared_key_hex,
         })
+    }
+
+    pub fn parse_ai(args: &[String]) -> Result<AiArgs, String> {
+        let flags = parse_flags(args)?;
+        let db = required(&flags, "db")?;
+        let sender = required(&flags, "sender")?;
+        Ok(AiArgs { db, sender })
     }
 
     pub async fn run_listen(args: ListenArgs) -> Result<(), String> {
@@ -714,6 +728,22 @@ mod network_cli {
         Ok(())
     }
 
+    pub async fn run_ai(args: AiArgs) -> Result<(), String> {
+        let store = OfflineStore::open(&args.db).map_err(|e| format!("db open failed: {e}"))?;
+        let mut stdin = std::io::stdin().lock();
+        let mut line = String::new();
+        let n = stdin
+            .read_line(&mut line)
+            .map_err(|e| format!("stdin read failed: {e}"))?;
+        if n == 0 {
+            return Err("missing prompt from stdin".to_string());
+        }
+        let prompt = line.trim_end_matches(['\r', '\n']).to_string();
+        let response = process_ai_prompt(&store, &args.sender, &prompt, now_utc_ms(), 120_000)?;
+        println!("{}", response);
+        Ok(())
+    }
+
     async fn discover_peer(
         bind: &str,
         broadcast: SocketAddr,
@@ -1045,6 +1075,48 @@ mod network_cli {
             .as_millis() as u64
     }
 
+    fn process_ai_prompt(
+        store: &OfflineStore,
+        sender: &str,
+        prompt: &str,
+        now_ms: u64,
+        seen_ttl_ms: u64,
+    ) -> Result<String, String> {
+        validate_chat_input_bytes(prompt)?;
+        let prompt_nonce = store
+            .next_nonce(sender)
+            .map_err(|e| format!("next_nonce failed: {e}"))?;
+        let prompt_msg = CanonicalMessage::new_with_nonce(
+            sender.to_string(),
+            now_ms,
+            prompt_nonce,
+            prompt.as_bytes(),
+        )
+        .map_err(|e| e.to_string())?;
+        store
+            .insert_message_with_channel(&prompt_msg, "ai", now_ms, seen_ttl_ms)
+            .map_err(|e| format!("store prompt failed: {e}"))?;
+
+        let response = deterministic_ai_response(prompt.as_bytes());
+        let ai_now = now_ms.saturating_add(1);
+        let ai_nonce = store
+            .next_nonce("ai")
+            .map_err(|e| format!("next_nonce ai failed: {e}"))?;
+        store
+            .insert_raw_message_with_channel(
+                "ai",
+                ai_now,
+                ai_nonce,
+                response.as_bytes(),
+                "ai",
+                ai_now,
+                seen_ttl_ms,
+            )
+            .map_err(|e| format!("store ai response failed: {e}"))?;
+
+        Ok(response)
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -1101,6 +1173,33 @@ mod network_cli {
             ];
             let parsed = parse_chat(&args).expect("parse");
             assert!(parsed.daemon);
+        }
+
+        #[test]
+        fn ai_input_over_32_bytes_is_rejected() {
+            let input = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+            assert!(validate_chat_input_bytes(input).is_err());
+        }
+
+        #[test]
+        fn ai_response_is_deterministic() {
+            let store = OfflineStore::open_in_memory().expect("store");
+            let a = process_ai_prompt(&store, "u1", "help invalid signature", 10_000, 1_000)
+                .expect("run a");
+            let b = process_ai_prompt(&store, "u2", "help invalid signature", 20_000, 1_000)
+                .expect("run b");
+            assert_eq!(a, b);
+        }
+
+        #[test]
+        fn ai_channel_is_saved_correctly() {
+            let store = OfflineStore::open_in_memory().expect("store");
+            process_ai_prompt(&store, "u1", "hello", 10_000, 1_000).expect("run");
+            let rows = store.last_messages(2).expect("rows");
+            assert_eq!(rows.len(), 2);
+            assert!(rows.iter().all(|m| m.channel == "ai"));
+            assert!(rows.iter().any(|m| m.sender_id == "u1"));
+            assert!(rows.iter().any(|m| m.sender_id == "ai"));
         }
 
         #[tokio::test]
@@ -1298,6 +1397,10 @@ async fn main() {
         },
         Some("sync") => match network_cli::parse_sync(&args[2..]) {
             Ok(cfg) => network_cli::run_sync(cfg).await,
+            Err(e) => Err(e),
+        },
+        Some("ai") => match network_cli::parse_ai(&args[2..]) {
+            Ok(cfg) => network_cli::run_ai(cfg).await,
             Err(e) => Err(e),
         },
         _ => Err(network_cli::usage().to_string()),
