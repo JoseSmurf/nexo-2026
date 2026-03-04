@@ -4,9 +4,15 @@ use sha3::{
     Digest as Sha3Digest, Sha3_256, Shake256,
 };
 
+#[cfg(feature = "network")]
+pub mod ai;
 pub mod analyzer;
 pub mod api;
 pub mod audit_store;
+#[cfg(feature = "network")]
+pub mod chat;
+#[cfg(feature = "network")]
+pub mod cli;
 pub mod message;
 #[cfg(feature = "network")]
 pub mod network_udp;
