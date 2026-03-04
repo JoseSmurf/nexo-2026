@@ -572,7 +572,7 @@ mod network_cli {
         #[test]
         fn chat_input_over_32_bytes_is_rejected() {
             let input = "ááááááááááááááááá";
-            assert!(input.as_bytes().len() > 32);
+            assert!(input.len() > 32);
             assert!(validate_chat_input_bytes(input).is_err());
         }
 
