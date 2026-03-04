@@ -11,6 +11,7 @@ This project is focused on applied security engineering for deterministic system
 - [Architecture overview](#architecture-overview)
 - [Quickstart (60s)](#quickstart-60s)
 - [Quick demo (2 terminals)](#quick-demo-2-terminals)
+- [Relay bridge (global mode)](#relay-bridge-global-mode)
 - [Security model](#security-model)
 - [Audit and hashing](#audit-and-hashing)
   - [Basic](#basic)
@@ -114,6 +115,33 @@ Demo script (automated):
 ```bash
 bash scripts/demo_p2p.sh
 ```
+
+## Relay bridge (global mode)
+
+Start relay:
+
+```bash
+cargo run --features network --bin nexo_relay -- --bind 127.0.0.1:9100 --db /tmp/nexo_relay.db
+```
+
+Relay API:
+- `POST /push` with body `{"items":[SyncItem...]}` validates signature envelope and dedups by persisted `event_hash`.
+- `GET /pull?since_ms=0&limit=200` returns items ordered by `timestamp_ms ASC` (deterministic).
+
+Minimal calls:
+
+```bash
+curl -sS -X POST 'http://127.0.0.1:9100/push' \
+  -H 'content-type: application/json' \
+  --data '{"items":[]}'
+curl -sS 'http://127.0.0.1:9100/pull?since_ms=0&limit=200'
+```
+
+Bridge mode (manual flow):
+- Node A/B continues using `nexo_p2p` locally.
+- Export signed events from one side and push to relay.
+- Pull from relay on the other side and ingest through existing sync/event path.
+- Dedup remains persistent by `event_hash` in both relay and local SQLite.
 
 ## Security model
 
@@ -298,10 +326,10 @@ Use `.env.example` provider sections as the canonical reference for required var
   - `GET /audit/recent?limit=50` (admin-gated)
   - `GET /security/status` (admin-gated)
 - Rule profiles include 9 jurisdictions/currencies/regulators.
-- Rust tests: 161
+- Rust tests: 162
 - Julia tests: 124
 - Zig tests: 20
-- Total tests: 305
+- Total tests: 306
 - Tech stack:
   - Rust (core engine + API)
   - BLAKE3 + SHAKE256 (audit hash, with deterministic hybrid mode in INCIDENT)
