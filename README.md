@@ -12,6 +12,7 @@ This project is focused on applied security engineering for deterministic system
 - [Quickstart (60s)](#quickstart-60s)
 - [Quick demo (2 terminals)](#quick-demo-2-terminals)
 - [Relay bridge (global mode)](#relay-bridge-global-mode)
+- [Hybrid demo](#hybrid-demo)
 - [Security model](#security-model)
 - [Audit and hashing](#audit-and-hashing)
   - [Basic](#basic)
@@ -142,6 +143,20 @@ Bridge mode (manual flow):
 - Export signed events from one side and push to relay.
 - Pull from relay on the other side and ingest through existing sync/event path.
 - Dedup remains persistent by `event_hash` in both relay and local SQLite.
+
+## Hybrid demo
+
+Run end-to-end local bridge (relay + two chat nodes):
+
+```bash
+bash scripts/demo_hybrid.sh
+```
+
+What it does:
+- Starts `nexo_relay` on `127.0.0.1:19100`.
+- Starts `node_a` and `node_b` in `chat --daemon` with `--relay`.
+- Sends one `hello` message from a short `node_a` chat session.
+- Validates node B pulled at least one event from relay (`relay_pull count>0`).
 
 ## Security model
 
