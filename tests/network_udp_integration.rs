@@ -63,6 +63,7 @@ async fn udp_unicast_ack_retry_loopback_two_nodes() {
         crypto_nonce: None,
         sender_pubkey: pubkey,
         signature: sig,
+        known_peers: Vec::new(),
     };
     node_a
         .send_with_ack(b_addr, &ev, 3, Duration::from_millis(200))
@@ -102,6 +103,7 @@ async fn udp_unicast_fails_closed_when_no_ack() {
         crypto_nonce: None,
         sender_pubkey: pubkey,
         signature: sig,
+        known_peers: Vec::new(),
     };
     let err = node_a
         .send_with_ack(b_addr, &ev, 2, Duration::from_millis(30))
@@ -185,6 +187,7 @@ async fn udp_encrypted_event_roundtrip_accepts_and_decrypts() {
         crypto_nonce: Some(aead_nonce),
         sender_pubkey: pubkey,
         signature: sig,
+        known_peers: Vec::new(),
     };
     node_a
         .send_with_ack(b_addr, &ev, 3, Duration::from_millis(200))

@@ -26,6 +26,7 @@ pub struct SignedEvent {
     pub crypto_nonce: Option<[u8; 24]>,
     pub sender_pubkey: [u8; 32],
     pub signature: [u8; 64],
+    pub known_peers: Vec<SocketAddr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,6 +155,18 @@ fn encode_event(event: &SignedEvent) -> Result<Vec<u8>, &'static str> {
     if event.payload.is_empty() || event.payload.len() > 255 {
         return Err("REJECTED: invalid payload length");
     }
+    if event.known_peers.len() > 8 {
+        return Err("REJECTED: known_peers > 8");
+    }
+
+    let mut known_bytes_total = 1usize;
+    for peer in &event.known_peers {
+        let raw = peer.to_string();
+        if raw.is_empty() || raw.len() > 255 {
+            return Err("REJECTED: invalid known peer");
+        }
+        known_bytes_total = known_bytes_total.saturating_add(1 + raw.len());
+    }
 
     let overhead = 1
         + 8
@@ -168,7 +181,8 @@ fn encode_event(event: &SignedEvent) -> Result<Vec<u8>, &'static str> {
         + 1
         + event.payload.len()
         + 32
-        + 64;
+        + 64
+        + known_bytes_total;
 
     let mut out = Vec::with_capacity(overhead);
     out.push(PACKET_EVENT);
@@ -187,6 +201,12 @@ fn encode_event(event: &SignedEvent) -> Result<Vec<u8>, &'static str> {
     out.extend_from_slice(&event.payload);
     out.extend_from_slice(&event.sender_pubkey);
     out.extend_from_slice(&event.signature);
+    out.push(event.known_peers.len() as u8);
+    for peer in &event.known_peers {
+        let raw = peer.to_string();
+        out.push(raw.len() as u8);
+        out.extend_from_slice(raw.as_bytes());
+    }
     Ok(out)
 }
 
@@ -266,7 +286,7 @@ fn decode_event(buf: &[u8]) -> Result<SignedEvent, &'static str> {
     let payload = buf[idx..idx + payload_len].to_vec();
     idx += payload_len;
 
-    if idx + 32 + 64 != buf.len() {
+    if idx + 32 + 64 > buf.len() {
         return Err("REJECTED: malformed signature envelope");
     }
     let mut sender_pubkey = [0u8; 32];
@@ -275,6 +295,36 @@ fn decode_event(buf: &[u8]) -> Result<SignedEvent, &'static str> {
 
     let mut signature = [0u8; 64];
     signature.copy_from_slice(&buf[idx..idx + 64]);
+    idx += 64;
+
+    let mut known_peers = Vec::new();
+    if idx < buf.len() {
+        let peer_count = buf[idx] as usize;
+        idx += 1;
+        if peer_count > 8 {
+            return Err("REJECTED: known_peers > 8");
+        }
+        for _ in 0..peer_count {
+            if idx >= buf.len() {
+                return Err("REJECTED: malformed known peer length");
+            }
+            let peer_len = buf[idx] as usize;
+            idx += 1;
+            if peer_len == 0 || idx + peer_len > buf.len() {
+                return Err("REJECTED: malformed known peer payload");
+            }
+            let raw = std::str::from_utf8(&buf[idx..idx + peer_len])
+                .map_err(|_| "REJECTED: known peer utf8")?;
+            let addr = raw
+                .parse::<SocketAddr>()
+                .map_err(|_| "REJECTED: known peer socket addr")?;
+            known_peers.push(addr);
+            idx += peer_len;
+        }
+    }
+    if idx != buf.len() {
+        return Err("REJECTED: trailing payload");
+    }
 
     Ok(SignedEvent {
         sender_id: sender_id.to_string(),
@@ -287,6 +337,7 @@ fn decode_event(buf: &[u8]) -> Result<SignedEvent, &'static str> {
         crypto_nonce,
         sender_pubkey,
         signature,
+        known_peers,
     })
 }
 

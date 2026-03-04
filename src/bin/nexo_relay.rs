@@ -448,6 +448,7 @@ mod tests {
             crypto_nonce: None,
             sender_pubkey,
             signature,
+            known_peers: Vec::new(),
         }
     }
 }

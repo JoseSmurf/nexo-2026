@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -103,6 +105,16 @@ pub fn signed_event_to_json_value(event: &SignedEvent) -> Value {
         bytes_to_value(&event.sender_pubkey),
     );
     map.insert("signature".to_string(), bytes_to_value(&event.signature));
+    map.insert(
+        "known_peers".to_string(),
+        Value::Array(
+            event
+                .known_peers
+                .iter()
+                .map(|p| Value::String(p.to_string()))
+                .collect(),
+        ),
+    );
     Value::Object(map)
 }
 
@@ -181,6 +193,26 @@ pub fn signed_event_from_json_value(value: Value) -> Result<SignedEvent, String>
         )?,
         "signature",
     )?;
+    let known_peers = match map.remove("known_peers") {
+        Some(Value::Array(v)) => {
+            let mut peers = Vec::new();
+            for raw in v {
+                let Value::String(s) = raw else {
+                    return Err("invalid known_peers".to_string());
+                };
+                peers.push(
+                    s.parse::<SocketAddr>()
+                        .map_err(|_| "invalid known_peers".to_string())?,
+                );
+            }
+            if peers.len() > 8 {
+                return Err("invalid known_peers".to_string());
+            }
+            peers
+        }
+        Some(Value::Null) | None => Vec::new(),
+        _ => return Err("invalid known_peers".to_string()),
+    };
 
     Ok(SignedEvent {
         sender_id,
@@ -193,6 +225,7 @@ pub fn signed_event_from_json_value(value: Value) -> Result<SignedEvent, String>
         crypto_nonce,
         sender_pubkey,
         signature,
+        known_peers,
     })
 }
 
@@ -266,6 +299,7 @@ mod tests {
             crypto_nonce: Some([3u8; 24]),
             sender_pubkey: [4u8; 32],
             signature: [5u8; 64],
+            known_peers: vec!["127.0.0.1:9001".parse().expect("peer")],
         }
     }
 

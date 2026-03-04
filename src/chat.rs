@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::BufRead;
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -285,7 +285,7 @@ pub async fn run_listen(args: ListenArgs) -> Result<(), String> {
         .map_err(|e| format!("bind failed: {e}"))?;
     let store = OfflineStore::open(&args.db).map_err(|e| format!("db open failed: {e}"))?;
     let shared_key = resolve_shared_key(args.crypto, args.shared_key_hex.as_deref())?;
-    let mut known_peers: HashSet<SocketAddr> = HashSet::new();
+    let mut known_peers: BTreeSet<SocketAddr> = BTreeSet::new();
     println!("listening on {} db={}", args.bind, args.db);
 
     loop {
@@ -328,7 +328,7 @@ pub async fn run_listen(args: ListenArgs) -> Result<(), String> {
                         item.content,
                     )
                     .map_err(|e| e.to_string())?;
-                    let wire = build_signed_event(&store, &msg, shared_key)?;
+                    let wire = build_signed_event(&store, &msg, shared_key, &[])?;
                     node.send_sync_item(from, &wire)
                         .await
                         .map_err(|e| format!("sync item send failed: {e}"))?;
@@ -336,7 +336,8 @@ pub async fn run_listen(args: ListenArgs) -> Result<(), String> {
                 continue;
             }
         };
-        known_peers.insert(from);
+        merge_known_peers(&mut known_peers, &decoded.known_peers);
+        insert_known_peer(&mut known_peers, from);
         let msg = decoded.msg;
         let hash_bytes = decoded.ack_hash;
         let origin_hex = hash32_to_hex(&decoded.origin_event_hash);
@@ -405,6 +406,7 @@ pub async fn run_listen(args: ListenArgs) -> Result<(), String> {
                 shared_key,
                 decoded.origin_event_hash,
                 forward_hops,
+                &shared_peers(&known_peers, Some(from)),
             )?;
             for peer in known_peers.iter().copied().filter(|p| *p != from) {
                 node.send_event(peer, &fwd)
@@ -432,7 +434,7 @@ pub async fn run_send(args: SendArgs) -> Result<(), String> {
         .map_err(|e| format!("next_nonce failed: {e}"))?;
     let msg = CanonicalMessage::new_with_nonce(args.sender, now, nonce, args.msg.as_bytes())
         .map_err(|e| e.to_string())?;
-    let wire = build_signed_event(&store, &msg, shared_key)?;
+    let wire = build_signed_event(&store, &msg, shared_key, &[])?;
     let ehash = event_hash(&msg);
     node.send_with_ack(
         args.peer,
@@ -506,7 +508,7 @@ pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
             .await
             .map_err(|e| format!("bind failed: {e}"))?;
         let store = OfflineStore::open(&recv_db).map_err(|e| format!("db open failed: {e}"))?;
-        let mut known_peers: HashSet<SocketAddr> = HashSet::new();
+        let mut known_peers: BTreeSet<SocketAddr> = BTreeSet::new();
         loop {
             let (frame, from) = node
                 .recv_frame()
@@ -547,7 +549,7 @@ pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
                             item.content,
                         )
                         .map_err(|e| e.to_string())?;
-                        let wire = build_signed_event(&store, &msg, shared_key)?;
+                        let wire = build_signed_event(&store, &msg, shared_key, &[])?;
                         node.send_sync_item(from, &wire)
                             .await
                             .map_err(|e| format!("sync item send failed: {e}"))?;
@@ -555,7 +557,8 @@ pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
                     continue;
                 }
             };
-            known_peers.insert(from);
+            merge_known_peers(&mut known_peers, &decoded.known_peers);
+            insert_known_peer(&mut known_peers, from);
             let msg = decoded.msg;
             let hash_bytes = decoded.ack_hash;
             let origin_hex = hash32_to_hex(&decoded.origin_event_hash);
@@ -623,6 +626,7 @@ pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
                     shared_key,
                     decoded.origin_event_hash,
                     forward_hops,
+                    &shared_peers(&known_peers, Some(from)),
                 )?;
                 for peer in known_peers.iter().copied().filter(|p| *p != from) {
                     node.send_event(peer, &fwd)
@@ -783,7 +787,7 @@ pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
 
         if let Some(peer_addr) = peer {
-            let wire = build_signed_event(&store, &msg, shared_key)?;
+            let wire = build_signed_event(&store, &msg, shared_key, &[])?;
             let sender_node = UdpNode::bind("127.0.0.1:0")
                 .await
                 .map_err(|e| format!("bind failed: {e}"))?;
@@ -835,7 +839,7 @@ pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
                 continue;
             }
 
-            let wire = build_signed_event(&store, &msg, shared_key)?;
+            let wire = build_signed_event(&store, &msg, shared_key, &peers)?;
             let sender_node = UdpNode::bind("127.0.0.1:0")
                 .await
                 .map_err(|e| format!("bind failed: {e}"))?;
@@ -919,6 +923,7 @@ pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_relay_bridge_loop(
     initial_relays: Vec<String>,
     registry_url: Option<String>,
@@ -1102,7 +1107,7 @@ async fn run_relay_bridge_loop(
                         if msg.timestamp_utc_ms >= max_ts {
                             max_ts = msg.timestamp_utc_ms.saturating_add(1);
                         }
-                        let wire = match build_signed_event(&store, &msg, shared_key) {
+                        let wire = match build_signed_event(&store, &msg, shared_key, &[]) {
                             Ok(v) => v,
                             Err(e) => {
                                 println!("relay_push relay={} sign_failed={e}", relay);
@@ -1267,11 +1272,41 @@ fn resolve_shared_key(
     }
 }
 
+const MAX_KNOWN_PEERS: usize = 64;
+const MAX_SHARED_PEERS: usize = 8;
+
+fn insert_known_peer(peers: &mut BTreeSet<SocketAddr>, peer: SocketAddr) {
+    peers.insert(peer);
+    while peers.len() > MAX_KNOWN_PEERS {
+        if let Some(last) = peers.iter().next_back().copied() {
+            peers.remove(&last);
+        } else {
+            break;
+        }
+    }
+}
+
+fn merge_known_peers(peers: &mut BTreeSet<SocketAddr>, incoming: &[SocketAddr]) {
+    for peer in incoming {
+        insert_known_peer(peers, *peer);
+    }
+}
+
+fn shared_peers(peers: &BTreeSet<SocketAddr>, exclude: Option<SocketAddr>) -> Vec<SocketAddr> {
+    peers
+        .iter()
+        .copied()
+        .filter(|p| Some(*p) != exclude)
+        .take(MAX_SHARED_PEERS)
+        .collect()
+}
+
 struct DecodedEvent {
     msg: CanonicalMessage,
     ack_hash: [u8; 32],
     origin_event_hash: [u8; 32],
     hops_remaining: u8,
+    known_peers: Vec<SocketAddr>,
 }
 
 fn hash32_to_hex(hash: &[u8; 32]) -> String {
@@ -1335,6 +1370,7 @@ fn decode_wire_event(
         ack_hash,
         origin_event_hash: ev.origin_event_hash,
         hops_remaining: ev.hops_remaining,
+        known_peers: ev.known_peers.clone(),
     })
 }
 
@@ -1342,6 +1378,7 @@ fn build_signed_event(
     store: &OfflineStore,
     msg: &CanonicalMessage,
     shared_key: Option<[u8; 32]>,
+    known_peers: &[SocketAddr],
 ) -> Result<SignedEvent, String> {
     build_signed_event_with_hops(
         store,
@@ -1354,6 +1391,7 @@ fn build_signed_event(
             &content_hash_bytes(&msg.content),
         ),
         4,
+        known_peers,
     )
 }
 
@@ -1363,6 +1401,7 @@ fn build_signed_event_with_hops(
     shared_key: Option<[u8; 32]>,
     origin_event_hash: [u8; 32],
     hops_remaining: u8,
+    known_peers: &[SocketAddr],
 ) -> Result<SignedEvent, String> {
     let content_hash = content_hash_bytes(&msg.content);
     let (payload, crypto_nonce) = match shared_key {
@@ -1407,6 +1446,7 @@ fn build_signed_event_with_hops(
         crypto_nonce,
         sender_pubkey,
         signature,
+        known_peers: known_peers.iter().copied().take(MAX_SHARED_PEERS).collect(),
     })
 }
 
@@ -1639,7 +1679,7 @@ mod tests {
         let store_c = OfflineStore::open(db_c.to_str().expect("db c")).expect("store c");
         let seed =
             CanonicalMessage::new_with_nonce("node_c", now_utc_ms(), 1, b"seed").expect("seed msg");
-        let seed_wire = build_signed_event(&store_c, &seed, None).expect("seed wire");
+        let seed_wire = build_signed_event(&store_c, &seed, None, &[]).expect("seed wire");
         node_c
             .send_event(bind_b, &seed_wire)
             .await
