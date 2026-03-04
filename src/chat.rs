@@ -947,6 +947,10 @@ async fn run_relay_bridge_loop(
         Err(_) => 0,
     };
     let mut push_since = BTreeMap::<String, u64>::new();
+    let mut pull_backoff_ms = BTreeMap::<String, u64>::new();
+    let mut pull_retry_after_ms = BTreeMap::<String, u64>::new();
+    let mut push_backoff_ms = BTreeMap::<String, u64>::new();
+    let mut push_retry_after_ms = BTreeMap::<String, u64>::new();
 
     let mut push_tick = tokio::time::interval(Duration::from_millis(push_interval_ms.max(1)));
     let mut pull_tick = tokio::time::interval(Duration::from_millis(pull_interval_ms.max(1)));
@@ -981,11 +985,29 @@ async fn run_relay_bridge_loop(
                 };
                 let relays_now: Vec<String> = relays.iter().cloned().collect();
                 for relay in relays_now {
+                    let now_tick_ms = now_utc_ms();
+                    if now_tick_ms < pull_retry_after_ms.get(&relay).copied().unwrap_or(0) {
+                        continue;
+                    }
                     let since = pull_since;
                     let pulled = match relay_pull_items(&relay, since, 200).await {
-                        Ok(v) => v,
+                        Ok(v) => {
+                            pull_backoff_ms.remove(&relay);
+                            pull_retry_after_ms.remove(&relay);
+                            v
+                        }
                         Err(e) => {
-                            println!("relay_pull relay={} error={e}", relay);
+                            let next_backoff =
+                                relay_next_backoff_ms(pull_backoff_ms.get(&relay).copied());
+                            pull_backoff_ms.insert(relay.clone(), next_backoff);
+                            pull_retry_after_ms.insert(
+                                relay.clone(),
+                                now_utc_ms().saturating_add(next_backoff),
+                            );
+                            println!(
+                                "relay_pull relay={} error={} relay_backoff_ms={}",
+                                relay, e, next_backoff
+                            );
                             continue;
                         }
                     };
@@ -1099,6 +1121,10 @@ async fn run_relay_bridge_loop(
                 };
                 let relays_now: Vec<String> = relays.iter().cloned().collect();
                 for relay in relays_now {
+                    let now_tick_ms = now_utc_ms();
+                    if now_tick_ms < push_retry_after_ms.get(&relay).copied().unwrap_or(0) {
+                        continue;
+                    }
                     let since = push_since.get(&relay).copied().unwrap_or(0);
                     let rows = match store.messages_since(since, 200) {
                         Ok(v) => v,
@@ -1146,6 +1172,8 @@ async fn run_relay_bridge_loop(
 
                     match relay_push_items(&relay, &items).await {
                         Ok(resp) => {
+                            push_backoff_ms.remove(&relay);
+                            push_retry_after_ms.remove(&relay);
                             if max_ts > since {
                                 push_since.insert(relay.clone(), max_ts);
                             }
@@ -1155,7 +1183,17 @@ async fn run_relay_bridge_loop(
                             );
                         }
                         Err(e) => {
-                            println!("relay_push relay={} error={e}", relay);
+                            let next_backoff =
+                                relay_next_backoff_ms(push_backoff_ms.get(&relay).copied());
+                            push_backoff_ms.insert(relay.clone(), next_backoff);
+                            push_retry_after_ms.insert(
+                                relay.clone(),
+                                now_utc_ms().saturating_add(next_backoff),
+                            );
+                            println!(
+                                "relay_push relay={} error={} relay_backoff_ms={}",
+                                relay, e, next_backoff
+                            );
                         }
                     }
                 }
@@ -1298,6 +1336,17 @@ fn resolve_shared_key(
 const MAX_KNOWN_PEERS: usize = 64;
 const MAX_SHARED_PEERS: usize = 8;
 const RELAY_PULL_SINCE_KEY: &str = "last_relay_pull_since_ms";
+const RELAY_BACKOFF_MIN_MS: u64 = 1_000;
+const RELAY_BACKOFF_MAX_MS: u64 = 30_000;
+
+fn relay_next_backoff_ms(current: Option<u64>) -> u64 {
+    match current {
+        Some(v) if v >= RELAY_BACKOFF_MAX_MS => RELAY_BACKOFF_MAX_MS,
+        Some(v) if v < RELAY_BACKOFF_MIN_MS => RELAY_BACKOFF_MIN_MS,
+        Some(v) => v.saturating_mul(2).min(RELAY_BACKOFF_MAX_MS),
+        None => RELAY_BACKOFF_MIN_MS,
+    }
+}
 
 fn insert_known_peer(peers: &mut BTreeSet<SocketAddr>, peer: SocketAddr) {
     peers.insert(peer);
@@ -1578,6 +1627,16 @@ mod tests {
         assert!(help.contains("/last N"));
         assert!(help.contains("/ai last N"));
         assert!(help.contains("/quit"));
+    }
+
+    #[test]
+    fn relay_backoff_sequence_is_deterministic() {
+        assert_eq!(relay_next_backoff_ms(None), 1_000);
+        assert_eq!(relay_next_backoff_ms(Some(1_000)), 2_000);
+        assert_eq!(relay_next_backoff_ms(Some(2_000)), 4_000);
+        assert_eq!(relay_next_backoff_ms(Some(4_000)), 8_000);
+        assert_eq!(relay_next_backoff_ms(Some(16_000)), 30_000);
+        assert_eq!(relay_next_backoff_ms(Some(30_000)), 30_000);
     }
 
     #[tokio::test]
