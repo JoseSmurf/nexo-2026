@@ -97,4 +97,21 @@ mod tests {
         let parsed = parse_chat(&args).expect("parse");
         assert!(parsed.daemon);
     }
+
+    #[test]
+    fn parse_chat_accepts_relay_without_peer() {
+        let args = vec![
+            "--bind".to_string(),
+            "127.0.0.1:9001".to_string(),
+            "--relay".to_string(),
+            "http://127.0.0.1:9100".to_string(),
+            "--sender".to_string(),
+            "node_a".to_string(),
+            "--db".to_string(),
+            "/tmp/a.db".to_string(),
+        ];
+        let parsed = parse_chat(&args).expect("parse");
+        assert!(parsed.peer.is_none());
+        assert_eq!(parsed.relay_url.as_deref(), Some("http://127.0.0.1:9100"));
+    }
 }

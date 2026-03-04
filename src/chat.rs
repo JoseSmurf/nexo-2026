@@ -16,6 +16,7 @@ use crate::offline_store::{OfflineStore, StoreInsertStatus};
 use crate::p2p_crypto::{
     decrypt_content, encrypt_content, parse_shared_key_hex, random_aead_nonce,
 };
+use crate::relay_client::{pull_items as relay_pull_items, push_items as relay_push_items};
 
 #[derive(Debug)]
 pub struct ListenArgs {
@@ -55,6 +56,9 @@ pub struct ChatArgs {
     pub retries: u8,
     pub ack_timeout_ms: u64,
     pub seen_ttl_ms: u64,
+    pub relay_url: Option<String>,
+    pub relay_push_interval_ms: u64,
+    pub relay_pull_interval_ms: u64,
     pub crypto: bool,
     pub shared_key_hex: Option<String>,
 }
@@ -82,7 +86,7 @@ pub fn usage() -> &'static str {
      usage:\n\
       nexo_p2p listen --bind 127.0.0.1:9001 --db /tmp/nexo_a.db [--seen-ttl-ms 120000] [--crypto --shared-key-hex <64hex>]\n\
       nexo_p2p send --bind 127.0.0.1:9002 --peer 127.0.0.1:9001 --sender node_b --msg \"hello\" --db /tmp/nexo_b.db [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000] [--crypto --shared-key-hex <64hex>]\n\
-      nexo_p2p chat --bind 127.0.0.1:9001 --peer 127.0.0.1:9002 --sender node_a --db /tmp/nexo_a.db [--daemon] [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000] [--crypto --shared-key-hex <64hex>]\n\
+      nexo_p2p chat --bind 127.0.0.1:9001 --peer 127.0.0.1:9002 --sender node_a --db /tmp/nexo_a.db [--daemon] [--relay http://127.0.0.1:9100 --relay-push-interval-ms 2000 --relay-pull-interval-ms 2000] [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000] [--crypto --shared-key-hex <64hex>]\n\
       nexo_p2p chat --bind 0.0.0.0:9001 --discover --broadcast 255.255.255.255:9001 --discover-timeout-ms 800 --sender node_a --db /tmp/nexo_a.db [--sync-on-start --since-ms 0] [--crypto --shared-key-hex <64hex>]\n\
       nexo_p2p ai --db /tmp/nexo_ai.db --sender node_a\n\
       nexo_p2p sync --bind 127.0.0.1:9010 --peer 127.0.0.1:9001 --db /tmp/nexo_b.db --since-ms 0 [--timeout-ms 800] [--crypto --shared-key-hex <64hex>]\n\
@@ -166,6 +170,23 @@ pub fn parse_chat(args: &[String]) -> Result<ChatArgs, String> {
     let discover_timeout_ms =
         parse_u64(flags.get("discover-timeout-ms"), 800, "discover-timeout-ms")?;
     let sync_on_start = parse_bool(flags.get("sync-on-start"), false, "sync-on-start")?;
+    let relay_url = flags.get("relay").cloned();
+    let relay_push_interval_ms = parse_u64(
+        flags.get("relay-push-interval-ms"),
+        2_000,
+        "relay-push-interval-ms",
+    )?;
+    let relay_pull_interval_ms = parse_u64(
+        flags.get("relay-pull-interval-ms"),
+        2_000,
+        "relay-pull-interval-ms",
+    )?;
+    if relay_push_interval_ms == 0 {
+        return Err("invalid --relay-push-interval-ms value".to_string());
+    }
+    if relay_pull_interval_ms == 0 {
+        return Err("invalid --relay-pull-interval-ms value".to_string());
+    }
     let since_ms = flags
         .get("since-ms")
         .map(|v| {
@@ -173,8 +194,8 @@ pub fn parse_chat(args: &[String]) -> Result<ChatArgs, String> {
                 .map_err(|_| "invalid --since-ms value".to_string())
         })
         .transpose()?;
-    if peer.is_none() && !discover {
-        return Err("missing --peer (or set --discover)".to_string());
+    if peer.is_none() && !discover && relay_url.is_none() {
+        return Err("missing --peer (or set --discover or --relay)".to_string());
     }
     let sender = required(&flags, "sender")?;
     let db = required(&flags, "db")?;
@@ -198,6 +219,9 @@ pub fn parse_chat(args: &[String]) -> Result<ChatArgs, String> {
         retries,
         ack_timeout_ms,
         seen_ttl_ms,
+        relay_url,
+        relay_push_interval_ms,
+        relay_pull_interval_ms,
         crypto,
         shared_key_hex,
     })
@@ -418,31 +442,41 @@ pub async fn run_send(args: SendArgs) -> Result<(), String> {
 
 pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
     let peer = if let Some(peer) = args.peer {
-        peer
+        Some(peer)
     } else if args.discover {
-        discover_peer(
-            &args.bind,
-            args.discover_broadcast,
-            Duration::from_millis(args.discover_timeout_ms),
+        Some(
+            discover_peer(
+                &args.bind,
+                args.discover_broadcast,
+                Duration::from_millis(args.discover_timeout_ms),
+            )
+            .await?,
         )
-        .await?
     } else {
-        return Err("missing peer".to_string());
+        None
     };
+    if peer.is_none() && args.relay_url.is_none() {
+        return Err("missing peer (or set --discover or --relay)".to_string());
+    }
+
     let shared_key = resolve_shared_key(args.crypto, args.shared_key_hex.as_deref())?;
 
     if args.sync_on_start {
-        let synced = run_sync_inner(
-            &args.bind,
-            peer,
-            &args.db,
-            args.since_ms.unwrap_or(0),
-            800,
-            shared_key,
-            args.seen_ttl_ms,
-        )
-        .await?;
-        println!("sync_on_start synced={}", synced);
+        if let Some(sync_peer) = peer {
+            let synced = run_sync_inner(
+                &args.bind,
+                sync_peer,
+                &args.db,
+                args.since_ms.unwrap_or(0),
+                800,
+                shared_key,
+                args.seen_ttl_ms,
+            )
+            .await?;
+            println!("sync_on_start synced={}", synced);
+        } else {
+            println!("sync_on_start skipped: no UDP peer configured");
+        }
     }
 
     let recv_bind = args.bind.clone();
@@ -585,17 +619,48 @@ pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
         Ok::<(), String>(())
     });
 
+    let relay_task = if let Some(relay_url) = args.relay_url.clone() {
+        let relay_db = args.db.clone();
+        let relay_sender = args.sender.clone();
+        let relay_seen_ttl_ms = args.seen_ttl_ms;
+        let relay_push_interval_ms = args.relay_push_interval_ms;
+        let relay_pull_interval_ms = args.relay_pull_interval_ms;
+        Some(tokio::spawn(async move {
+            run_relay_bridge_loop(
+                &relay_url,
+                &relay_db,
+                &relay_sender,
+                shared_key,
+                relay_seen_ttl_ms,
+                relay_push_interval_ms,
+                relay_pull_interval_ms,
+            )
+            .await
+        }))
+    } else {
+        None
+    };
+
+    let peer_display = peer
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let relay_display = args.relay_url.as_deref().unwrap_or("none");
     println!(
-        "chat ready: bind={} peer={} sender={} db={} (/help /id /last N /ai last N /quit)",
-        args.bind, peer, args.sender, args.db
+        "chat ready: bind={} peer={} relay={} sender={} db={} (/help /id /last N /ai last N /quit)",
+        args.bind, peer_display, relay_display, args.sender, args.db
     );
 
     if args.daemon {
         println!("chat daemon mode enabled");
-        return match recv_task.await {
+        let result = match recv_task.await {
             Ok(inner) => inner,
             Err(e) => Err(format!("recv task join failed: {e}")),
         };
+        if let Some(task) = relay_task {
+            task.abort();
+            let _ = task.await;
+        }
+        return result;
     }
 
     let stdin = std::io::stdin();
@@ -623,7 +688,10 @@ pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
             continue;
         }
         if line == "/id" {
-            println!("sender={} bind={} peer={}", args.sender, args.bind, peer);
+            println!(
+                "sender={} bind={} peer={} relay={}",
+                args.sender, args.bind, peer_display, relay_display
+            );
             continue;
         }
         if let Some(rest) = line.strip_prefix("/last ") {
@@ -681,55 +749,262 @@ pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
         let msg =
             CanonicalMessage::new_with_nonce(args.sender.clone(), now, nonce, line.as_bytes())
                 .map_err(|e| e.to_string())?;
-        let wire = build_signed_event(&store, &msg, shared_key)?;
 
-        let sender_node = UdpNode::bind("127.0.0.1:0")
-            .await
-            .map_err(|e| format!("bind failed: {e}"))?;
-        match sender_node
-            .send_with_ack(
-                peer,
-                &wire,
-                args.retries,
-                Duration::from_millis(args.ack_timeout_ms),
-            )
-            .await
-        {
-            Ok(()) => {
-                let status = store
-                    .insert_message(&msg, now_utc_ms(), args.seen_ttl_ms)
-                    .map_err(|e| format!("store insert failed: {e}"))?;
-                println!("sent ok {:?} nonce={}", status, msg.nonce);
-                if status == StoreInsertStatus::Inserted {
-                    let analysis = analyze_bytes(&msg.content);
-                    println!(
-                        "analysis intent={} topics=[{}] summary={}",
-                        analysis.intent,
-                        analysis.topics.join(","),
-                        analysis.summary
-                    );
-                    if let Some(insight) = maybe_generate_ai_insight_for_global(
-                        &store,
-                        &msg,
-                        status,
-                        now_utc_ms(),
-                        args.seen_ttl_ms,
-                    )? {
-                        println!("analysis ai channel=ai summary={}", insight);
+        if let Some(peer_addr) = peer {
+            let wire = build_signed_event(&store, &msg, shared_key)?;
+            let sender_node = UdpNode::bind("127.0.0.1:0")
+                .await
+                .map_err(|e| format!("bind failed: {e}"))?;
+            match sender_node
+                .send_with_ack(
+                    peer_addr,
+                    &wire,
+                    args.retries,
+                    Duration::from_millis(args.ack_timeout_ms),
+                )
+                .await
+            {
+                Ok(()) => {
+                    let status = store
+                        .insert_message(&msg, now_utc_ms(), args.seen_ttl_ms)
+                        .map_err(|e| format!("store insert failed: {e}"))?;
+                    println!("sent ok {:?} nonce={}", status, msg.nonce);
+                    if status == StoreInsertStatus::Inserted {
+                        let analysis = analyze_bytes(&msg.content);
+                        println!(
+                            "analysis intent={} topics=[{}] summary={}",
+                            analysis.intent,
+                            analysis.topics.join(","),
+                            analysis.summary
+                        );
+                        if let Some(insight) = maybe_generate_ai_insight_for_global(
+                            &store,
+                            &msg,
+                            status,
+                            now_utc_ms(),
+                            args.seen_ttl_ms,
+                        )? {
+                            println!("analysis ai channel=ai summary={}", insight);
+                        }
                     }
                 }
+                Err(e) => {
+                    println!("timeout: {e}");
+                }
             }
-            Err(e) => {
-                println!("timeout: {e}");
+        } else {
+            let status = store
+                .insert_message(&msg, now_utc_ms(), args.seen_ttl_ms)
+                .map_err(|e| format!("store insert failed: {e}"))?;
+            println!("queued local {:?} nonce={}", status, msg.nonce);
+            if status == StoreInsertStatus::Inserted {
+                let analysis = analyze_bytes(&msg.content);
+                println!(
+                    "analysis intent={} topics=[{}] summary={}",
+                    analysis.intent,
+                    analysis.topics.join(","),
+                    analysis.summary
+                );
+                if let Some(insight) = maybe_generate_ai_insight_for_global(
+                    &store,
+                    &msg,
+                    status,
+                    now_utc_ms(),
+                    args.seen_ttl_ms,
+                )? {
+                    println!("analysis ai channel=ai summary={}", insight);
+                }
             }
         }
     }
 
     recv_task.abort();
     let _ = recv_task.await;
+    if let Some(task) = relay_task {
+        task.abort();
+        let _ = task.await;
+    }
     Ok(())
 }
 
+async fn run_relay_bridge_loop(
+    relay_url: &str,
+    db_path: &str,
+    local_sender: &str,
+    shared_key: Option<[u8; 32]>,
+    seen_ttl_ms: u64,
+    push_interval_ms: u64,
+    pull_interval_ms: u64,
+) -> Result<(), String> {
+    let mut push_tick = tokio::time::interval(Duration::from_millis(push_interval_ms.max(1)));
+    let mut pull_tick = tokio::time::interval(Duration::from_millis(pull_interval_ms.max(1)));
+    let mut last_push_ms = 0u64;
+    let mut last_pull_ms = 0u64;
+
+    loop {
+        tokio::select! {
+            _ = pull_tick.tick() => {
+                let pulled = match relay_pull_items(relay_url, last_pull_ms, 200).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        println!("relay_pull error={e}");
+                        continue;
+                    }
+                };
+                if pulled.is_empty() {
+                    continue;
+                }
+
+                let mut decoded_batch = Vec::with_capacity(pulled.len());
+                let mut decode_failed = false;
+                for item in pulled {
+                    match decode_wire_event(&item, shared_key) {
+                        Ok(decoded) => decoded_batch.push(decoded),
+                        Err("invalid_sig") => {
+                            println!("relay_pull invalid_sig");
+                            decode_failed = true;
+                            break;
+                        }
+                        Err(_) => {
+                            println!("relay_pull decrypt_failed");
+                            decode_failed = true;
+                            break;
+                        }
+                    }
+                }
+                if decode_failed {
+                    continue;
+                }
+
+                let store = match OfflineStore::open(db_path) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        println!("relay_pull db_open_failed={e}");
+                        continue;
+                    }
+                };
+
+                let mut inserted_count = 0usize;
+                let mut max_ts = last_pull_ms;
+                for decoded in decoded_batch {
+                    let msg = decoded.msg;
+                    if msg.timestamp_utc_ms >= max_ts {
+                        max_ts = msg.timestamp_utc_ms.saturating_add(1);
+                    }
+
+                    let ehash = event_hash(&msg);
+                    let now = now_utc_ms();
+                    let expires_at = now.saturating_add(seen_ttl_ms);
+                    let seen = match store.is_seen(&ehash, now) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            println!("relay_pull seen_failed={e}");
+                            continue;
+                        }
+                    };
+                    if seen {
+                        let _ = store.mark_seen(&ehash, expires_at);
+                        continue;
+                    }
+
+                    let origin_hex = hash32_to_hex(&decoded.origin_event_hash);
+                    let forwarded = match store.is_forwarded(&origin_hex) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            println!("relay_pull forwarded_check_failed={e}");
+                            continue;
+                        }
+                    };
+                    if forwarded {
+                        continue;
+                    }
+
+                    match store.insert_message(&msg, now, seen_ttl_ms) {
+                        Ok(StoreInsertStatus::Inserted) => {
+                            inserted_count += 1;
+                            let _ = store.mark_seen(&ehash, expires_at);
+                            let _ = store.mark_forwarded(&origin_hex, now);
+                        }
+                        Ok(StoreInsertStatus::Duplicate) => {
+                            let _ = store.mark_seen(&ehash, expires_at);
+                        }
+                        Err(e) => {
+                            println!("relay_pull insert_failed={e}");
+                        }
+                    }
+                }
+                if max_ts > last_pull_ms {
+                    last_pull_ms = max_ts;
+                }
+                println!("relay_pull count={}", inserted_count);
+            }
+            _ = push_tick.tick() => {
+                let store = match OfflineStore::open(db_path) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        println!("relay_push db_open_failed={e}");
+                        continue;
+                    }
+                };
+                let rows = match store.messages_since(last_push_ms, 200) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        println!("relay_push read_failed={e}");
+                        continue;
+                    }
+                };
+
+                let mut items = Vec::new();
+                let mut max_ts = last_push_ms;
+                for row in rows {
+                    if row.sender_id != local_sender {
+                        continue;
+                    }
+                    let msg = match CanonicalMessage::new_with_nonce(
+                        row.sender_id,
+                        row.timestamp_utc_ms,
+                        row.nonce,
+                        row.content,
+                    ) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            println!("relay_push invalid_message={e}");
+                            items.clear();
+                            break;
+                        }
+                    };
+                    if msg.timestamp_utc_ms >= max_ts {
+                        max_ts = msg.timestamp_utc_ms.saturating_add(1);
+                    }
+                    let wire = match build_signed_event(&store, &msg, shared_key) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            println!("relay_push sign_failed={e}");
+                            items.clear();
+                            break;
+                        }
+                    };
+                    items.push(wire);
+                }
+                if items.is_empty() {
+                    continue;
+                }
+
+                match relay_push_items(relay_url, &items).await {
+                    Ok(resp) => {
+                        if max_ts > last_push_ms {
+                            last_push_ms = max_ts;
+                        }
+                        println!("relay_push inserted={} dup={}", resp.inserted, resp.duplicates);
+                    }
+                    Err(e) => {
+                        println!("relay_push error={e}");
+                    }
+                }
+            }
+        }
+    }
+}
 pub async fn run_discover(args: DiscoverArgs) -> Result<(), String> {
     let peer = discover_peer(
         &args.bind,
