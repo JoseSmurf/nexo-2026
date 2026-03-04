@@ -6,6 +6,7 @@ use tokio::time::timeout;
 
 use crate::ai::maybe_generate_ai_insight_for_global;
 use crate::analyzer::analyze_bytes;
+use crate::discovery::start_discovery;
 use crate::message::{
     content_hash_bytes, event_hash, event_hash_bytes_from_parts, sign_event_hash,
     signed_envelope_hash_bytes, verify_event_hash_signature, CanonicalMessage,
@@ -441,6 +442,7 @@ pub async fn run_send(args: SendArgs) -> Result<(), String> {
 }
 
 pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
+    let mut discovery_handle = None;
     let peer = if let Some(peer) = args.peer {
         Some(peer)
     } else if args.discover {
@@ -453,10 +455,11 @@ pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
             .await?,
         )
     } else {
+        discovery_handle = Some(start_discovery(&args.bind).await?);
         None
     };
     if peer.is_none() && args.relay_url.is_none() {
-        return Err("missing peer (or set --discover or --relay)".to_string());
+        return Err("missing peer and discovery unavailable (or set --relay)".to_string());
     }
 
     let shared_key = resolve_shared_key(args.crypto, args.shared_key_hex.as_deref())?;
@@ -641,9 +644,13 @@ pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
         None
     };
 
-    let peer_display = peer
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "none".to_string());
+    let peer_display = if let Some(v) = peer {
+        v.to_string()
+    } else if discovery_handle.is_some() {
+        "discovery(auto)".to_string()
+    } else {
+        "none".to_string()
+    };
     let relay_display = args.relay_url.as_deref().unwrap_or("none");
     println!(
         "chat ready: bind={} peer={} relay={} sender={} db={} (/help /id /last N /ai last N /quit)",
@@ -790,6 +797,66 @@ pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
                 }
                 Err(e) => {
                     println!("timeout: {e}");
+                }
+            }
+        } else if let Some(discovery) = &discovery_handle {
+            let peers = discovery.get_known_peers();
+            if peers.is_empty() {
+                println!("no discovered peers yet");
+                let status = store
+                    .insert_message(&msg, now_utc_ms(), args.seen_ttl_ms)
+                    .map_err(|e| format!("store insert failed: {e}"))?;
+                println!("queued local {:?} nonce={}", status, msg.nonce);
+                continue;
+            }
+
+            let wire = build_signed_event(&store, &msg, shared_key)?;
+            let sender_node = UdpNode::bind("127.0.0.1:0")
+                .await
+                .map_err(|e| format!("bind failed: {e}"))?;
+            let mut delivered = 0usize;
+            for discovered_peer in peers {
+                if sender_node
+                    .send_with_ack(
+                        discovered_peer,
+                        &wire,
+                        args.retries,
+                        Duration::from_millis(args.ack_timeout_ms),
+                    )
+                    .await
+                    .is_ok()
+                {
+                    delivered += 1;
+                }
+            }
+            if delivered == 0 {
+                println!("timeout: no discovered peer acknowledged");
+                continue;
+            }
+
+            let status = store
+                .insert_message(&msg, now_utc_ms(), args.seen_ttl_ms)
+                .map_err(|e| format!("store insert failed: {e}"))?;
+            println!(
+                "sent ok {:?} nonce={} discovered_peers_acked={}",
+                status, msg.nonce, delivered
+            );
+            if status == StoreInsertStatus::Inserted {
+                let analysis = analyze_bytes(&msg.content);
+                println!(
+                    "analysis intent={} topics=[{}] summary={}",
+                    analysis.intent,
+                    analysis.topics.join(","),
+                    analysis.summary
+                );
+                if let Some(insight) = maybe_generate_ai_insight_for_global(
+                    &store,
+                    &msg,
+                    status,
+                    now_utc_ms(),
+                    args.seen_ttl_ms,
+                )? {
+                    println!("analysis ai channel=ai summary={}", insight);
                 }
             }
         } else {
