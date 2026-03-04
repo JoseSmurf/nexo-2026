@@ -1,6 +1,6 @@
 #[cfg(feature = "network")]
 mod network_cli {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{BTreeMap, HashMap, HashSet};
     use std::io::BufRead;
     use std::net::SocketAddr;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -97,7 +97,7 @@ mod network_cli {
     }
 
     fn chat_help() -> &'static str {
-        "chat commands: /help /id /last N /quit"
+        "chat commands: /help /id /last N /ai last N /quit"
     }
 
     pub fn parse_listen(args: &[String]) -> Result<ListenArgs, String> {
@@ -353,6 +353,15 @@ mod network_cli {
                         "recv inserted sender={} ts={} nonce={} content_bytes={:?} event_hash={}",
                         msg.sender_id, msg.timestamp_utc_ms, msg.nonce, msg.content, ehash
                     );
+                    if let Some(insight) = maybe_generate_ai_insight_for_global(
+                        &store,
+                        &msg,
+                        inserted,
+                        now,
+                        args.seen_ttl_ms,
+                    )? {
+                        println!("analysis ai channel=ai summary={}", insight);
+                    }
                 }
                 StoreInsertStatus::Duplicate => {
                     println!("recv duplicate event_hash={}", ehash);
@@ -553,6 +562,11 @@ mod network_cli {
                             analysis.topics.join(","),
                             analysis.summary
                         );
+                        if let Some(insight) = maybe_generate_ai_insight_for_global(
+                            &store, &msg, inserted, now, recv_ttl,
+                        )? {
+                            println!("analysis ai channel=ai summary={}", insight);
+                        }
                     }
                     StoreInsertStatus::Duplicate => {
                         println!("[dup] {}", ehash);
@@ -586,7 +600,7 @@ mod network_cli {
         });
 
         println!(
-            "chat ready: bind={} peer={} sender={} db={} (/help /id /last N /quit)",
+            "chat ready: bind={} peer={} sender={} db={} (/help /id /last N /ai last N /quit)",
             args.bind, peer, args.sender, args.db
         );
 
@@ -647,6 +661,28 @@ mod network_cli {
                 }
                 continue;
             }
+            if let Some(rest) = line.strip_prefix("/ai last ") {
+                let count = rest
+                    .trim()
+                    .parse::<usize>()
+                    .map_err(|_| "invalid /ai last N value".to_string())?;
+                let store =
+                    OfflineStore::open(&args.db).map_err(|e| format!("db open failed: {e}"))?;
+                let items = store
+                    .last_messages_by_channel("ai", count)
+                    .map_err(|e| format!("last_messages_by_channel failed: {e}"))?;
+                for item in items {
+                    println!(
+                        "[{}] {} (channel={} ts={} hash={})",
+                        item.sender_id,
+                        render_content(&item.content),
+                        item.channel,
+                        item.timestamp_utc_ms,
+                        item.event_hash
+                    );
+                }
+                continue;
+            }
 
             if let Err(e) = validate_chat_input_bytes(&line) {
                 println!("rejected: {e}");
@@ -688,6 +724,15 @@ mod network_cli {
                             analysis.topics.join(","),
                             analysis.summary
                         );
+                        if let Some(insight) = maybe_generate_ai_insight_for_global(
+                            &store,
+                            &msg,
+                            status,
+                            now_utc_ms(),
+                            args.seen_ttl_ms,
+                        )? {
+                            println!("analysis ai channel=ai summary={}", insight);
+                        }
                     }
                 }
                 Err(e) => {
@@ -1094,7 +1139,7 @@ mod network_cli {
         )
         .map_err(|e| e.to_string())?;
         store
-            .insert_message_with_channel(&prompt_msg, "ai", now_ms, seen_ttl_ms)
+            .insert_message_with_channel(&prompt_msg, "global", now_ms, seen_ttl_ms)
             .map_err(|e| format!("store prompt failed: {e}"))?;
 
         let response = deterministic_ai_response(prompt.as_bytes());
@@ -1119,6 +1164,73 @@ mod network_cli {
         Ok(response)
     }
 
+    fn build_repetition_insight(topic: &str, repeats: usize, intent: &str) -> String {
+        format!(
+            "deterministic_ai insight=repetition topic={} repeats={} intent={} action=observe_global",
+            topic, repeats, intent
+        )
+    }
+
+    fn maybe_generate_ai_insight_for_global(
+        store: &OfflineStore,
+        msg: &CanonicalMessage,
+        status: StoreInsertStatus,
+        now_ms: u64,
+        seen_ttl_ms: u64,
+    ) -> Result<Option<String>, String> {
+        if status != StoreInsertStatus::Inserted {
+            return Ok(None);
+        }
+
+        let msg_analysis = analyze_bytes(&msg.content);
+        if msg_analysis.topics.is_empty() {
+            return Ok(None);
+        }
+
+        let globals = store
+            .last_messages_by_channel("global", 1000)
+            .map_err(|e| format!("last_messages_by_channel failed: {e}"))?;
+        let mut counts = BTreeMap::<String, usize>::new();
+        for row in globals {
+            let analysis = analyze_bytes(&row.content);
+            for topic in analysis.topics {
+                let entry = counts.entry(topic).or_insert(0);
+                *entry = entry.saturating_add(1);
+            }
+        }
+
+        let mut repeated: Vec<(String, usize)> =
+            counts.into_iter().filter(|(_, c)| *c >= 3).collect();
+        if repeated.is_empty() {
+            return Ok(None);
+        }
+        repeated.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let (topic, repeats) = repeated[0].clone();
+        let insight = build_repetition_insight(&topic, repeats, msg_analysis.intent);
+
+        let ai_ts = now_ms.saturating_add(1);
+        let ai_nonce = store
+            .next_nonce("ai")
+            .map_err(|e| format!("next_nonce ai failed: {e}"))?;
+        let ai_status = store
+            .insert_raw_message_with_channel(
+                RawMessageInput {
+                    sender_id: "ai",
+                    timestamp_utc_ms: ai_ts,
+                    nonce: ai_nonce,
+                    content: insight.as_bytes(),
+                    channel: "ai",
+                },
+                ai_ts,
+                seen_ttl_ms,
+            )
+            .map_err(|e| format!("store ai insight failed: {e}"))?;
+        if ai_status == StoreInsertStatus::Inserted {
+            return Ok(Some(insight));
+        }
+        Ok(None)
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -1139,6 +1251,7 @@ mod network_cli {
             assert!(help.contains("/help"));
             assert!(help.contains("/id"));
             assert!(help.contains("/last N"));
+            assert!(help.contains("/ai last N"));
             assert!(help.contains("/quit"));
         }
 
@@ -1199,9 +1312,59 @@ mod network_cli {
             process_ai_prompt(&store, "u1", "hello", 10_000, 1_000).expect("run");
             let rows = store.last_messages(2).expect("rows");
             assert_eq!(rows.len(), 2);
-            assert!(rows.iter().all(|m| m.channel == "ai"));
-            assert!(rows.iter().any(|m| m.sender_id == "u1"));
+            assert!(rows
+                .iter()
+                .any(|m| m.sender_id == "u1" && m.channel == "global"));
             assert!(rows.iter().any(|m| m.sender_id == "ai"));
+            assert!(rows
+                .iter()
+                .any(|m| m.sender_id == "ai" && m.channel == "ai"));
+        }
+
+        #[test]
+        fn same_input_yields_same_insight() {
+            let a = build_repetition_insight("pix", 3, "transaction");
+            let b = build_repetition_insight("pix", 3, "transaction");
+            assert_eq!(a, b);
+        }
+
+        #[test]
+        fn does_not_create_insight_on_duplicate() {
+            let store = OfflineStore::open_in_memory().expect("store");
+            let msg = CanonicalMessage::new_with_nonce("u1", 1_000, 1, b"pix").expect("msg");
+            let maybe = maybe_generate_ai_insight_for_global(
+                &store,
+                &msg,
+                StoreInsertStatus::Duplicate,
+                1_000,
+                1_000,
+            )
+            .expect("insight");
+            assert!(maybe.is_none());
+            let ai_rows = store.last_messages_by_channel("ai", 10).expect("ai rows");
+            assert!(ai_rows.is_empty());
+        }
+
+        #[test]
+        fn creates_insight_when_topic_repeats_three_times() {
+            let store = OfflineStore::open_in_memory().expect("store");
+            for i in 0..3u64 {
+                let msg =
+                    CanonicalMessage::new_with_nonce("u1", 10_000 + i, i + 1, b"pix").expect("msg");
+                let status = store
+                    .insert_message(&msg, 10_000 + i, 1_000)
+                    .expect("insert");
+                let maybe =
+                    maybe_generate_ai_insight_for_global(&store, &msg, status, 10_000 + i, 1_000)
+                        .expect("insight");
+                if i < 2 {
+                    assert!(maybe.is_none());
+                } else {
+                    assert!(maybe.is_some());
+                }
+            }
+            let ai_rows = store.last_messages_by_channel("ai", 10).expect("ai rows");
+            assert!(!ai_rows.is_empty());
         }
 
         #[tokio::test]

@@ -209,6 +209,38 @@ impl OfflineStore {
         Ok(out)
     }
 
+    pub fn last_messages_by_channel(
+        &self,
+        channel: &str,
+        limit: usize,
+    ) -> Result<Vec<StoredMessage>, rusqlite::Error> {
+        validate_channel(channel)?;
+        if limit == 0 {
+            return Err(rusqlite::Error::InvalidParameterName("limit".to_string()));
+        }
+        let limit = limit.min(1000);
+        let mut stmt = self.conn.prepare(
+            "SELECT event_hash, sender_id, channel, timestamp_utc_ms, nonce, content_blob
+             FROM messages
+             WHERE channel = ?1
+             ORDER BY rowid DESC
+             LIMIT ?2",
+        )?;
+        let mut rows = stmt.query(params![channel, limit as i64])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(StoredMessage {
+                event_hash: row.get(0)?,
+                sender_id: row.get(1)?,
+                channel: row.get(2)?,
+                timestamp_utc_ms: row.get(3)?,
+                nonce: row.get(4)?,
+                content: row.get(5)?,
+            });
+        }
+        Ok(out)
+    }
+
     pub fn messages_since(
         &self,
         since_ts_ms: u64,
