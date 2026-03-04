@@ -1,3 +1,4 @@
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +81,27 @@ pub fn event_hash(message: &CanonicalMessage) -> String {
         .to_string()
 }
 
+pub fn sign_event_hash(
+    event_hash: &[u8; 32],
+    keypair_bytes: &[u8; 64],
+) -> Result<[u8; 64], &'static str> {
+    let signing = SigningKey::from_keypair_bytes(keypair_bytes)
+        .map_err(|_| "REJECTED: invalid keypair bytes")?;
+    Ok(signing.sign(event_hash).to_bytes())
+}
+
+pub fn verify_event_hash_signature(
+    event_hash: &[u8; 32],
+    pubkey_bytes: &[u8; 32],
+    sig_bytes: &[u8; 64],
+) -> bool {
+    let Ok(pubkey) = VerifyingKey::from_bytes(pubkey_bytes) else {
+        return false;
+    };
+    let sig = Signature::from_bytes(sig_bytes);
+    pubkey.verify(event_hash, &sig).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +135,36 @@ mod tests {
         assert_ne!(event_hash(&a), event_hash(&b));
         let c = CanonicalMessage::new_with_nonce("u", 10, 2, b"hello").expect("valid");
         assert_ne!(event_hash(&a), event_hash(&c));
+    }
+
+    #[test]
+    fn signature_valid_passes_verification() {
+        let signing = SigningKey::from_bytes(&[7u8; 32]);
+        let verifying = signing.verifying_key();
+        let keypair = signing.to_keypair_bytes();
+        let msg = CanonicalMessage::new_with_nonce("alice", 10, 1, b"hello").expect("msg");
+        let hash = event_hash_bytes(&msg);
+        let sig = sign_event_hash(&hash, &keypair).expect("sign");
+        assert!(verify_event_hash_signature(
+            &hash,
+            &verifying.to_bytes(),
+            &sig
+        ));
+    }
+
+    #[test]
+    fn signature_invalid_is_rejected() {
+        let signing = SigningKey::from_bytes(&[9u8; 32]);
+        let verifying = signing.verifying_key();
+        let keypair = signing.to_keypair_bytes();
+        let msg = CanonicalMessage::new_with_nonce("alice", 11, 2, b"hello").expect("msg");
+        let hash = event_hash_bytes(&msg);
+        let mut sig = sign_event_hash(&hash, &keypair).expect("sign");
+        sig[0] ^= 0xFF;
+        assert!(!verify_event_hash_signature(
+            &hash,
+            &verifying.to_bytes(),
+            &sig
+        ));
     }
 }

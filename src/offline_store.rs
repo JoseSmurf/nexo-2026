@@ -1,3 +1,5 @@
+use ed25519_dalek::SigningKey;
+use getrandom::getrandom;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::message::{content_hash, event_hash, CanonicalMessage};
@@ -167,6 +169,44 @@ impl OfflineStore {
         }
     }
 
+    pub fn get_or_create_identity(&self) -> Result<([u8; 32], [u8; 64]), rusqlite::Error> {
+        let found: Option<(Vec<u8>, Vec<u8>)> = self
+            .conn
+            .query_row(
+                "SELECT pubkey, seckey FROM node_identity WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+
+        if let Some((pubkey, seckey)) = found {
+            if pubkey.len() != 32 || seckey.len() != 64 {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "invalid node_identity length".to_string(),
+                ));
+            }
+            let mut p = [0u8; 32];
+            let mut s = [0u8; 64];
+            p.copy_from_slice(&pubkey);
+            s.copy_from_slice(&seckey);
+            return Ok((p, s));
+        }
+
+        let mut seed = [0u8; 32];
+        getrandom(&mut seed).map_err(|_| {
+            rusqlite::Error::InvalidParameterName("identity_rng_failed".to_string())
+        })?;
+        let signing = SigningKey::from_bytes(&seed);
+        let pubkey = signing.verifying_key().to_bytes();
+        let seckey = signing.to_keypair_bytes();
+
+        self.conn.execute(
+            "INSERT INTO node_identity(id, pubkey, seckey) VALUES (1, ?1, ?2)",
+            params![pubkey.to_vec(), seckey.to_vec()],
+        )?;
+        Ok((pubkey, seckey))
+    }
+
     fn purge_seen_expired(&self, now_ms: u64) -> Result<(), rusqlite::Error> {
         self.conn.execute(
             "DELETE FROM seen_hashes WHERE expires_at_utc_ms <= ?1",
@@ -193,6 +233,11 @@ impl OfflineStore {
             CREATE TABLE IF NOT EXISTS sender_counters (
                 sender_id TEXT PRIMARY KEY NOT NULL,
                 last_nonce INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS node_identity (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                pubkey BLOB NOT NULL,
+                seckey BLOB NOT NULL
             );
             "#,
         )?;
@@ -264,6 +309,29 @@ mod tests {
             assert_eq!(status, StoreInsertStatus::Duplicate);
         }
 
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn node_identity_persists_across_reopen() {
+        let uniq = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("nexo_identity_{uniq}.db"));
+
+        let (pubkey_a, seckey_a) = {
+            let store = OfflineStore::open(path.to_str().expect("path")).expect("store open");
+            store.get_or_create_identity().expect("identity")
+        };
+
+        let (pubkey_b, seckey_b) = {
+            let store = OfflineStore::open(path.to_str().expect("path")).expect("store reopen");
+            store.get_or_create_identity().expect("identity")
+        };
+
+        assert_eq!(pubkey_a, pubkey_b);
+        assert_eq!(seckey_a, seckey_b);
         let _ = fs::remove_file(path);
     }
 }

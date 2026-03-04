@@ -13,8 +13,15 @@ const PACKET_DISCOVER: u8 = 3;
 const PACKET_HERE: u8 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedEvent {
+    pub msg: CanonicalMessage,
+    pub sender_pubkey: [u8; 32],
+    pub signature: [u8; 64],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UdpFrame {
-    Event(CanonicalMessage),
+    Event(SignedEvent),
     Discover,
     Here(SocketAddr),
 }
@@ -41,11 +48,13 @@ impl UdpNode {
         &self,
         target: SocketAddr,
         msg: &CanonicalMessage,
+        sender_pubkey: [u8; 32],
+        signature: [u8; 64],
         retries: u8,
         ack_timeout: Duration,
     ) -> io::Result<()> {
         let expected = event_hash_bytes(msg);
-        let packet = encode_event(msg);
+        let packet = encode_event(msg, sender_pubkey, signature);
         let mut buf = [0u8; 1024];
 
         for _ in 0..retries {
@@ -72,13 +81,13 @@ impl UdpNode {
 
     pub async fn recv_event(&self) -> io::Result<(CanonicalMessage, SocketAddr)> {
         let (frame, from) = self.recv_frame().await?;
-        let UdpFrame::Event(msg) = frame else {
+        let UdpFrame::Event(ev) = frame else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "REJECTED: non-event packet",
             ));
         };
-        Ok((msg, from))
+        Ok((ev.msg, from))
     }
 
     pub async fn recv_frame(&self) -> io::Result<(UdpFrame, SocketAddr)> {
@@ -108,10 +117,10 @@ impl UdpNode {
     }
 }
 
-fn encode_event(msg: &CanonicalMessage) -> Vec<u8> {
+fn encode_event(msg: &CanonicalMessage, sender_pubkey: [u8; 32], signature: [u8; 64]) -> Vec<u8> {
     let sender = msg.sender_id.as_bytes();
     let content = &msg.content;
-    let mut out = Vec::with_capacity(1 + 8 + 8 + 1 + sender.len() + 1 + content.len());
+    let mut out = Vec::with_capacity(1 + 8 + 8 + 1 + sender.len() + 1 + content.len() + 32 + 64);
     out.push(PACKET_EVENT);
     out.extend_from_slice(&msg.timestamp_utc_ms.to_le_bytes());
     out.extend_from_slice(&msg.nonce.to_le_bytes());
@@ -119,11 +128,13 @@ fn encode_event(msg: &CanonicalMessage) -> Vec<u8> {
     out.extend_from_slice(sender);
     out.push(content.len() as u8);
     out.extend_from_slice(content);
+    out.extend_from_slice(&sender_pubkey);
+    out.extend_from_slice(&signature);
     out
 }
 
-fn decode_event(buf: &[u8]) -> Result<CanonicalMessage, &'static str> {
-    if buf.len() < 19 || buf[0] != PACKET_EVENT {
+fn decode_event(buf: &[u8]) -> Result<SignedEvent, &'static str> {
+    if buf.len() < (19 + 32 + 64) || buf[0] != PACKET_EVENT {
         return Err("REJECTED: invalid event packet");
     }
     let mut ts = [0u8; 8];
@@ -144,15 +155,26 @@ fn decode_event(buf: &[u8]) -> Result<CanonicalMessage, &'static str> {
     let content_len = buf[sender_end] as usize;
     let content_start = sender_end + 1;
     let content_end = content_start + content_len;
-    if content_end != buf.len() {
+    let sig_start = content_end;
+    let sig_end = sig_start + 32 + 64;
+    if sig_end != buf.len() {
         return Err("REJECTED: malformed content");
     }
-    CanonicalMessage::new_with_nonce(
+    let msg = CanonicalMessage::new_with_nonce(
         sender,
         timestamp_utc_ms,
         nonce,
         &buf[content_start..content_end],
-    )
+    )?;
+    let mut sender_pubkey = [0u8; 32];
+    sender_pubkey.copy_from_slice(&buf[sig_start..sig_start + 32]);
+    let mut signature = [0u8; 64];
+    signature.copy_from_slice(&buf[sig_start + 32..sig_end]);
+    Ok(SignedEvent {
+        msg,
+        sender_pubkey,
+        signature,
+    })
 }
 
 fn encode_discover() -> [u8; 1] {

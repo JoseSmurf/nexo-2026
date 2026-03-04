@@ -6,7 +6,10 @@ mod network_cli {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tokio::time::timeout;
 
-    use syntax_engine::message::{event_hash, event_hash_bytes, CanonicalMessage};
+    use syntax_engine::message::{
+        event_hash, event_hash_bytes, sign_event_hash, verify_event_hash_signature,
+        CanonicalMessage,
+    };
     use syntax_engine::network_udp::{UdpFrame, UdpNode};
     use syntax_engine::offline_store::{OfflineStore, StoreInsertStatus};
 
@@ -174,7 +177,14 @@ mod network_cli {
                 .await
                 .map_err(|e| format!("recv failed: {e}"))?;
             let msg = match frame {
-                UdpFrame::Event(msg) => msg,
+                UdpFrame::Event(ev) => {
+                    let hash = event_hash_bytes(&ev.msg);
+                    if !verify_event_hash_signature(&hash, &ev.sender_pubkey, &ev.signature) {
+                        println!("invalid_sig");
+                        continue;
+                    }
+                    ev.msg
+                }
                 UdpFrame::Discover => {
                     let local = node
                         .local_addr()
@@ -239,10 +249,17 @@ mod network_cli {
             .map_err(|e| format!("next_nonce failed: {e}"))?;
         let msg = CanonicalMessage::new_with_nonce(args.sender, now, nonce, args.msg.as_bytes())
             .map_err(|e| e.to_string())?;
+        let (sender_pubkey, sender_seckey) = store
+            .get_or_create_identity()
+            .map_err(|e| format!("identity failed: {e}"))?;
+        let sig = sign_event_hash(&event_hash_bytes(&msg), &sender_seckey)
+            .map_err(|e| format!("sign failed: {e}"))?;
         let ehash = event_hash(&msg);
         node.send_with_ack(
             args.peer,
             &msg,
+            sender_pubkey,
+            sig,
             args.retries,
             Duration::from_millis(args.ack_timeout_ms),
         )
@@ -289,7 +306,14 @@ mod network_cli {
                     .await
                     .map_err(|e| format!("recv failed: {e}"))?;
                 let msg = match frame {
-                    UdpFrame::Event(msg) => msg,
+                    UdpFrame::Event(ev) => {
+                        let hash = event_hash_bytes(&ev.msg);
+                        if !verify_event_hash_signature(&hash, &ev.sender_pubkey, &ev.signature) {
+                            println!("invalid_sig");
+                            continue;
+                        }
+                        ev.msg
+                    }
                     UdpFrame::Discover => {
                         let local = node
                             .local_addr()
@@ -407,6 +431,11 @@ mod network_cli {
             let msg =
                 CanonicalMessage::new_with_nonce(args.sender.clone(), now, nonce, line.as_bytes())
                     .map_err(|e| e.to_string())?;
+            let (sender_pubkey, sender_seckey) = store
+                .get_or_create_identity()
+                .map_err(|e| format!("identity failed: {e}"))?;
+            let sig = sign_event_hash(&event_hash_bytes(&msg), &sender_seckey)
+                .map_err(|e| format!("sign failed: {e}"))?;
 
             let sender_node = UdpNode::bind("127.0.0.1:0")
                 .await
@@ -415,6 +444,8 @@ mod network_cli {
                 .send_with_ack(
                     peer,
                     &msg,
+                    sender_pubkey,
+                    sig,
                     args.retries,
                     Duration::from_millis(args.ack_timeout_ms),
                 )
