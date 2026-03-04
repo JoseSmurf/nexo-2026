@@ -44,6 +44,7 @@ mod network_cli {
     pub struct ChatArgs {
         bind: String,
         peer: Option<SocketAddr>,
+        daemon: bool,
         discover: bool,
         discover_broadcast: SocketAddr,
         discover_timeout_ms: u64,
@@ -81,7 +82,7 @@ mod network_cli {
          usage:\n\
           nexo_p2p listen --bind 127.0.0.1:9001 --db /tmp/nexo_a.db [--seen-ttl-ms 120000] [--crypto --shared-key-hex <64hex>]\n\
           nexo_p2p send --bind 127.0.0.1:9002 --peer 127.0.0.1:9001 --sender node_b --msg \"hello\" --db /tmp/nexo_b.db [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000] [--crypto --shared-key-hex <64hex>]\n\
-          nexo_p2p chat --bind 127.0.0.1:9001 --peer 127.0.0.1:9002 --sender node_a --db /tmp/nexo_a.db [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000] [--crypto --shared-key-hex <64hex>]\n\
+          nexo_p2p chat --bind 127.0.0.1:9001 --peer 127.0.0.1:9002 --sender node_a --db /tmp/nexo_a.db [--daemon] [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000] [--crypto --shared-key-hex <64hex>]\n\
           nexo_p2p chat --bind 0.0.0.0:9001 --discover --broadcast 255.255.255.255:9001 --discover-timeout-ms 800 --sender node_a --db /tmp/nexo_a.db [--sync-on-start --since-ms 0] [--crypto --shared-key-hex <64hex>]\n\
           nexo_p2p sync --bind 127.0.0.1:9010 --peer 127.0.0.1:9001 --db /tmp/nexo_b.db --since-ms 0 [--timeout-ms 800] [--crypto --shared-key-hex <64hex>]\n\
           nexo_p2p discover --bind 0.0.0.0:9001 --broadcast 255.255.255.255:9001 [--timeout-ms 800]"
@@ -140,6 +141,7 @@ mod network_cli {
     pub fn parse_chat(args: &[String]) -> Result<ChatArgs, String> {
         let flags = parse_flags(args)?;
         let bind = required(&flags, "bind")?;
+        let daemon = parse_bool(flags.get("daemon"), false, "daemon")?;
         let peer = flags
             .get("peer")
             .map(|v| {
@@ -184,6 +186,7 @@ mod network_cli {
         Ok(ChatArgs {
             bind,
             peer,
+            daemon,
             discover,
             discover_broadcast,
             discover_timeout_ms,
@@ -564,6 +567,14 @@ mod network_cli {
             "chat ready: bind={} peer={} sender={} db={} (/help /id /last N /quit)",
             args.bind, peer, args.sender, args.db
         );
+
+        if args.daemon {
+            println!("chat daemon mode enabled");
+            return match recv_task.await {
+                Ok(inner) => inner,
+                Err(e) => Err(format!("recv task join failed: {e}")),
+            };
+        }
 
         let stdin = std::io::stdin();
         let mut stdin = stdin.lock();
@@ -1056,6 +1067,23 @@ mod network_cli {
             let parsed = parse_chat(&args).expect("parse");
             assert!(parsed.peer.is_none());
             assert!(parsed.discover);
+        }
+
+        #[test]
+        fn parse_chat_accepts_daemon_flag() {
+            let args = vec![
+                "--bind".to_string(),
+                "127.0.0.1:9001".to_string(),
+                "--peer".to_string(),
+                "127.0.0.1:9002".to_string(),
+                "--sender".to_string(),
+                "node_a".to_string(),
+                "--db".to_string(),
+                "/tmp/a.db".to_string(),
+                "--daemon".to_string(),
+            ];
+            let parsed = parse_chat(&args).expect("parse");
+            assert!(parsed.daemon);
         }
 
         #[tokio::test]
