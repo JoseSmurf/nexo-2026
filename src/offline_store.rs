@@ -12,6 +12,14 @@ pub enum StoreInsertStatus {
     Duplicate,
 }
 
+pub struct RawMessageInput<'a> {
+    pub sender_id: &'a str,
+    pub timestamp_utc_ms: u64,
+    pub nonce: u64,
+    pub content: &'a [u8],
+    pub channel: &'a str,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredMessage {
     pub event_hash: String,
@@ -86,20 +94,20 @@ impl OfflineStore {
 
     pub fn insert_raw_message_with_channel(
         &self,
-        sender_id: &str,
-        timestamp_utc_ms: u64,
-        nonce: u64,
-        content: &[u8],
-        channel: &str,
+        input: RawMessageInput<'_>,
         now_ms: u64,
         seen_ttl_ms: u64,
     ) -> Result<StoreInsertStatus, rusqlite::Error> {
-        validate_channel(channel)?;
+        validate_channel(input.channel)?;
         self.purge_seen_expired(now_ms)?;
-        let chash = content_hash(content);
-        let chash_bytes = content_hash_bytes(content);
-        let ehash_bytes =
-            event_hash_bytes_from_parts(sender_id, timestamp_utc_ms, nonce, &chash_bytes);
+        let chash = content_hash(input.content);
+        let chash_bytes = content_hash_bytes(input.content);
+        let ehash_bytes = event_hash_bytes_from_parts(
+            input.sender_id,
+            input.timestamp_utc_ms,
+            input.nonce,
+            &chash_bytes,
+        );
         let ehash = blake3::Hash::from(ehash_bytes).to_hex().to_string();
         let inserted = self.conn.execute(
             "INSERT OR IGNORE INTO messages(event_hash, content_hash, sender_id, channel, timestamp_utc_ms, nonce, content_blob)
@@ -107,11 +115,11 @@ impl OfflineStore {
             params![
                 ehash,
                 chash,
-                sender_id,
-                channel,
-                timestamp_utc_ms as i64,
-                nonce as i64,
-                content
+                input.sender_id,
+                input.channel,
+                input.timestamp_utc_ms as i64,
+                input.nonce as i64,
+                input.content
             ],
         )?;
         if inserted == 0 {

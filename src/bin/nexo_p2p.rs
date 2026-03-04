@@ -12,7 +12,7 @@ mod network_cli {
         signed_envelope_hash_bytes, verify_event_hash_signature, CanonicalMessage,
     };
     use syntax_engine::network_udp::{SignedEvent, UdpFrame, UdpNode};
-    use syntax_engine::offline_store::{OfflineStore, StoreInsertStatus};
+    use syntax_engine::offline_store::{OfflineStore, RawMessageInput, StoreInsertStatus};
     #[cfg(feature = "crypto")]
     use syntax_engine::p2p_crypto::{
         decrypt_content, encrypt_content, parse_shared_key_hex, random_aead_nonce,
@@ -1104,11 +1104,13 @@ mod network_cli {
             .map_err(|e| format!("next_nonce ai failed: {e}"))?;
         store
             .insert_raw_message_with_channel(
-                "ai",
-                ai_now,
-                ai_nonce,
-                response.as_bytes(),
-                "ai",
+                RawMessageInput {
+                    sender_id: "ai",
+                    timestamp_utc_ms: ai_now,
+                    nonce: ai_nonce,
+                    content: response.as_bytes(),
+                    channel: "ai",
+                },
                 ai_now,
                 seen_ttl_ms,
             )
