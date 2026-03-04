@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
-use crate::message::{event_hash_bytes, CanonicalMessage};
+use crate::message::event_hash_bytes_from_parts;
 
 const PACKET_EVENT: u8 = 1;
 const PACKET_ACK: u8 = 2;
@@ -14,7 +14,12 @@ const PACKET_HERE: u8 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedEvent {
-    pub msg: CanonicalMessage,
+    pub sender_id: String,
+    pub timestamp_utc_ms: u64,
+    pub nonce: u64,
+    pub content_hash: [u8; 32],
+    pub payload: Vec<u8>,
+    pub crypto_nonce: Option<[u8; 24]>,
     pub sender_pubkey: [u8; 32],
     pub signature: [u8; 64],
 }
@@ -47,14 +52,18 @@ impl UdpNode {
     pub async fn send_with_ack(
         &self,
         target: SocketAddr,
-        msg: &CanonicalMessage,
-        sender_pubkey: [u8; 32],
-        signature: [u8; 64],
+        event: &SignedEvent,
         retries: u8,
         ack_timeout: Duration,
     ) -> io::Result<()> {
-        let expected = event_hash_bytes(msg);
-        let packet = encode_event(msg, sender_pubkey, signature);
+        let expected = event_hash_bytes_from_parts(
+            &event.sender_id,
+            event.timestamp_utc_ms,
+            event.nonce,
+            &event.content_hash,
+        );
+        let packet =
+            encode_event(event).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         let mut buf = [0u8; 1024];
 
         for _ in 0..retries {
@@ -77,17 +86,6 @@ impl UdpNode {
             io::ErrorKind::TimedOut,
             "REJECTED: ack not received",
         ))
-    }
-
-    pub async fn recv_event(&self) -> io::Result<(CanonicalMessage, SocketAddr)> {
-        let (frame, from) = self.recv_frame().await?;
-        let UdpFrame::Event(ev) = frame else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "REJECTED: non-event packet",
-            ));
-        };
-        Ok((ev.msg, from))
     }
 
     pub async fn recv_frame(&self) -> io::Result<(UdpFrame, SocketAddr)> {
@@ -117,29 +115,55 @@ impl UdpNode {
     }
 }
 
-fn encode_event(msg: &CanonicalMessage, sender_pubkey: [u8; 32], signature: [u8; 64]) -> Vec<u8> {
-    let sender = msg.sender_id.as_bytes();
-    let content = &msg.content;
-    let mut out = Vec::with_capacity(1 + 8 + 8 + 1 + sender.len() + 1 + content.len() + 32 + 64);
+fn encode_event(event: &SignedEvent) -> Result<Vec<u8>, &'static str> {
+    let sender = event.sender_id.as_bytes();
+    if sender.is_empty() || sender.len() > 255 {
+        return Err("REJECTED: invalid sender length");
+    }
+    if event.payload.is_empty() || event.payload.len() > 255 {
+        return Err("REJECTED: invalid payload length");
+    }
+
+    let overhead = 1
+        + 8
+        + 8
+        + 1
+        + sender.len()
+        + 32
+        + 1
+        + if event.crypto_nonce.is_some() { 24 } else { 0 }
+        + 1
+        + event.payload.len()
+        + 32
+        + 64;
+
+    let mut out = Vec::with_capacity(overhead);
     out.push(PACKET_EVENT);
-    out.extend_from_slice(&msg.timestamp_utc_ms.to_le_bytes());
-    out.extend_from_slice(&msg.nonce.to_le_bytes());
+    out.extend_from_slice(&event.timestamp_utc_ms.to_le_bytes());
+    out.extend_from_slice(&event.nonce.to_le_bytes());
     out.push(sender.len() as u8);
     out.extend_from_slice(sender);
-    out.push(content.len() as u8);
-    out.extend_from_slice(content);
-    out.extend_from_slice(&sender_pubkey);
-    out.extend_from_slice(&signature);
-    out
+    out.extend_from_slice(&event.content_hash);
+    out.push(if event.crypto_nonce.is_some() { 1 } else { 0 });
+    if let Some(nonce) = event.crypto_nonce {
+        out.extend_from_slice(&nonce);
+    }
+    out.push(event.payload.len() as u8);
+    out.extend_from_slice(&event.payload);
+    out.extend_from_slice(&event.sender_pubkey);
+    out.extend_from_slice(&event.signature);
+    Ok(out)
 }
 
 fn decode_event(buf: &[u8]) -> Result<SignedEvent, &'static str> {
-    if buf.len() < (19 + 32 + 64) || buf[0] != PACKET_EVENT {
+    if buf.len() < 1 + 8 + 8 + 1 + 32 + 1 + 1 + 32 + 64 || buf[0] != PACKET_EVENT {
         return Err("REJECTED: invalid event packet");
     }
+
     let mut ts = [0u8; 8];
     ts.copy_from_slice(&buf[1..9]);
     let timestamp_utc_ms = u64::from_le_bytes(ts);
+
     let mut nonce = [0u8; 8];
     nonce.copy_from_slice(&buf[9..17]);
     let nonce = u64::from_le_bytes(nonce);
@@ -150,28 +174,65 @@ fn decode_event(buf: &[u8]) -> Result<SignedEvent, &'static str> {
     if sender_end >= buf.len() {
         return Err("REJECTED: malformed sender");
     }
-    let sender =
+    let sender_id =
         std::str::from_utf8(&buf[sender_start..sender_end]).map_err(|_| "REJECTED: sender utf8")?;
-    let content_len = buf[sender_end] as usize;
-    let content_start = sender_end + 1;
-    let content_end = content_start + content_len;
-    let sig_start = content_end;
-    let sig_end = sig_start + 32 + 64;
-    if sig_end != buf.len() {
-        return Err("REJECTED: malformed content");
+    if sender_id.trim().is_empty() {
+        return Err("REJECTED: empty sender");
     }
-    let msg = CanonicalMessage::new_with_nonce(
-        sender,
+
+    let mut idx = sender_end;
+
+    if idx + 32 + 1 > buf.len() {
+        return Err("REJECTED: malformed content hash");
+    }
+    let mut content_hash = [0u8; 32];
+    content_hash.copy_from_slice(&buf[idx..idx + 32]);
+    idx += 32;
+
+    let crypto_flag = buf[idx];
+    idx += 1;
+    let crypto_nonce = match crypto_flag {
+        0 => None,
+        1 => {
+            if idx + 24 > buf.len() {
+                return Err("REJECTED: malformed crypto nonce");
+            }
+            let mut out = [0u8; 24];
+            out.copy_from_slice(&buf[idx..idx + 24]);
+            idx += 24;
+            Some(out)
+        }
+        _ => return Err("REJECTED: invalid crypto flag"),
+    };
+
+    if idx >= buf.len() {
+        return Err("REJECTED: malformed payload");
+    }
+    let payload_len = buf[idx] as usize;
+    idx += 1;
+    if payload_len == 0 || idx + payload_len > buf.len() {
+        return Err("REJECTED: malformed payload");
+    }
+    let payload = buf[idx..idx + payload_len].to_vec();
+    idx += payload_len;
+
+    if idx + 32 + 64 != buf.len() {
+        return Err("REJECTED: malformed signature envelope");
+    }
+    let mut sender_pubkey = [0u8; 32];
+    sender_pubkey.copy_from_slice(&buf[idx..idx + 32]);
+    idx += 32;
+
+    let mut signature = [0u8; 64];
+    signature.copy_from_slice(&buf[idx..idx + 64]);
+
+    Ok(SignedEvent {
+        sender_id: sender_id.to_string(),
         timestamp_utc_ms,
         nonce,
-        &buf[content_start..content_end],
-    )?;
-    let mut sender_pubkey = [0u8; 32];
-    sender_pubkey.copy_from_slice(&buf[sig_start..sig_start + 32]);
-    let mut signature = [0u8; 64];
-    signature.copy_from_slice(&buf[sig_start + 32..sig_end]);
-    Ok(SignedEvent {
-        msg,
+        content_hash,
+        payload,
+        crypto_nonce,
         sender_pubkey,
         signature,
     })

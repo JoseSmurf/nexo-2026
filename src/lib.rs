@@ -11,6 +11,8 @@ pub mod message;
 pub mod network_udp;
 #[cfg(feature = "network")]
 pub mod offline_store;
+#[cfg(feature = "crypto")]
+pub mod p2p_crypto;
 pub mod profile;
 pub mod telemetry;
 

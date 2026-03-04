@@ -7,17 +7,23 @@ mod network_cli {
     use tokio::time::timeout;
 
     use syntax_engine::message::{
-        event_hash, event_hash_bytes, sign_event_hash, verify_event_hash_signature,
-        CanonicalMessage,
+        content_hash_bytes, event_hash, event_hash_bytes_from_parts, sign_event_hash,
+        verify_event_hash_signature, CanonicalMessage,
     };
-    use syntax_engine::network_udp::{UdpFrame, UdpNode};
+    use syntax_engine::network_udp::{SignedEvent, UdpFrame, UdpNode};
     use syntax_engine::offline_store::{OfflineStore, StoreInsertStatus};
+    #[cfg(feature = "crypto")]
+    use syntax_engine::p2p_crypto::{
+        decrypt_content, encrypt_content, parse_shared_key_hex, random_aead_nonce,
+    };
 
     #[derive(Debug)]
     pub struct ListenArgs {
         bind: String,
         db: String,
         seen_ttl_ms: u64,
+        crypto: bool,
+        shared_key_hex: Option<String>,
     }
 
     #[derive(Debug)]
@@ -30,6 +36,8 @@ mod network_cli {
         ack_timeout_ms: u64,
         db: String,
         seen_ttl_ms: u64,
+        crypto: bool,
+        shared_key_hex: Option<String>,
     }
 
     #[derive(Debug)]
@@ -44,6 +52,8 @@ mod network_cli {
         retries: u8,
         ack_timeout_ms: u64,
         seen_ttl_ms: u64,
+        crypto: bool,
+        shared_key_hex: Option<String>,
     }
 
     #[derive(Debug)]
@@ -56,10 +66,10 @@ mod network_cli {
     pub fn usage() -> &'static str {
         "nexo_p2p (network feature)\n\
          usage:\n\
-          nexo_p2p listen --bind 127.0.0.1:9001 --db /tmp/nexo_a.db [--seen-ttl-ms 120000]\n\
-          nexo_p2p send --bind 127.0.0.1:9002 --peer 127.0.0.1:9001 --sender node_b --msg \"hello\" --db /tmp/nexo_b.db [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000]\n\
-          nexo_p2p chat --bind 127.0.0.1:9001 --peer 127.0.0.1:9002 --sender node_a --db /tmp/nexo_a.db [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000]\n\
-          nexo_p2p chat --bind 0.0.0.0:9001 --discover --broadcast 255.255.255.255:9001 --discover-timeout-ms 800 --sender node_a --db /tmp/nexo_a.db\n\
+          nexo_p2p listen --bind 127.0.0.1:9001 --db /tmp/nexo_a.db [--seen-ttl-ms 120000] [--crypto --shared-key-hex <64hex>]\n\
+          nexo_p2p send --bind 127.0.0.1:9002 --peer 127.0.0.1:9001 --sender node_b --msg \"hello\" --db /tmp/nexo_b.db [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000] [--crypto --shared-key-hex <64hex>]\n\
+          nexo_p2p chat --bind 127.0.0.1:9001 --peer 127.0.0.1:9002 --sender node_a --db /tmp/nexo_a.db [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000] [--crypto --shared-key-hex <64hex>]\n\
+          nexo_p2p chat --bind 0.0.0.0:9001 --discover --broadcast 255.255.255.255:9001 --discover-timeout-ms 800 --sender node_a --db /tmp/nexo_a.db [--crypto --shared-key-hex <64hex>]\n\
           nexo_p2p discover --bind 0.0.0.0:9001 --broadcast 255.255.255.255:9001 [--timeout-ms 800]"
     }
 
@@ -72,10 +82,15 @@ mod network_cli {
         let bind = required(&flags, "bind")?;
         let db = required(&flags, "db")?;
         let seen_ttl_ms = parse_u64(flags.get("seen-ttl-ms"), 120_000, "seen-ttl-ms")?;
+        let crypto = parse_bool(flags.get("crypto"), false, "crypto")?;
+        let shared_key_hex = flags.get("shared-key-hex").cloned();
+        let _ = resolve_shared_key(crypto, shared_key_hex.as_deref())?;
         Ok(ListenArgs {
             bind,
             db,
             seen_ttl_ms,
+            crypto,
+            shared_key_hex,
         })
     }
 
@@ -91,6 +106,9 @@ mod network_cli {
         let retries = parse_u8(flags.get("retries"), 3, "retries")?;
         let ack_timeout_ms = parse_u64(flags.get("ack-timeout-ms"), 200, "ack-timeout-ms")?;
         let seen_ttl_ms = parse_u64(flags.get("seen-ttl-ms"), 120_000, "seen-ttl-ms")?;
+        let crypto = parse_bool(flags.get("crypto"), false, "crypto")?;
+        let shared_key_hex = flags.get("shared-key-hex").cloned();
+        let _ = resolve_shared_key(crypto, shared_key_hex.as_deref())?;
         Ok(SendArgs {
             bind,
             peer,
@@ -100,6 +118,8 @@ mod network_cli {
             ack_timeout_ms,
             db,
             seen_ttl_ms,
+            crypto,
+            shared_key_hex,
         })
     }
 
@@ -136,6 +156,9 @@ mod network_cli {
         let retries = parse_u8(flags.get("retries"), 3, "retries")?;
         let ack_timeout_ms = parse_u64(flags.get("ack-timeout-ms"), 200, "ack-timeout-ms")?;
         let seen_ttl_ms = parse_u64(flags.get("seen-ttl-ms"), 120_000, "seen-ttl-ms")?;
+        let crypto = parse_bool(flags.get("crypto"), false, "crypto")?;
+        let shared_key_hex = flags.get("shared-key-hex").cloned();
+        let _ = resolve_shared_key(crypto, shared_key_hex.as_deref())?;
         Ok(ChatArgs {
             bind,
             peer,
@@ -147,6 +170,8 @@ mod network_cli {
             retries,
             ack_timeout_ms,
             seen_ttl_ms,
+            crypto,
+            shared_key_hex,
         })
     }
 
@@ -169,6 +194,7 @@ mod network_cli {
             .await
             .map_err(|e| format!("bind failed: {e}"))?;
         let store = OfflineStore::open(&args.db).map_err(|e| format!("db open failed: {e}"))?;
+        let shared_key = resolve_shared_key(args.crypto, args.shared_key_hex.as_deref())?;
         println!("listening on {} db={}", args.bind, args.db);
 
         loop {
@@ -176,15 +202,18 @@ mod network_cli {
                 .recv_frame()
                 .await
                 .map_err(|e| format!("recv failed: {e}"))?;
-            let msg = match frame {
-                UdpFrame::Event(ev) => {
-                    let hash = event_hash_bytes(&ev.msg);
-                    if !verify_event_hash_signature(&hash, &ev.sender_pubkey, &ev.signature) {
+            let (msg, hash_bytes) = match frame {
+                UdpFrame::Event(ev) => match decode_wire_event(&ev, shared_key) {
+                    Ok(v) => v,
+                    Err("invalid_sig") => {
                         println!("invalid_sig");
                         continue;
                     }
-                    ev.msg
-                }
+                    Err(_) => {
+                        println!("decrypt_failed");
+                        continue;
+                    }
+                },
                 UdpFrame::Discover => {
                     let local = node
                         .local_addr()
@@ -207,7 +236,7 @@ mod network_cli {
                     .mark_seen(&ehash, expires_at)
                     .map_err(|e| format!("store mark_seen failed: {e}"))?;
                 println!("recv duplicate event_hash={}", ehash);
-                node.send_ack(from, event_hash_bytes(&msg))
+                node.send_ack(from, hash_bytes)
                     .await
                     .map_err(|e| format!("ack failed: {e}"))?;
                 continue;
@@ -230,7 +259,7 @@ mod network_cli {
                 }
             }
 
-            node.send_ack(from, event_hash_bytes(&msg))
+            node.send_ack(from, hash_bytes)
                 .await
                 .map_err(|e| format!("ack failed: {e}"))?;
         }
@@ -241,6 +270,7 @@ mod network_cli {
             .await
             .map_err(|e| format!("bind failed: {e}"))?;
         let store = OfflineStore::open(&args.db).map_err(|e| format!("db open failed: {e}"))?;
+        let shared_key = resolve_shared_key(args.crypto, args.shared_key_hex.as_deref())?;
 
         validate_chat_input_bytes(&args.msg)?;
         let now = now_utc_ms();
@@ -249,17 +279,11 @@ mod network_cli {
             .map_err(|e| format!("next_nonce failed: {e}"))?;
         let msg = CanonicalMessage::new_with_nonce(args.sender, now, nonce, args.msg.as_bytes())
             .map_err(|e| e.to_string())?;
-        let (sender_pubkey, sender_seckey) = store
-            .get_or_create_identity()
-            .map_err(|e| format!("identity failed: {e}"))?;
-        let sig = sign_event_hash(&event_hash_bytes(&msg), &sender_seckey)
-            .map_err(|e| format!("sign failed: {e}"))?;
+        let wire = build_signed_event(&store, &msg, shared_key)?;
         let ehash = event_hash(&msg);
         node.send_with_ack(
             args.peer,
-            &msg,
-            sender_pubkey,
-            sig,
+            &wire,
             args.retries,
             Duration::from_millis(args.ack_timeout_ms),
         )
@@ -291,6 +315,7 @@ mod network_cli {
         } else {
             return Err("missing peer".to_string());
         };
+        let shared_key = resolve_shared_key(args.crypto, args.shared_key_hex.as_deref())?;
 
         let recv_bind = args.bind.clone();
         let recv_db = args.db.clone();
@@ -305,15 +330,18 @@ mod network_cli {
                     .recv_frame()
                     .await
                     .map_err(|e| format!("recv failed: {e}"))?;
-                let msg = match frame {
-                    UdpFrame::Event(ev) => {
-                        let hash = event_hash_bytes(&ev.msg);
-                        if !verify_event_hash_signature(&hash, &ev.sender_pubkey, &ev.signature) {
+                let (msg, hash_bytes) = match frame {
+                    UdpFrame::Event(ev) => match decode_wire_event(&ev, shared_key) {
+                        Ok(v) => v,
+                        Err("invalid_sig") => {
                             println!("invalid_sig");
                             continue;
                         }
-                        ev.msg
-                    }
+                        Err(_) => {
+                            println!("decrypt_failed");
+                            continue;
+                        }
+                    },
                     UdpFrame::Discover => {
                         let local = node
                             .local_addr()
@@ -336,7 +364,7 @@ mod network_cli {
                         .mark_seen(&ehash, expires_at)
                         .map_err(|e| format!("store mark_seen failed: {e}"))?;
                     println!("[dup] {}", ehash);
-                    node.send_ack(from, event_hash_bytes(&msg))
+                    node.send_ack(from, hash_bytes)
                         .await
                         .map_err(|e| format!("ack failed: {e}"))?;
                     continue;
@@ -355,7 +383,7 @@ mod network_cli {
                         println!("[dup] {}", ehash);
                     }
                 }
-                node.send_ack(from, event_hash_bytes(&msg))
+                node.send_ack(from, hash_bytes)
                     .await
                     .map_err(|e| format!("ack failed: {e}"))?;
             }
@@ -431,11 +459,7 @@ mod network_cli {
             let msg =
                 CanonicalMessage::new_with_nonce(args.sender.clone(), now, nonce, line.as_bytes())
                     .map_err(|e| e.to_string())?;
-            let (sender_pubkey, sender_seckey) = store
-                .get_or_create_identity()
-                .map_err(|e| format!("identity failed: {e}"))?;
-            let sig = sign_event_hash(&event_hash_bytes(&msg), &sender_seckey)
-                .map_err(|e| format!("sign failed: {e}"))?;
+            let wire = build_signed_event(&store, &msg, shared_key)?;
 
             let sender_node = UdpNode::bind("127.0.0.1:0")
                 .await
@@ -443,9 +467,7 @@ mod network_cli {
             match sender_node
                 .send_with_ack(
                     peer,
-                    &msg,
-                    sender_pubkey,
-                    sig,
+                    &wire,
                     args.retries,
                     Duration::from_millis(args.ack_timeout_ms),
                 )
@@ -512,6 +534,126 @@ mod network_cli {
             Ok(result) => result,
             Err(_) => Err("discover timeout".to_string()),
         }
+    }
+
+    fn resolve_shared_key(
+        crypto: bool,
+        shared_key_hex: Option<&str>,
+    ) -> Result<Option<[u8; 32]>, String> {
+        #[cfg(feature = "crypto")]
+        {
+            if crypto {
+                let raw = shared_key_hex.ok_or_else(|| {
+                    "missing --shared-key-hex when --crypto is enabled".to_string()
+                })?;
+                let key = parse_shared_key_hex(raw).map_err(|e| e.to_string())?;
+                return Ok(Some(key));
+            }
+            if shared_key_hex.is_some() {
+                return Err("--shared-key-hex requires --crypto".to_string());
+            }
+            Ok(None)
+        }
+        #[cfg(not(feature = "crypto"))]
+        {
+            if crypto || shared_key_hex.is_some() {
+                return Err("crypto feature not enabled in this build".to_string());
+            }
+            Ok(None)
+        }
+    }
+
+    fn decode_wire_event(
+        ev: &SignedEvent,
+        shared_key: Option<[u8; 32]>,
+    ) -> Result<(CanonicalMessage, [u8; 32]), &'static str> {
+        let hash = event_hash_bytes_from_parts(
+            &ev.sender_id,
+            ev.timestamp_utc_ms,
+            ev.nonce,
+            &ev.content_hash,
+        );
+        if !verify_event_hash_signature(&hash, &ev.sender_pubkey, &ev.signature) {
+            return Err("invalid_sig");
+        }
+
+        let plaintext = match ev.crypto_nonce {
+            Some(aead_nonce) => {
+                #[cfg(feature = "crypto")]
+                {
+                    let key = shared_key.ok_or("decrypt_failed")?;
+                    decrypt_content(&ev.payload, &key, &aead_nonce).map_err(|_| "decrypt_failed")?
+                }
+                #[cfg(not(feature = "crypto"))]
+                {
+                    let _ = shared_key;
+                    let _ = aead_nonce;
+                    return Err("decrypt_failed");
+                }
+            }
+            None => ev.payload.clone(),
+        };
+
+        if content_hash_bytes(&plaintext) != ev.content_hash {
+            return Err("decrypt_failed");
+        }
+
+        let msg = CanonicalMessage::new_with_nonce(
+            ev.sender_id.clone(),
+            ev.timestamp_utc_ms,
+            ev.nonce,
+            &plaintext,
+        )
+        .map_err(|_| "decrypt_failed")?;
+
+        Ok((msg, hash))
+    }
+
+    fn build_signed_event(
+        store: &OfflineStore,
+        msg: &CanonicalMessage,
+        shared_key: Option<[u8; 32]>,
+    ) -> Result<SignedEvent, String> {
+        let content_hash = content_hash_bytes(&msg.content);
+        let (payload, crypto_nonce) = match shared_key {
+            Some(key) => {
+                #[cfg(feature = "crypto")]
+                {
+                    let nonce = random_aead_nonce().map_err(|e| e.to_string())?;
+                    let ciphertext =
+                        encrypt_content(&msg.content, &key, &nonce).map_err(|e| e.to_string())?;
+                    (ciphertext, Some(nonce))
+                }
+                #[cfg(not(feature = "crypto"))]
+                {
+                    let _ = key;
+                    return Err("crypto feature not enabled in this build".to_string());
+                }
+            }
+            None => (msg.content.clone(), None),
+        };
+
+        let (sender_pubkey, sender_seckey) = store
+            .get_or_create_identity()
+            .map_err(|e| format!("identity failed: {e}"))?;
+        let hash = event_hash_bytes_from_parts(
+            &msg.sender_id,
+            msg.timestamp_utc_ms,
+            msg.nonce,
+            &content_hash,
+        );
+        let signature = sign_event_hash(&hash, &sender_seckey).map_err(|e| e.to_string())?;
+
+        Ok(SignedEvent {
+            sender_id: msg.sender_id.clone(),
+            timestamp_utc_ms: msg.timestamp_utc_ms,
+            nonce: msg.nonce,
+            content_hash,
+            payload,
+            crypto_nonce,
+            sender_pubkey,
+            signature,
+        })
     }
 
     fn parse_flags(args: &[String]) -> Result<HashMap<String, String>, String> {

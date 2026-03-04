@@ -61,18 +61,29 @@ pub fn content_hash(content: &[u8]) -> String {
     blake3::hash(content).to_hex().to_string()
 }
 
-pub fn event_hash_bytes(message: &CanonicalMessage) -> [u8; 32] {
+pub fn event_hash_bytes_from_parts(
+    sender_id: &str,
+    timestamp_utc_ms: u64,
+    nonce: u64,
+    content_hash: &[u8; 32],
+) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
-    hash_field(&mut h, b"schema", b"msg_v1");
-    hash_field(&mut h, b"sender_id", message.sender_id.as_bytes());
-    hash_field(
-        &mut h,
-        b"timestamp_utc_ms",
-        &message.timestamp_utc_ms.to_le_bytes(),
-    );
-    hash_field(&mut h, b"nonce", &message.nonce.to_le_bytes());
-    hash_field(&mut h, b"content", &message.content);
+    hash_field(&mut h, b"schema", b"msg_v2");
+    hash_field(&mut h, b"sender_id", sender_id.as_bytes());
+    hash_field(&mut h, b"timestamp_utc_ms", &timestamp_utc_ms.to_le_bytes());
+    hash_field(&mut h, b"nonce", &nonce.to_le_bytes());
+    hash_field(&mut h, b"content_hash", content_hash);
     *h.finalize().as_bytes()
+}
+
+pub fn event_hash_bytes(message: &CanonicalMessage) -> [u8; 32] {
+    let chash = content_hash_bytes(&message.content);
+    event_hash_bytes_from_parts(
+        &message.sender_id,
+        message.timestamp_utc_ms,
+        message.nonce,
+        &chash,
+    )
 }
 
 pub fn event_hash(message: &CanonicalMessage) -> String {
@@ -135,6 +146,15 @@ mod tests {
         assert_ne!(event_hash(&a), event_hash(&b));
         let c = CanonicalMessage::new_with_nonce("u", 10, 2, b"hello").expect("valid");
         assert_ne!(event_hash(&a), event_hash(&c));
+    }
+
+    #[test]
+    fn event_hash_parts_matches_message_hash() {
+        let msg = CanonicalMessage::new_with_nonce("user", 1000, 9, b"abc").expect("msg");
+        let chash = content_hash_bytes(&msg.content);
+        let from_parts =
+            event_hash_bytes_from_parts(&msg.sender_id, msg.timestamp_utc_ms, msg.nonce, &chash);
+        assert_eq!(event_hash_bytes(&msg), from_parts);
     }
 
     #[test]
