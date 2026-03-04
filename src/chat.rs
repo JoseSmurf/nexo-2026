@@ -1,7 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::BufRead;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::Mutex;
 use tokio::time::timeout;
 
 use crate::ai::maybe_generate_ai_insight_for_global;
@@ -481,6 +483,7 @@ pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
     }
 
     let shared_key = resolve_shared_key(args.crypto, args.shared_key_hex.as_deref())?;
+    let relay_candidates = Arc::new(Mutex::new(CandidatePeers::default()));
 
     if args.sync_on_start {
         if let Some(sync_peer) = peer {
@@ -503,6 +506,7 @@ pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
     let recv_bind = args.bind.clone();
     let recv_db = args.db.clone();
     let recv_ttl = args.seen_ttl_ms;
+    let recv_candidates = Arc::clone(&relay_candidates);
     let recv_task = tokio::spawn(async move {
         let node = UdpNode::bind(&recv_bind)
             .await
@@ -557,6 +561,10 @@ pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
                     continue;
                 }
             };
+            {
+                let mut candidates = recv_candidates.lock().await;
+                promote_candidate_peer(&mut candidates, &mut known_peers, from);
+            }
             merge_known_peers(&mut known_peers, &decoded.known_peers);
             insert_known_peer(&mut known_peers, from);
             let msg = decoded.msg;
@@ -651,6 +659,7 @@ pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
         let relay_registry_interval_ms = args.relay_registry_interval_ms;
         let relay_push_interval_ms = args.relay_push_interval_ms;
         let relay_pull_interval_ms = args.relay_pull_interval_ms;
+        let relay_candidates_task = Arc::clone(&relay_candidates);
         Some(tokio::spawn(async move {
             run_relay_bridge_loop(
                 relay_urls,
@@ -662,6 +671,7 @@ pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
                 relay_seen_ttl_ms,
                 relay_push_interval_ms,
                 relay_pull_interval_ms,
+                relay_candidates_task,
             )
             .await
         }))
@@ -934,6 +944,7 @@ async fn run_relay_bridge_loop(
     seen_ttl_ms: u64,
     push_interval_ms: u64,
     pull_interval_ms: u64,
+    relay_candidates: Arc<Mutex<CandidatePeers>>,
 ) -> Result<(), String> {
     let mut relays = BTreeSet::<String>::new();
     let initial = normalize_relays(initial_relays);
@@ -1040,6 +1051,10 @@ async fn run_relay_bridge_loop(
                     let mut max_ts = since;
                     let mut applied_any = false;
                     for decoded in decoded_batch {
+                        {
+                            let mut candidates = relay_candidates.lock().await;
+                            queue_relay_candidate_peers(&mut candidates, &decoded.known_peers);
+                        }
                         let msg = decoded.msg;
 
                         let ehash = event_hash(&msg);
@@ -1335,6 +1350,7 @@ fn resolve_shared_key(
 
 const MAX_KNOWN_PEERS: usize = 64;
 const MAX_SHARED_PEERS: usize = 8;
+const MAX_CANDIDATE_PEERS: usize = 32;
 const RELAY_PULL_SINCE_KEY: &str = "last_relay_pull_since_ms";
 const RELAY_BACKOFF_MIN_MS: u64 = 1_000;
 const RELAY_BACKOFF_MAX_MS: u64 = 30_000;
@@ -1372,6 +1388,40 @@ fn shared_peers(peers: &BTreeSet<SocketAddr>, exclude: Option<SocketAddr>) -> Ve
         .filter(|p| Some(*p) != exclude)
         .take(MAX_SHARED_PEERS)
         .collect()
+}
+
+#[derive(Default)]
+struct CandidatePeers {
+    queue: VecDeque<SocketAddr>,
+    set: BTreeSet<SocketAddr>,
+}
+
+fn queue_relay_candidate_peers(candidates: &mut CandidatePeers, incoming: &[SocketAddr]) {
+    for peer in incoming {
+        if candidates.set.contains(peer) {
+            continue;
+        }
+        candidates.queue.push_back(*peer);
+        candidates.set.insert(*peer);
+        while candidates.queue.len() > MAX_CANDIDATE_PEERS {
+            if let Some(removed) = candidates.queue.pop_front() {
+                candidates.set.remove(&removed);
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+fn promote_candidate_peer(
+    candidates: &mut CandidatePeers,
+    known_peers: &mut BTreeSet<SocketAddr>,
+    peer: SocketAddr,
+) {
+    if candidates.set.remove(&peer) {
+        candidates.queue.retain(|p| *p != peer);
+        insert_known_peer(known_peers, peer);
+    }
 }
 
 struct DecodedEvent {
@@ -1637,6 +1687,23 @@ mod tests {
         assert_eq!(relay_next_backoff_ms(Some(4_000)), 8_000);
         assert_eq!(relay_next_backoff_ms(Some(16_000)), 30_000);
         assert_eq!(relay_next_backoff_ms(Some(30_000)), 30_000);
+    }
+
+    #[test]
+    fn relay_pull_does_not_inject_known_peers_immediately() {
+        let peer: SocketAddr = "127.0.0.1:9001".parse().expect("peer");
+        let mut known = BTreeSet::new();
+        let mut candidates = CandidatePeers::default();
+        queue_relay_candidate_peers(&mut candidates, &[peer]);
+        assert!(!known.contains(&peer));
+        promote_candidate_peer(
+            &mut candidates,
+            &mut known,
+            "127.0.0.1:9002".parse().expect("other"),
+        );
+        assert!(!known.contains(&peer));
+        promote_candidate_peer(&mut candidates, &mut known, peer);
+        assert!(known.contains(&peer));
     }
 
     #[tokio::test]
