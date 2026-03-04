@@ -6,6 +6,7 @@ mod network_cli {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tokio::time::timeout;
 
+    use syntax_engine::analyzer::analyze_bytes;
     use syntax_engine::message::{
         content_hash_bytes, event_hash, event_hash_bytes_from_parts, sign_event_hash,
         signed_envelope_hash_bytes, verify_event_hash_signature, CanonicalMessage,
@@ -531,6 +532,13 @@ mod network_cli {
                 match inserted {
                     StoreInsertStatus::Inserted => {
                         println!("[{}] {}", msg.sender_id, render_content(&msg.content));
+                        let analysis = analyze_bytes(&msg.content);
+                        println!(
+                            "analysis intent={} topics=[{}] summary={}",
+                            analysis.intent,
+                            analysis.topics.join(","),
+                            analysis.summary
+                        );
                     }
                     StoreInsertStatus::Duplicate => {
                         println!("[dup] {}", ehash);
@@ -658,6 +666,15 @@ mod network_cli {
                         .insert_message(&msg, now_utc_ms(), args.seen_ttl_ms)
                         .map_err(|e| format!("store insert failed: {e}"))?;
                     println!("sent ok {:?} nonce={}", status, msg.nonce);
+                    if status == StoreInsertStatus::Inserted {
+                        let analysis = analyze_bytes(&msg.content);
+                        println!(
+                            "analysis intent={} topics=[{}] summary={}",
+                            analysis.intent,
+                            analysis.topics.join(","),
+                            analysis.summary
+                        );
+                    }
                 }
                 Err(e) => {
                     println!("timeout: {e}");

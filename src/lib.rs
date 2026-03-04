@@ -4,6 +4,7 @@ use sha3::{
     Digest as Sha3Digest, Sha3_256, Shake256,
 };
 
+pub mod analyzer;
 pub mod api;
 pub mod audit_store;
 pub mod message;
