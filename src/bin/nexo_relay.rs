@@ -20,6 +20,10 @@ use syntax_engine::message::{
 };
 #[cfg(feature = "network")]
 use syntax_engine::network_udp::SignedEvent;
+#[cfg(feature = "network")]
+use syntax_engine::relay_client::signed_event_from_json_value;
+#[cfg(all(feature = "network", test))]
+use syntax_engine::relay_client::signed_event_to_json_value;
 
 #[cfg(feature = "network")]
 #[derive(Clone)]
@@ -40,21 +44,6 @@ impl RelayState {
 #[derive(Debug, Deserialize)]
 struct PushRequest {
     items: Vec<Value>,
-}
-
-#[cfg(feature = "network")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct RelaySyncItem {
-    sender_id: String,
-    timestamp_utc_ms: u64,
-    nonce: u64,
-    content_hash: Vec<u8>,
-    origin_event_hash: Vec<u8>,
-    hops_remaining: u8,
-    payload: Vec<u8>,
-    crypto_nonce: Option<Vec<u8>>,
-    sender_pubkey: Vec<u8>,
-    signature: Vec<u8>,
 }
 
 #[cfg(feature = "network")]
@@ -182,55 +171,6 @@ fn app(state: RelayState) -> Router {
 }
 
 #[cfg(feature = "network")]
-fn to_fixed<const N: usize>(value: &[u8], field: &str) -> Result<[u8; N], RelayError> {
-    if value.len() != N {
-        return Err(RelayError::BadRequest(format!(
-            "invalid {field} length: expected {N}"
-        )));
-    }
-    let mut out = [0u8; N];
-    out.copy_from_slice(value);
-    Ok(out)
-}
-
-#[cfg(feature = "network")]
-impl RelaySyncItem {
-    fn into_signed_event(self) -> Result<SignedEvent, RelayError> {
-        Ok(SignedEvent {
-            sender_id: self.sender_id,
-            timestamp_utc_ms: self.timestamp_utc_ms,
-            nonce: self.nonce,
-            content_hash: to_fixed::<32>(&self.content_hash, "content_hash")?,
-            origin_event_hash: to_fixed::<32>(&self.origin_event_hash, "origin_event_hash")?,
-            hops_remaining: self.hops_remaining,
-            payload: self.payload,
-            crypto_nonce: match self.crypto_nonce {
-                Some(v) => Some(to_fixed::<24>(&v, "crypto_nonce")?),
-                None => None,
-            },
-            sender_pubkey: to_fixed::<32>(&self.sender_pubkey, "sender_pubkey")?,
-            signature: to_fixed::<64>(&self.signature, "signature")?,
-        })
-    }
-
-    #[cfg(test)]
-    fn from_signed_event(ev: &SignedEvent) -> Self {
-        Self {
-            sender_id: ev.sender_id.clone(),
-            timestamp_utc_ms: ev.timestamp_utc_ms,
-            nonce: ev.nonce,
-            content_hash: ev.content_hash.to_vec(),
-            origin_event_hash: ev.origin_event_hash.to_vec(),
-            hops_remaining: ev.hops_remaining,
-            payload: ev.payload.clone(),
-            crypto_nonce: ev.crypto_nonce.map(|v| v.to_vec()),
-            sender_pubkey: ev.sender_pubkey.to_vec(),
-            signature: ev.signature.to_vec(),
-        }
-    }
-}
-
-#[cfg(feature = "network")]
 async fn push_handler(
     State(state): State<RelayState>,
     Json(req): Json<PushRequest>,
@@ -290,9 +230,7 @@ fn push_items(db_path: &str, items: Vec<Value>) -> Result<PushResponse, RelayErr
     let mut duplicates = 0usize;
 
     for raw in items {
-        let item: RelaySyncItem = serde_json::from_value(raw.clone())
-            .map_err(|e| RelayError::BadRequest(format!("invalid sync item: {e}")))?;
-        let item = item.into_signed_event()?;
+        let item = signed_event_from_json_value(raw.clone()).map_err(RelayError::BadRequest)?;
         let event_hash = validate_and_event_hash(&item)?;
         let blob_json = serde_json::to_string(&raw)
             .map_err(|e| RelayError::Internal(format!("json encode failed: {e}")))?;
@@ -428,8 +366,8 @@ mod tests {
 
         let item_a = make_signed_event("node_a", 1000, 1, b"hello", 4);
         let item_b = make_signed_event("node_b", 2000, 1, b"world", 4);
-        let item_a_json = RelaySyncItem::from_signed_event(&item_a);
-        let item_b_json = RelaySyncItem::from_signed_event(&item_b);
+        let item_a_json = signed_event_to_json_value(&item_a);
+        let item_b_json = signed_event_to_json_value(&item_b);
 
         let client = Client::new();
         let base = format!("http://{}", addr);
@@ -453,12 +391,10 @@ mod tests {
         assert_eq!(pull.status(), StatusCode::OK);
         let pull_json = pull.json::<PullResponse>().await.expect("pull json");
         assert_eq!(pull_json.items.len(), 2);
-        let got_0: RelaySyncItem =
-            serde_json::from_value(pull_json.items[0].clone()).expect("item0 decode");
-        let got_1: RelaySyncItem =
-            serde_json::from_value(pull_json.items[1].clone()).expect("item1 decode");
-        let got_0 = got_0.into_signed_event().expect("item0 to signed");
-        let got_1 = got_1.into_signed_event().expect("item1 to signed");
+        let got_0 =
+            signed_event_from_json_value(pull_json.items[0].clone()).expect("item0 to signed");
+        let got_1 =
+            signed_event_from_json_value(pull_json.items[1].clone()).expect("item1 to signed");
         assert_eq!(got_0.timestamp_utc_ms, 1000);
         assert_eq!(got_1.timestamp_utc_ms, 2000);
 
