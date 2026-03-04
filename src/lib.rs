@@ -25,6 +25,8 @@ pub mod p2p_crypto;
 pub mod profile;
 #[cfg(feature = "network")]
 pub mod relay_client;
+#[cfg(feature = "network")]
+pub mod relay_registry;
 pub mod telemetry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
