@@ -11,6 +11,8 @@ const PACKET_EVENT: u8 = 1;
 const PACKET_ACK: u8 = 2;
 const PACKET_DISCOVER: u8 = 3;
 const PACKET_HERE: u8 = 4;
+const PACKET_SYNC_REQUEST: u8 = 5;
+const PACKET_SYNC_ITEM: u8 = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedEvent {
@@ -25,10 +27,17 @@ pub struct SignedEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncRequest {
+    pub since_ts_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UdpFrame {
     Event(SignedEvent),
     Discover,
     Here(SocketAddr),
+    SyncRequest(SyncRequest),
+    SyncItem(SignedEvent),
 }
 
 pub struct UdpNode {
@@ -113,6 +122,19 @@ impl UdpNode {
         let _ = self.socket.send_to(&packet, target).await?;
         Ok(())
     }
+
+    pub async fn send_sync_request(&self, target: SocketAddr, since_ts_ms: u64) -> io::Result<()> {
+        let packet = encode_sync_request(since_ts_ms);
+        let _ = self.socket.send_to(&packet, target).await?;
+        Ok(())
+    }
+
+    pub async fn send_sync_item(&self, target: SocketAddr, event: &SignedEvent) -> io::Result<()> {
+        let packet =
+            encode_sync_item(event).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let _ = self.socket.send_to(&packet, target).await?;
+        Ok(())
+    }
 }
 
 fn encode_event(event: &SignedEvent) -> Result<Vec<u8>, &'static str> {
@@ -152,6 +174,14 @@ fn encode_event(event: &SignedEvent) -> Result<Vec<u8>, &'static str> {
     out.extend_from_slice(&event.payload);
     out.extend_from_slice(&event.sender_pubkey);
     out.extend_from_slice(&event.signature);
+    Ok(out)
+}
+
+fn encode_sync_item(event: &SignedEvent) -> Result<Vec<u8>, &'static str> {
+    let event_packet = encode_event(event)?;
+    let mut out = Vec::with_capacity(event_packet.len());
+    out.push(PACKET_SYNC_ITEM);
+    out.extend_from_slice(&event_packet[1..]);
     Ok(out)
 }
 
@@ -242,6 +272,13 @@ fn encode_discover() -> [u8; 1] {
     [PACKET_DISCOVER]
 }
 
+fn encode_sync_request(since_ts_ms: u64) -> [u8; 9] {
+    let mut out = [0u8; 9];
+    out[0] = PACKET_SYNC_REQUEST;
+    out[1..].copy_from_slice(&since_ts_ms.to_le_bytes());
+    out
+}
+
 fn encode_here(addr: SocketAddr) -> Vec<u8> {
     let mut out = Vec::with_capacity(1 + 32);
     out.push(PACKET_HERE);
@@ -274,6 +311,17 @@ fn decode_ack(buf: &[u8]) -> Result<[u8; 32], &'static str> {
     Ok(out)
 }
 
+fn decode_sync_request(buf: &[u8]) -> Result<SyncRequest, &'static str> {
+    if buf.len() != 9 || buf[0] != PACKET_SYNC_REQUEST {
+        return Err("REJECTED: invalid sync request packet");
+    }
+    let mut ts = [0u8; 8];
+    ts.copy_from_slice(&buf[1..9]);
+    Ok(SyncRequest {
+        since_ts_ms: u64::from_le_bytes(ts),
+    })
+}
+
 fn decode_frame(buf: &[u8]) -> Result<UdpFrame, &'static str> {
     if buf.is_empty() {
         return Err("REJECTED: empty packet");
@@ -287,6 +335,13 @@ fn decode_frame(buf: &[u8]) -> Result<UdpFrame, &'static str> {
             Ok(UdpFrame::Discover)
         }
         PACKET_HERE => Ok(UdpFrame::Here(decode_here(buf)?)),
+        PACKET_SYNC_REQUEST => Ok(UdpFrame::SyncRequest(decode_sync_request(buf)?)),
+        PACKET_SYNC_ITEM => {
+            let mut event_packet = Vec::with_capacity(buf.len());
+            event_packet.push(PACKET_EVENT);
+            event_packet.extend_from_slice(&buf[1..]);
+            Ok(UdpFrame::SyncItem(decode_event(&event_packet)?))
+        }
         _ => Err("REJECTED: unknown packet type"),
     }
 }

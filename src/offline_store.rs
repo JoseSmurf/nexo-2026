@@ -15,6 +15,7 @@ pub struct StoredMessage {
     pub event_hash: String,
     pub sender_id: String,
     pub timestamp_utc_ms: u64,
+    pub nonce: u64,
     pub content: Vec<u8>,
 }
 
@@ -47,13 +48,14 @@ impl OfflineStore {
         let ehash = event_hash(msg);
         let chash = content_hash(&msg.content);
         let inserted = self.conn.execute(
-            "INSERT OR IGNORE INTO messages(event_hash, content_hash, sender_id, timestamp_utc_ms, content_blob)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT OR IGNORE INTO messages(event_hash, content_hash, sender_id, timestamp_utc_ms, nonce, content_blob)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 ehash,
                 chash,
                 msg.sender_id,
                 msg.timestamp_utc_ms as i64,
+                msg.nonce as i64,
                 msg.content
             ],
         )?;
@@ -99,7 +101,7 @@ impl OfflineStore {
         }
         let limit = limit.min(1000);
         let mut stmt = self.conn.prepare(
-            "SELECT event_hash, sender_id, timestamp_utc_ms, content_blob
+            "SELECT event_hash, sender_id, timestamp_utc_ms, nonce, content_blob
              FROM messages
              ORDER BY rowid DESC
              LIMIT ?1",
@@ -111,7 +113,38 @@ impl OfflineStore {
                 event_hash: row.get(0)?,
                 sender_id: row.get(1)?,
                 timestamp_utc_ms: row.get(2)?,
-                content: row.get(3)?,
+                nonce: row.get(3)?,
+                content: row.get(4)?,
+            });
+        }
+        Ok(out)
+    }
+
+    pub fn messages_since(
+        &self,
+        since_ts_ms: u64,
+        limit: usize,
+    ) -> Result<Vec<StoredMessage>, rusqlite::Error> {
+        if limit == 0 {
+            return Err(rusqlite::Error::InvalidParameterName("limit".to_string()));
+        }
+        let limit = limit.min(1000);
+        let mut stmt = self.conn.prepare(
+            "SELECT event_hash, sender_id, timestamp_utc_ms, nonce, content_blob
+             FROM messages
+             WHERE timestamp_utc_ms >= ?1
+             ORDER BY timestamp_utc_ms ASC, rowid ASC
+             LIMIT ?2",
+        )?;
+        let mut rows = stmt.query(params![since_ts_ms as i64, limit as i64])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(StoredMessage {
+                event_hash: row.get(0)?,
+                sender_id: row.get(1)?,
+                timestamp_utc_ms: row.get(2)?,
+                nonce: row.get(3)?,
+                content: row.get(4)?,
             });
         }
         Ok(out)
@@ -223,6 +256,7 @@ impl OfflineStore {
                 content_hash TEXT NOT NULL,
                 sender_id TEXT NOT NULL,
                 timestamp_utc_ms INTEGER NOT NULL,
+                nonce INTEGER NOT NULL,
                 content_blob BLOB NOT NULL
             );
             CREATE TABLE IF NOT EXISTS seen_hashes (
@@ -241,6 +275,15 @@ impl OfflineStore {
             );
             "#,
         )?;
+        match self.conn.execute(
+            "ALTER TABLE messages ADD COLUMN nonce INTEGER NOT NULL DEFAULT 0",
+            [],
+        ) {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+                if msg.contains("duplicate column name") => {}
+            Err(e) => return Err(e),
+        }
         Ok(())
     }
 }

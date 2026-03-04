@@ -47,6 +47,8 @@ mod network_cli {
         discover: bool,
         discover_broadcast: SocketAddr,
         discover_timeout_ms: u64,
+        sync_on_start: bool,
+        since_ms: Option<u64>,
         sender: String,
         db: String,
         retries: u8,
@@ -63,13 +65,25 @@ mod network_cli {
         timeout_ms: u64,
     }
 
+    #[derive(Debug)]
+    pub struct SyncArgs {
+        bind: String,
+        peer: SocketAddr,
+        db: String,
+        since_ms: u64,
+        timeout_ms: u64,
+        crypto: bool,
+        shared_key_hex: Option<String>,
+    }
+
     pub fn usage() -> &'static str {
         "nexo_p2p (network feature)\n\
          usage:\n\
           nexo_p2p listen --bind 127.0.0.1:9001 --db /tmp/nexo_a.db [--seen-ttl-ms 120000] [--crypto --shared-key-hex <64hex>]\n\
           nexo_p2p send --bind 127.0.0.1:9002 --peer 127.0.0.1:9001 --sender node_b --msg \"hello\" --db /tmp/nexo_b.db [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000] [--crypto --shared-key-hex <64hex>]\n\
           nexo_p2p chat --bind 127.0.0.1:9001 --peer 127.0.0.1:9002 --sender node_a --db /tmp/nexo_a.db [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000] [--crypto --shared-key-hex <64hex>]\n\
-          nexo_p2p chat --bind 0.0.0.0:9001 --discover --broadcast 255.255.255.255:9001 --discover-timeout-ms 800 --sender node_a --db /tmp/nexo_a.db [--crypto --shared-key-hex <64hex>]\n\
+          nexo_p2p chat --bind 0.0.0.0:9001 --discover --broadcast 255.255.255.255:9001 --discover-timeout-ms 800 --sender node_a --db /tmp/nexo_a.db [--sync-on-start --since-ms 0] [--crypto --shared-key-hex <64hex>]\n\
+          nexo_p2p sync --bind 127.0.0.1:9010 --peer 127.0.0.1:9001 --db /tmp/nexo_b.db --since-ms 0 [--timeout-ms 800] [--crypto --shared-key-hex <64hex>]\n\
           nexo_p2p discover --bind 0.0.0.0:9001 --broadcast 255.255.255.255:9001 [--timeout-ms 800]"
     }
 
@@ -148,6 +162,14 @@ mod network_cli {
             });
         let discover_timeout_ms =
             parse_u64(flags.get("discover-timeout-ms"), 800, "discover-timeout-ms")?;
+        let sync_on_start = parse_bool(flags.get("sync-on-start"), false, "sync-on-start")?;
+        let since_ms = flags
+            .get("since-ms")
+            .map(|v| {
+                v.parse::<u64>()
+                    .map_err(|_| "invalid --since-ms value".to_string())
+            })
+            .transpose()?;
         if peer.is_none() && !discover {
             return Err("missing --peer (or set --discover)".to_string());
         }
@@ -165,6 +187,8 @@ mod network_cli {
             discover,
             discover_broadcast,
             discover_timeout_ms,
+            sync_on_start,
+            since_ms,
             sender,
             db,
             retries,
@@ -186,6 +210,29 @@ mod network_cli {
             bind,
             broadcast,
             timeout_ms,
+        })
+    }
+
+    pub fn parse_sync(args: &[String]) -> Result<SyncArgs, String> {
+        let flags = parse_flags(args)?;
+        let bind = required(&flags, "bind")?;
+        let peer = required(&flags, "peer")?
+            .parse::<SocketAddr>()
+            .map_err(|_| "invalid --peer socket addr".to_string())?;
+        let db = required(&flags, "db")?;
+        let since_ms = parse_u64(flags.get("since-ms"), 0, "since-ms")?;
+        let timeout_ms = parse_u64(flags.get("timeout-ms"), 800, "timeout-ms")?;
+        let crypto = parse_bool(flags.get("crypto"), false, "crypto")?;
+        let shared_key_hex = flags.get("shared-key-hex").cloned();
+        let _ = resolve_shared_key(crypto, shared_key_hex.as_deref())?;
+        Ok(SyncArgs {
+            bind,
+            peer,
+            db,
+            since_ms,
+            timeout_ms,
+            crypto,
+            shared_key_hex,
         })
     }
 
@@ -224,6 +271,26 @@ mod network_cli {
                     continue;
                 }
                 UdpFrame::Here(_) => continue,
+                UdpFrame::SyncItem(_) => continue,
+                UdpFrame::SyncRequest(req) => {
+                    let items = store
+                        .messages_since(req.since_ts_ms, 200)
+                        .map_err(|e| format!("messages_since failed: {e}"))?;
+                    for item in items {
+                        let msg = CanonicalMessage::new_with_nonce(
+                            item.sender_id,
+                            item.timestamp_utc_ms,
+                            item.nonce,
+                            item.content,
+                        )
+                        .map_err(|e| e.to_string())?;
+                        let wire = build_signed_event(&store, &msg, shared_key)?;
+                        node.send_sync_item(from, &wire)
+                            .await
+                            .map_err(|e| format!("sync item send failed: {e}"))?;
+                    }
+                    continue;
+                }
             };
             let now = now_utc_ms();
             let ehash = event_hash(&msg);
@@ -317,6 +384,20 @@ mod network_cli {
         };
         let shared_key = resolve_shared_key(args.crypto, args.shared_key_hex.as_deref())?;
 
+        if args.sync_on_start {
+            let synced = run_sync_inner(
+                &args.bind,
+                peer,
+                &args.db,
+                args.since_ms.unwrap_or(0),
+                800,
+                shared_key,
+                args.seen_ttl_ms,
+            )
+            .await?;
+            println!("sync_on_start synced={}", synced);
+        }
+
         let recv_bind = args.bind.clone();
         let recv_db = args.db.clone();
         let recv_ttl = args.seen_ttl_ms;
@@ -352,6 +433,26 @@ mod network_cli {
                         continue;
                     }
                     UdpFrame::Here(_) => continue,
+                    UdpFrame::SyncItem(_) => continue,
+                    UdpFrame::SyncRequest(req) => {
+                        let items = store
+                            .messages_since(req.since_ts_ms, 200)
+                            .map_err(|e| format!("messages_since failed: {e}"))?;
+                        for item in items {
+                            let msg = CanonicalMessage::new_with_nonce(
+                                item.sender_id,
+                                item.timestamp_utc_ms,
+                                item.nonce,
+                                item.content,
+                            )
+                            .map_err(|e| e.to_string())?;
+                            let wire = build_signed_event(&store, &msg, shared_key)?;
+                            node.send_sync_item(from, &wire)
+                                .await
+                                .map_err(|e| format!("sync item send failed: {e}"))?;
+                        }
+                        continue;
+                    }
                 };
                 let now = now_utc_ms();
                 let ehash = event_hash(&msg);
@@ -501,6 +602,22 @@ mod network_cli {
         Ok(())
     }
 
+    pub async fn run_sync(args: SyncArgs) -> Result<(), String> {
+        let shared_key = resolve_shared_key(args.crypto, args.shared_key_hex.as_deref())?;
+        let synced = run_sync_inner(
+            &args.bind,
+            args.peer,
+            &args.db,
+            args.since_ms,
+            args.timeout_ms,
+            shared_key,
+            120_000,
+        )
+        .await?;
+        println!("synced={}", synced);
+        Ok(())
+    }
+
     async fn discover_peer(
         bind: &str,
         broadcast: SocketAddr,
@@ -534,6 +651,50 @@ mod network_cli {
             Ok(result) => result,
             Err(_) => Err("discover timeout".to_string()),
         }
+    }
+
+    async fn run_sync_inner(
+        bind: &str,
+        peer: SocketAddr,
+        db: &str,
+        since_ms: u64,
+        timeout_ms: u64,
+        shared_key: Option<[u8; 32]>,
+        seen_ttl_ms: u64,
+    ) -> Result<usize, String> {
+        let node = UdpNode::bind(bind)
+            .await
+            .map_err(|e| format!("bind failed: {e}"))?;
+        let store = OfflineStore::open(db).map_err(|e| format!("db open failed: {e}"))?;
+        node.send_sync_request(peer, since_ms)
+            .await
+            .map_err(|e| format!("sync request failed: {e}"))?;
+
+        let mut synced = 0usize;
+        loop {
+            let recv = timeout(Duration::from_millis(timeout_ms), node.recv_frame()).await;
+            let (frame, _from) = match recv {
+                Ok(Ok(v)) => v,
+                Ok(Err(e)) => return Err(format!("sync recv failed: {e}")),
+                Err(_) => break,
+            };
+            let ev = match frame {
+                UdpFrame::SyncItem(ev) => ev,
+                _ => continue,
+            };
+            let (msg, _hash) = match decode_wire_event(&ev, shared_key) {
+                Ok(v) => v,
+                Err("invalid_sig") => continue,
+                Err(_) => continue,
+            };
+            let status = store
+                .insert_message(&msg, now_utc_ms(), seen_ttl_ms)
+                .map_err(|e| format!("store insert failed: {e}"))?;
+            if status == StoreInsertStatus::Inserted {
+                synced += 1;
+            }
+        }
+        Ok(synced)
     }
 
     fn resolve_shared_key(
@@ -741,6 +902,9 @@ mod network_cli {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tokio::time::{sleep, Duration};
 
         #[test]
         fn chat_input_over_32_bytes_is_rejected() {
@@ -775,6 +939,89 @@ mod network_cli {
             assert!(parsed.peer.is_none());
             assert!(parsed.discover);
         }
+
+        #[tokio::test]
+        async fn sync_replays_without_duplicates() {
+            fn free_addr() -> SocketAddr {
+                let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind free addr");
+                let addr = sock.local_addr().expect("local addr");
+                drop(sock);
+                addr
+            }
+
+            let uniq = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos();
+            let db_a = std::env::temp_dir().join(format!("nexo_sync_a_{uniq}.db"));
+            let db_b = std::env::temp_dir().join(format!("nexo_sync_b_{uniq}.db"));
+            let bind_a = free_addr();
+            let bind_b = free_addr();
+
+            {
+                let store = OfflineStore::open(db_a.to_str().expect("db a")).expect("store a");
+                let m1 = CanonicalMessage::new_with_nonce("node_a", 1_000, 1, b"m1").expect("m1");
+                let m2 = CanonicalMessage::new_with_nonce("node_a", 2_000, 2, b"m2").expect("m2");
+                assert_eq!(
+                    store
+                        .insert_message(&m1, 1_000, 120_000)
+                        .expect("insert m1"),
+                    StoreInsertStatus::Inserted
+                );
+                assert_eq!(
+                    store
+                        .insert_message(&m2, 2_000, 120_000)
+                        .expect("insert m2"),
+                    StoreInsertStatus::Inserted
+                );
+            }
+
+            let listen_args = ListenArgs {
+                bind: bind_a.to_string(),
+                db: db_a.to_str().expect("db a").to_string(),
+                seen_ttl_ms: 120_000,
+                crypto: false,
+                shared_key_hex: None,
+            };
+            let listener = tokio::spawn(async move { run_listen(listen_args).await });
+            sleep(Duration::from_millis(150)).await;
+
+            let first = run_sync_inner(
+                &bind_b.to_string(),
+                bind_a,
+                db_b.to_str().expect("db b"),
+                0,
+                400,
+                None,
+                120_000,
+            )
+            .await
+            .expect("first sync");
+            assert_eq!(first, 2);
+
+            let second = run_sync_inner(
+                &bind_b.to_string(),
+                bind_a,
+                db_b.to_str().expect("db b"),
+                0,
+                400,
+                None,
+                120_000,
+            )
+            .await
+            .expect("second sync");
+            assert_eq!(second, 0);
+
+            listener.abort();
+            let _ = listener.await;
+
+            let store_b = OfflineStore::open(db_b.to_str().expect("db b")).expect("store b");
+            let all = store_b.messages_since(0, 10).expect("messages");
+            assert_eq!(all.len(), 2);
+
+            let _ = fs::remove_file(db_a);
+            let _ = fs::remove_file(db_b);
+        }
     }
 }
 
@@ -797,6 +1044,10 @@ async fn main() {
         },
         Some("discover") => match network_cli::parse_discover(&args[2..]) {
             Ok(cfg) => network_cli::run_discover(cfg).await,
+            Err(e) => Err(e),
+        },
+        Some("sync") => match network_cli::parse_sync(&args[2..]) {
+            Ok(cfg) => network_cli::run_sync(cfg).await,
             Err(e) => Err(e),
         },
         _ => Err(network_cli::usage().to_string()),
