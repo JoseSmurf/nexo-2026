@@ -1,6 +1,6 @@
 #[cfg(feature = "network")]
 mod network_cli {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::io::BufRead;
     use std::net::SocketAddr;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -8,7 +8,7 @@ mod network_cli {
 
     use syntax_engine::message::{
         content_hash_bytes, event_hash, event_hash_bytes_from_parts, sign_event_hash,
-        verify_event_hash_signature, CanonicalMessage,
+        signed_envelope_hash_bytes, verify_event_hash_signature, CanonicalMessage,
     };
     use syntax_engine::network_udp::{SignedEvent, UdpFrame, UdpNode};
     use syntax_engine::offline_store::{OfflineStore, StoreInsertStatus};
@@ -242,6 +242,7 @@ mod network_cli {
             .map_err(|e| format!("bind failed: {e}"))?;
         let store = OfflineStore::open(&args.db).map_err(|e| format!("db open failed: {e}"))?;
         let shared_key = resolve_shared_key(args.crypto, args.shared_key_hex.as_deref())?;
+        let mut known_peers: HashSet<SocketAddr> = HashSet::new();
         println!("listening on {} db={}", args.bind, args.db);
 
         loop {
@@ -249,7 +250,7 @@ mod network_cli {
                 .recv_frame()
                 .await
                 .map_err(|e| format!("recv failed: {e}"))?;
-            let (msg, hash_bytes) = match frame {
+            let decoded = match frame {
                 UdpFrame::Event(ev) => match decode_wire_event(&ev, shared_key) {
                     Ok(v) => v,
                     Err("invalid_sig") => {
@@ -292,6 +293,10 @@ mod network_cli {
                     continue;
                 }
             };
+            known_peers.insert(from);
+            let msg = decoded.msg;
+            let hash_bytes = decoded.ack_hash;
+            let origin_hex = hash32_to_hex(&decoded.origin_event_hash);
             let now = now_utc_ms();
             let ehash = event_hash(&msg);
             let expires_at = now.saturating_add(args.seen_ttl_ms);
@@ -308,12 +313,22 @@ mod network_cli {
                     .map_err(|e| format!("ack failed: {e}"))?;
                 continue;
             }
+            if store
+                .is_forwarded(&origin_hex)
+                .map_err(|e| format!("store forwarded check failed: {e}"))?
+            {
+                node.send_ack(from, hash_bytes)
+                    .await
+                    .map_err(|e| format!("ack failed: {e}"))?;
+                continue;
+            }
             let inserted = store
                 .insert_message(&msg, now, args.seen_ttl_ms)
                 .map_err(|e| format!("store insert failed: {e}"))?;
             store
                 .mark_seen(&ehash, expires_at)
                 .map_err(|e| format!("store mark_seen failed: {e}"))?;
+            let should_forward = inserted == StoreInsertStatus::Inserted;
             match inserted {
                 StoreInsertStatus::Inserted => {
                     println!(
@@ -329,6 +344,25 @@ mod network_cli {
             node.send_ack(from, hash_bytes)
                 .await
                 .map_err(|e| format!("ack failed: {e}"))?;
+
+            if should_forward && decoded.hops_remaining > 0 {
+                let forward_hops = decoded.hops_remaining.saturating_sub(1);
+                let fwd = build_signed_event_with_hops(
+                    &store,
+                    &msg,
+                    shared_key,
+                    decoded.origin_event_hash,
+                    forward_hops,
+                )?;
+                for peer in known_peers.iter().copied().filter(|p| *p != from) {
+                    node.send_event(peer, &fwd)
+                        .await
+                        .map_err(|e| format!("forward send failed: {e}"))?;
+                }
+                store
+                    .mark_forwarded(&origin_hex, now)
+                    .map_err(|e| format!("store forward mark failed: {e}"))?;
+            }
         }
     }
 
@@ -406,12 +440,13 @@ mod network_cli {
                 .await
                 .map_err(|e| format!("bind failed: {e}"))?;
             let store = OfflineStore::open(&recv_db).map_err(|e| format!("db open failed: {e}"))?;
+            let mut known_peers: HashSet<SocketAddr> = HashSet::new();
             loop {
                 let (frame, from) = node
                     .recv_frame()
                     .await
                     .map_err(|e| format!("recv failed: {e}"))?;
-                let (msg, hash_bytes) = match frame {
+                let decoded = match frame {
                     UdpFrame::Event(ev) => match decode_wire_event(&ev, shared_key) {
                         Ok(v) => v,
                         Err("invalid_sig") => {
@@ -454,6 +489,10 @@ mod network_cli {
                         continue;
                     }
                 };
+                known_peers.insert(from);
+                let msg = decoded.msg;
+                let hash_bytes = decoded.ack_hash;
+                let origin_hex = hash32_to_hex(&decoded.origin_event_hash);
                 let now = now_utc_ms();
                 let ehash = event_hash(&msg);
                 let expires_at = now.saturating_add(recv_ttl);
@@ -470,12 +509,22 @@ mod network_cli {
                         .map_err(|e| format!("ack failed: {e}"))?;
                     continue;
                 }
+                if store
+                    .is_forwarded(&origin_hex)
+                    .map_err(|e| format!("store forwarded check failed: {e}"))?
+                {
+                    node.send_ack(from, hash_bytes)
+                        .await
+                        .map_err(|e| format!("ack failed: {e}"))?;
+                    continue;
+                }
                 let inserted = store
                     .insert_message(&msg, now, recv_ttl)
                     .map_err(|e| format!("store insert failed: {e}"))?;
                 store
                     .mark_seen(&ehash, expires_at)
                     .map_err(|e| format!("store mark_seen failed: {e}"))?;
+                let should_forward = inserted == StoreInsertStatus::Inserted;
                 match inserted {
                     StoreInsertStatus::Inserted => {
                         println!("[{}] {}", msg.sender_id, render_content(&msg.content));
@@ -487,6 +536,25 @@ mod network_cli {
                 node.send_ack(from, hash_bytes)
                     .await
                     .map_err(|e| format!("ack failed: {e}"))?;
+
+                if should_forward && decoded.hops_remaining > 0 {
+                    let forward_hops = decoded.hops_remaining.saturating_sub(1);
+                    let fwd = build_signed_event_with_hops(
+                        &store,
+                        &msg,
+                        shared_key,
+                        decoded.origin_event_hash,
+                        forward_hops,
+                    )?;
+                    for peer in known_peers.iter().copied().filter(|p| *p != from) {
+                        node.send_event(peer, &fwd)
+                            .await
+                            .map_err(|e| format!("forward send failed: {e}"))?;
+                    }
+                    store
+                        .mark_forwarded(&origin_hex, now)
+                        .map_err(|e| format!("store forward mark failed: {e}"))?;
+                }
             }
             #[allow(unreachable_code)]
             Ok::<(), String>(())
@@ -682,13 +750,13 @@ mod network_cli {
                 UdpFrame::SyncItem(ev) => ev,
                 _ => continue,
             };
-            let (msg, _hash) = match decode_wire_event(&ev, shared_key) {
+            let decoded = match decode_wire_event(&ev, shared_key) {
                 Ok(v) => v,
                 Err("invalid_sig") => continue,
                 Err(_) => continue,
             };
             let status = store
-                .insert_message(&msg, now_utc_ms(), seen_ttl_ms)
+                .insert_message(&decoded.msg, now_utc_ms(), seen_ttl_ms)
                 .map_err(|e| format!("store insert failed: {e}"))?;
             if status == StoreInsertStatus::Inserted {
                 synced += 1;
@@ -724,17 +792,30 @@ mod network_cli {
         }
     }
 
+    struct DecodedEvent {
+        msg: CanonicalMessage,
+        ack_hash: [u8; 32],
+        origin_event_hash: [u8; 32],
+        hops_remaining: u8,
+    }
+
+    fn hash32_to_hex(hash: &[u8; 32]) -> String {
+        blake3::Hash::from(*hash).to_hex().to_string()
+    }
+
     fn decode_wire_event(
         ev: &SignedEvent,
         shared_key: Option<[u8; 32]>,
-    ) -> Result<(CanonicalMessage, [u8; 32]), &'static str> {
-        let hash = event_hash_bytes_from_parts(
+    ) -> Result<DecodedEvent, &'static str> {
+        let signed_hash = signed_envelope_hash_bytes(
             &ev.sender_id,
             ev.timestamp_utc_ms,
             ev.nonce,
             &ev.content_hash,
+            &ev.origin_event_hash,
+            ev.hops_remaining,
         );
-        if !verify_event_hash_signature(&hash, &ev.sender_pubkey, &ev.signature) {
+        if !verify_event_hash_signature(&signed_hash, &ev.sender_pubkey, &ev.signature) {
             return Err("invalid_sig");
         }
 
@@ -767,13 +848,46 @@ mod network_cli {
         )
         .map_err(|_| "decrypt_failed")?;
 
-        Ok((msg, hash))
+        let ack_hash = event_hash_bytes_from_parts(
+            &ev.sender_id,
+            ev.timestamp_utc_ms,
+            ev.nonce,
+            &ev.content_hash,
+        );
+
+        Ok(DecodedEvent {
+            msg,
+            ack_hash,
+            origin_event_hash: ev.origin_event_hash,
+            hops_remaining: ev.hops_remaining,
+        })
     }
 
     fn build_signed_event(
         store: &OfflineStore,
         msg: &CanonicalMessage,
         shared_key: Option<[u8; 32]>,
+    ) -> Result<SignedEvent, String> {
+        build_signed_event_with_hops(
+            store,
+            msg,
+            shared_key,
+            event_hash_bytes_from_parts(
+                &msg.sender_id,
+                msg.timestamp_utc_ms,
+                msg.nonce,
+                &content_hash_bytes(&msg.content),
+            ),
+            4,
+        )
+    }
+
+    fn build_signed_event_with_hops(
+        store: &OfflineStore,
+        msg: &CanonicalMessage,
+        shared_key: Option<[u8; 32]>,
+        origin_event_hash: [u8; 32],
+        hops_remaining: u8,
     ) -> Result<SignedEvent, String> {
         let content_hash = content_hash_bytes(&msg.content);
         let (payload, crypto_nonce) = match shared_key {
@@ -797,11 +911,13 @@ mod network_cli {
         let (sender_pubkey, sender_seckey) = store
             .get_or_create_identity()
             .map_err(|e| format!("identity failed: {e}"))?;
-        let hash = event_hash_bytes_from_parts(
+        let hash = signed_envelope_hash_bytes(
             &msg.sender_id,
             msg.timestamp_utc_ms,
             msg.nonce,
             &content_hash,
+            &origin_event_hash,
+            hops_remaining,
         );
         let signature = sign_event_hash(&hash, &sender_seckey).map_err(|e| e.to_string())?;
 
@@ -810,6 +926,8 @@ mod network_cli {
             timestamp_utc_ms: msg.timestamp_utc_ms,
             nonce: msg.nonce,
             content_hash,
+            origin_event_hash,
+            hops_remaining,
             payload,
             crypto_nonce,
             sender_pubkey,
@@ -1021,6 +1139,93 @@ mod network_cli {
 
             let _ = fs::remove_file(db_a);
             let _ = fs::remove_file(db_b);
+        }
+
+        #[tokio::test]
+        async fn gossip_forward_a_to_b_to_c_no_loop() {
+            fn free_addr() -> SocketAddr {
+                let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind free addr");
+                let addr = sock.local_addr().expect("local addr");
+                drop(sock);
+                addr
+            }
+
+            let uniq = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos();
+            let db_a = std::env::temp_dir().join(format!("nexo_gossip_a_{uniq}.db"));
+            let db_b = std::env::temp_dir().join(format!("nexo_gossip_b_{uniq}.db"));
+            let db_c = std::env::temp_dir().join(format!("nexo_gossip_c_{uniq}.db"));
+
+            let bind_a = free_addr();
+            let bind_b = free_addr();
+            let bind_c = free_addr();
+
+            let db_b_s = db_b.to_str().expect("db b").to_string();
+            let listener_b = tokio::spawn(async move {
+                run_listen(ListenArgs {
+                    bind: bind_b.to_string(),
+                    db: db_b_s,
+                    seen_ttl_ms: 120_000,
+                    crypto: false,
+                    shared_key_hex: None,
+                })
+                .await
+            });
+            sleep(Duration::from_millis(250)).await;
+
+            let node_c = UdpNode::bind(&bind_c.to_string())
+                .await
+                .expect("bind node c");
+            let store_c = OfflineStore::open(db_c.to_str().expect("db c")).expect("store c");
+            let seed = CanonicalMessage::new_with_nonce("node_c", now_utc_ms(), 1, b"seed")
+                .expect("seed msg");
+            let seed_wire = build_signed_event(&store_c, &seed, None).expect("seed wire");
+            node_c
+                .send_event(bind_b, &seed_wire)
+                .await
+                .expect("seed send");
+            sleep(Duration::from_millis(100)).await;
+
+            run_send(SendArgs {
+                bind: bind_a.to_string(),
+                peer: bind_b,
+                sender: "node_a".to_string(),
+                msg: "hello-gossip".to_string(),
+                retries: 2,
+                ack_timeout_ms: 200,
+                db: db_a.to_str().expect("db a").to_string(),
+                seen_ttl_ms: 120_000,
+                crypto: false,
+                shared_key_hex: None,
+            })
+            .await
+            .expect("send A->B");
+
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(800);
+            let mut c_msg_count = 0usize;
+            while tokio::time::Instant::now() < deadline {
+                let recv =
+                    tokio::time::timeout(Duration::from_millis(120), node_c.recv_frame()).await;
+                let Ok(Ok((frame, _from))) = recv else {
+                    continue;
+                };
+                let UdpFrame::Event(ev) = frame else {
+                    continue;
+                };
+                if ev.sender_id == "node_a" && ev.payload == b"hello-gossip" {
+                    c_msg_count += 1;
+                }
+            }
+            assert_eq!(c_msg_count, 1);
+
+            listener_b.abort();
+            let _ = listener_b.await;
+
+            let _ = fs::remove_file(db_a);
+            let _ = fs::remove_file(db_b);
+            let _ = fs::remove_file(db_c);
         }
     }
 }

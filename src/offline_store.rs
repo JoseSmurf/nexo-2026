@@ -95,6 +95,31 @@ impl OfflineStore {
         Ok(())
     }
 
+    pub fn is_forwarded(&self, event_hash: &str) -> Result<bool, rusqlite::Error> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT 1 FROM forwarded_hashes WHERE event_hash = ?1 LIMIT 1")?;
+        let mut rows = stmt.query(params![event_hash])?;
+        Ok(rows.next()?.is_some())
+    }
+
+    pub fn mark_forwarded(
+        &self,
+        event_hash: &str,
+        forwarded_at_ms: u64,
+    ) -> Result<(), rusqlite::Error> {
+        if event_hash.trim().is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "event_hash".to_string(),
+            ));
+        }
+        self.conn.execute(
+            "INSERT OR REPLACE INTO forwarded_hashes(event_hash, forwarded_at_ms) VALUES (?1, ?2)",
+            params![event_hash, forwarded_at_ms as i64],
+        )?;
+        Ok(())
+    }
+
     pub fn last_messages(&self, limit: usize) -> Result<Vec<StoredMessage>, rusqlite::Error> {
         if limit == 0 {
             return Err(rusqlite::Error::InvalidParameterName("limit".to_string()));
@@ -273,6 +298,10 @@ impl OfflineStore {
                 pubkey BLOB NOT NULL,
                 seckey BLOB NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS forwarded_hashes (
+                event_hash TEXT PRIMARY KEY NOT NULL,
+                forwarded_at_ms INTEGER NOT NULL
+            );
             "#,
         )?;
         match self.conn.execute(
@@ -376,5 +405,13 @@ mod tests {
         assert_eq!(pubkey_a, pubkey_b);
         assert_eq!(seckey_a, seckey_b);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn forwarded_hash_is_persistent() {
+        let store = OfflineStore::open_in_memory().expect("store");
+        assert!(!store.is_forwarded("abc").expect("not forwarded"));
+        store.mark_forwarded("abc", 123).expect("mark");
+        assert!(store.is_forwarded("abc").expect("forwarded"));
     }
 }

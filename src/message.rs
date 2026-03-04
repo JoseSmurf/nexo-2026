@@ -76,6 +76,25 @@ pub fn event_hash_bytes_from_parts(
     *h.finalize().as_bytes()
 }
 
+pub fn signed_envelope_hash_bytes(
+    sender_id: &str,
+    timestamp_utc_ms: u64,
+    nonce: u64,
+    content_hash: &[u8; 32],
+    origin_event_hash: &[u8; 32],
+    hops_remaining: u8,
+) -> [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    hash_field(&mut h, b"schema", b"msg_sig_v1");
+    hash_field(&mut h, b"sender_id", sender_id.as_bytes());
+    hash_field(&mut h, b"timestamp_utc_ms", &timestamp_utc_ms.to_le_bytes());
+    hash_field(&mut h, b"nonce", &nonce.to_le_bytes());
+    hash_field(&mut h, b"content_hash", content_hash);
+    hash_field(&mut h, b"origin_event_hash", origin_event_hash);
+    hash_field(&mut h, b"hops_remaining", &[hops_remaining]);
+    *h.finalize().as_bytes()
+}
+
 pub fn event_hash_bytes(message: &CanonicalMessage) -> [u8; 32] {
     let chash = content_hash_bytes(&message.content);
     event_hash_bytes_from_parts(
@@ -155,6 +174,30 @@ mod tests {
         let from_parts =
             event_hash_bytes_from_parts(&msg.sender_id, msg.timestamp_utc_ms, msg.nonce, &chash);
         assert_eq!(event_hash_bytes(&msg), from_parts);
+    }
+
+    #[test]
+    fn signed_envelope_hash_changes_with_hops() {
+        let msg = CanonicalMessage::new_with_nonce("user", 1000, 9, b"abc").expect("msg");
+        let chash = content_hash_bytes(&msg.content);
+        let origin = event_hash_bytes(&msg);
+        let a = signed_envelope_hash_bytes(
+            &msg.sender_id,
+            msg.timestamp_utc_ms,
+            msg.nonce,
+            &chash,
+            &origin,
+            4,
+        );
+        let b = signed_envelope_hash_bytes(
+            &msg.sender_id,
+            msg.timestamp_utc_ms,
+            msg.nonce,
+            &chash,
+            &origin,
+            3,
+        );
+        assert_ne!(a, b);
     }
 
     #[test]

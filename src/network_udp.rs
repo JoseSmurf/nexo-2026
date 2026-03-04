@@ -20,6 +20,8 @@ pub struct SignedEvent {
     pub timestamp_utc_ms: u64,
     pub nonce: u64,
     pub content_hash: [u8; 32],
+    pub origin_event_hash: [u8; 32],
+    pub hops_remaining: u8,
     pub payload: Vec<u8>,
     pub crypto_nonce: Option<[u8; 24]>,
     pub sender_pubkey: [u8; 32],
@@ -97,6 +99,13 @@ impl UdpNode {
         ))
     }
 
+    pub async fn send_event(&self, target: SocketAddr, event: &SignedEvent) -> io::Result<()> {
+        let packet =
+            encode_event(event).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let _ = self.socket.send_to(&packet, target).await?;
+        Ok(())
+    }
+
     pub async fn recv_frame(&self) -> io::Result<(UdpFrame, SocketAddr)> {
         let mut buf = [0u8; 1024];
         let (n, from) = self.socket.recv_from(&mut buf).await?;
@@ -153,6 +162,8 @@ fn encode_event(event: &SignedEvent) -> Result<Vec<u8>, &'static str> {
         + sender.len()
         + 32
         + 1
+        + 32
+        + 1
         + if event.crypto_nonce.is_some() { 24 } else { 0 }
         + 1
         + event.payload.len()
@@ -166,6 +177,8 @@ fn encode_event(event: &SignedEvent) -> Result<Vec<u8>, &'static str> {
     out.push(sender.len() as u8);
     out.extend_from_slice(sender);
     out.extend_from_slice(&event.content_hash);
+    out.push(event.hops_remaining);
+    out.extend_from_slice(&event.origin_event_hash);
     out.push(if event.crypto_nonce.is_some() { 1 } else { 0 });
     if let Some(nonce) = event.crypto_nonce {
         out.extend_from_slice(&nonce);
@@ -186,7 +199,7 @@ fn encode_sync_item(event: &SignedEvent) -> Result<Vec<u8>, &'static str> {
 }
 
 fn decode_event(buf: &[u8]) -> Result<SignedEvent, &'static str> {
-    if buf.len() < 1 + 8 + 8 + 1 + 32 + 1 + 1 + 32 + 64 || buf[0] != PACKET_EVENT {
+    if buf.len() < 1 + 8 + 8 + 1 + 32 + 1 + 32 + 1 + 1 + 32 + 64 || buf[0] != PACKET_EVENT {
         return Err("REJECTED: invalid event packet");
     }
 
@@ -212,11 +225,18 @@ fn decode_event(buf: &[u8]) -> Result<SignedEvent, &'static str> {
 
     let mut idx = sender_end;
 
-    if idx + 32 + 1 > buf.len() {
+    if idx + 32 + 1 + 32 + 1 > buf.len() {
         return Err("REJECTED: malformed content hash");
     }
     let mut content_hash = [0u8; 32];
     content_hash.copy_from_slice(&buf[idx..idx + 32]);
+    idx += 32;
+
+    let hops_remaining = buf[idx];
+    idx += 1;
+
+    let mut origin_event_hash = [0u8; 32];
+    origin_event_hash.copy_from_slice(&buf[idx..idx + 32]);
     idx += 32;
 
     let crypto_flag = buf[idx];
@@ -261,6 +281,8 @@ fn decode_event(buf: &[u8]) -> Result<SignedEvent, &'static str> {
         timestamp_utc_ms,
         nonce,
         content_hash,
+        origin_event_hash,
+        hops_remaining,
         payload,
         crypto_nonce,
         sender_pubkey,
