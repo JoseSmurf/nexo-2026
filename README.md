@@ -266,10 +266,10 @@ Use `.env.example` provider sections as the canonical reference for required var
   - `GET /audit/recent?limit=50` (admin-gated)
   - `GET /security/status` (admin-gated)
 - Rule profiles include 9 jurisdictions/currencies/regulators.
-- Rust tests: 134
+- Rust tests: 136
 - Julia tests: 124
 - Zig tests: 20
-- Total tests: 278
+- Total tests: 280
 - Tech stack:
   - Rust (core engine + API)
   - BLAKE3 + SHAKE256 (audit hash, with deterministic hybrid mode in INCIDENT)

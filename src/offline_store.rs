@@ -8,6 +8,14 @@ pub enum StoreInsertStatus {
     Duplicate,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredMessage {
+    pub event_hash: String,
+    pub sender_id: String,
+    pub timestamp_utc_ms: u64,
+    pub content: Vec<u8>,
+}
+
 pub struct OfflineStore {
     conn: Connection,
 }
@@ -64,6 +72,30 @@ impl OfflineStore {
             .prepare("SELECT 1 FROM seen_hashes WHERE event_hash = ?1 LIMIT 1")?;
         let mut rows = stmt.query(params![event_hash])?;
         Ok(rows.next()?.is_some())
+    }
+
+    pub fn last_messages(&self, limit: usize) -> Result<Vec<StoredMessage>, rusqlite::Error> {
+        if limit == 0 {
+            return Err(rusqlite::Error::InvalidParameterName("limit".to_string()));
+        }
+        let limit = limit.min(1000);
+        let mut stmt = self.conn.prepare(
+            "SELECT event_hash, sender_id, timestamp_utc_ms, content_blob
+             FROM messages
+             ORDER BY rowid DESC
+             LIMIT ?1",
+        )?;
+        let mut rows = stmt.query(params![limit as i64])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(StoredMessage {
+                event_hash: row.get(0)?,
+                sender_id: row.get(1)?,
+                timestamp_utc_ms: row.get(2)?,
+                content: row.get(3)?,
+            });
+        }
+        Ok(out)
     }
 
     pub fn next_nonce(&self, sender_id: &str) -> Result<u64, rusqlite::Error> {
