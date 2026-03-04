@@ -123,9 +123,26 @@ mod network_cli {
                 .map_err(|e| format!("recv failed: {e}"))?;
             let now = now_utc_ms();
             let ehash = event_hash(&msg);
+            let expires_at = now.saturating_add(args.seen_ttl_ms);
+            let already_seen = store
+                .is_seen(&ehash, now)
+                .map_err(|e| format!("store seen failed: {e}"))?;
+            if already_seen {
+                store
+                    .mark_seen(&ehash, expires_at)
+                    .map_err(|e| format!("store mark_seen failed: {e}"))?;
+                println!("recv duplicate event_hash={}", ehash);
+                node.send_ack(from, event_hash_bytes(&msg))
+                    .await
+                    .map_err(|e| format!("ack failed: {e}"))?;
+                continue;
+            }
             let inserted = store
                 .insert_message(&msg, now, args.seen_ttl_ms)
                 .map_err(|e| format!("store insert failed: {e}"))?;
+            store
+                .mark_seen(&ehash, expires_at)
+                .map_err(|e| format!("store mark_seen failed: {e}"))?;
             match inserted {
                 StoreInsertStatus::Inserted => {
                     println!(
@@ -194,15 +211,33 @@ mod network_cli {
                     .await
                     .map_err(|e| format!("recv failed: {e}"))?;
                 let now = now_utc_ms();
+                let ehash = event_hash(&msg);
+                let expires_at = now.saturating_add(recv_ttl);
+                let already_seen = store
+                    .is_seen(&ehash, now)
+                    .map_err(|e| format!("store seen failed: {e}"))?;
+                if already_seen {
+                    store
+                        .mark_seen(&ehash, expires_at)
+                        .map_err(|e| format!("store mark_seen failed: {e}"))?;
+                    println!("[dup] {}", ehash);
+                    node.send_ack(from, event_hash_bytes(&msg))
+                        .await
+                        .map_err(|e| format!("ack failed: {e}"))?;
+                    continue;
+                }
                 let inserted = store
                     .insert_message(&msg, now, recv_ttl)
                     .map_err(|e| format!("store insert failed: {e}"))?;
+                store
+                    .mark_seen(&ehash, expires_at)
+                    .map_err(|e| format!("store mark_seen failed: {e}"))?;
                 match inserted {
                     StoreInsertStatus::Inserted => {
                         println!("[{}] {}", msg.sender_id, render_content(&msg.content));
                     }
                     StoreInsertStatus::Duplicate => {
-                        println!("[dup] {}", event_hash(&msg));
+                        println!("[dup] {}", ehash);
                     }
                 }
                 node.send_ack(from, event_hash_bytes(&msg))

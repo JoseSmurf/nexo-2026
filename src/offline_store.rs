@@ -74,6 +74,23 @@ impl OfflineStore {
         Ok(rows.next()?.is_some())
     }
 
+    pub fn mark_seen(
+        &self,
+        event_hash: &str,
+        expires_at_utc_ms: u64,
+    ) -> Result<(), rusqlite::Error> {
+        if event_hash.trim().is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "event_hash".to_string(),
+            ));
+        }
+        self.conn.execute(
+            "INSERT OR REPLACE INTO seen_hashes(event_hash, expires_at_utc_ms) VALUES (?1, ?2)",
+            params![event_hash, expires_at_utc_ms as i64],
+        )?;
+        Ok(())
+    }
+
     pub fn last_messages(&self, limit: usize) -> Result<Vec<StoredMessage>, rusqlite::Error> {
         if limit == 0 {
             return Err(rusqlite::Error::InvalidParameterName("limit".to_string()));
@@ -186,6 +203,8 @@ impl OfflineStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn dedup_by_event_hash_works() {
@@ -218,5 +237,33 @@ mod tests {
         let n2 = store.next_nonce("alice").expect("n2");
         assert_eq!(n1, 1);
         assert_eq!(n2, 2);
+    }
+
+    #[test]
+    fn replay_is_blocked_after_store_reopen() {
+        let uniq = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("nexo_seen_replay_{uniq}.db"));
+        let msg = CanonicalMessage::new_with_nonce("alice", 100, 7, b"ping").expect("msg");
+        let ehash = event_hash(&msg);
+
+        {
+            let store = OfflineStore::open(path.to_str().expect("path")).expect("store open");
+            let status = store.insert_message(&msg, 1_000, 10_000).expect("insert");
+            assert_eq!(status, StoreInsertStatus::Inserted);
+        }
+
+        {
+            let store = OfflineStore::open(path.to_str().expect("path")).expect("store reopen");
+            assert!(store.is_seen(&ehash, 1_100).expect("seen after reopen"));
+            let status = store
+                .insert_message(&msg, 1_100, 10_000)
+                .expect("insert duplicate");
+            assert_eq!(status, StoreInsertStatus::Duplicate);
+        }
+
+        let _ = fs::remove_file(path);
     }
 }
