@@ -9,6 +9,15 @@ use crate::message::{event_hash_bytes, CanonicalMessage};
 
 const PACKET_EVENT: u8 = 1;
 const PACKET_ACK: u8 = 2;
+const PACKET_DISCOVER: u8 = 3;
+const PACKET_HERE: u8 = 4;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UdpFrame {
+    Event(CanonicalMessage),
+    Discover,
+    Here(SocketAddr),
+}
 
 pub struct UdpNode {
     socket: UdpSocket,
@@ -22,6 +31,10 @@ impl UdpNode {
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.socket.local_addr()
+    }
+
+    pub fn set_broadcast(&self, enabled: bool) -> io::Result<()> {
+        self.socket.set_broadcast(enabled)
     }
 
     pub async fn send_with_ack(
@@ -58,15 +71,38 @@ impl UdpNode {
     }
 
     pub async fn recv_event(&self) -> io::Result<(CanonicalMessage, SocketAddr)> {
+        let (frame, from) = self.recv_frame().await?;
+        let UdpFrame::Event(msg) = frame else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "REJECTED: non-event packet",
+            ));
+        };
+        Ok((msg, from))
+    }
+
+    pub async fn recv_frame(&self) -> io::Result<(UdpFrame, SocketAddr)> {
         let mut buf = [0u8; 1024];
         let (n, from) = self.socket.recv_from(&mut buf).await?;
-        let msg =
-            decode_event(&buf[..n]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        Ok((msg, from))
+        let frame =
+            decode_frame(&buf[..n]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        Ok((frame, from))
     }
 
     pub async fn send_ack(&self, target: SocketAddr, event_hash: [u8; 32]) -> io::Result<()> {
         let packet = encode_ack(event_hash);
+        let _ = self.socket.send_to(&packet, target).await?;
+        Ok(())
+    }
+
+    pub async fn send_discover(&self, target: SocketAddr) -> io::Result<()> {
+        let packet = encode_discover();
+        let _ = self.socket.send_to(&packet, target).await?;
+        Ok(())
+    }
+
+    pub async fn send_here(&self, target: SocketAddr, addr: SocketAddr) -> io::Result<()> {
+        let packet = encode_here(addr);
         let _ = self.socket.send_to(&packet, target).await?;
         Ok(())
     }
@@ -119,6 +155,26 @@ fn decode_event(buf: &[u8]) -> Result<CanonicalMessage, &'static str> {
     )
 }
 
+fn encode_discover() -> [u8; 1] {
+    [PACKET_DISCOVER]
+}
+
+fn encode_here(addr: SocketAddr) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + 32);
+    out.push(PACKET_HERE);
+    out.extend_from_slice(addr.to_string().as_bytes());
+    out
+}
+
+fn decode_here(buf: &[u8]) -> Result<SocketAddr, &'static str> {
+    if buf.len() <= 1 || buf[0] != PACKET_HERE {
+        return Err("REJECTED: invalid here packet");
+    }
+    let raw = std::str::from_utf8(&buf[1..]).map_err(|_| "REJECTED: here utf8")?;
+    raw.parse::<SocketAddr>()
+        .map_err(|_| "REJECTED: here socket addr")
+}
+
 fn encode_ack(hash: [u8; 32]) -> [u8; 33] {
     let mut out = [0u8; 33];
     out[0] = PACKET_ACK;
@@ -133,4 +189,21 @@ fn decode_ack(buf: &[u8]) -> Result<[u8; 32], &'static str> {
     let mut out = [0u8; 32];
     out.copy_from_slice(&buf[1..]);
     Ok(out)
+}
+
+fn decode_frame(buf: &[u8]) -> Result<UdpFrame, &'static str> {
+    if buf.is_empty() {
+        return Err("REJECTED: empty packet");
+    }
+    match buf[0] {
+        PACKET_EVENT => Ok(UdpFrame::Event(decode_event(buf)?)),
+        PACKET_DISCOVER => {
+            if buf.len() != 1 {
+                return Err("REJECTED: invalid discover packet");
+            }
+            Ok(UdpFrame::Discover)
+        }
+        PACKET_HERE => Ok(UdpFrame::Here(decode_here(buf)?)),
+        _ => Err("REJECTED: unknown packet type"),
+    }
 }

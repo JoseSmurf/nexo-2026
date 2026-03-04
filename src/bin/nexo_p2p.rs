@@ -4,9 +4,10 @@ mod network_cli {
     use std::io::BufRead;
     use std::net::SocketAddr;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use tokio::time::timeout;
 
     use syntax_engine::message::{event_hash, event_hash_bytes, CanonicalMessage};
-    use syntax_engine::network_udp::UdpNode;
+    use syntax_engine::network_udp::{UdpFrame, UdpNode};
     use syntax_engine::offline_store::{OfflineStore, StoreInsertStatus};
 
     #[derive(Debug)]
@@ -31,7 +32,10 @@ mod network_cli {
     #[derive(Debug)]
     pub struct ChatArgs {
         bind: String,
-        peer: SocketAddr,
+        peer: Option<SocketAddr>,
+        discover: bool,
+        discover_broadcast: SocketAddr,
+        discover_timeout_ms: u64,
         sender: String,
         db: String,
         retries: u8,
@@ -39,12 +43,21 @@ mod network_cli {
         seen_ttl_ms: u64,
     }
 
+    #[derive(Debug)]
+    pub struct DiscoverArgs {
+        bind: String,
+        broadcast: SocketAddr,
+        timeout_ms: u64,
+    }
+
     pub fn usage() -> &'static str {
         "nexo_p2p (network feature)\n\
          usage:\n\
           nexo_p2p listen --bind 127.0.0.1:9001 --db /tmp/nexo_a.db [--seen-ttl-ms 120000]\n\
           nexo_p2p send --bind 127.0.0.1:9002 --peer 127.0.0.1:9001 --sender node_b --msg \"hello\" --db /tmp/nexo_b.db [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000]\n\
-          nexo_p2p chat --bind 127.0.0.1:9001 --peer 127.0.0.1:9002 --sender node_a --db /tmp/nexo_a.db [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000]"
+          nexo_p2p chat --bind 127.0.0.1:9001 --peer 127.0.0.1:9002 --sender node_a --db /tmp/nexo_a.db [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000]\n\
+          nexo_p2p chat --bind 0.0.0.0:9001 --discover --broadcast 255.255.255.255:9001 --discover-timeout-ms 800 --sender node_a --db /tmp/nexo_a.db\n\
+          nexo_p2p discover --bind 0.0.0.0:9001 --broadcast 255.255.255.255:9001 [--timeout-ms 800]"
     }
 
     fn chat_help() -> &'static str {
@@ -90,9 +103,31 @@ mod network_cli {
     pub fn parse_chat(args: &[String]) -> Result<ChatArgs, String> {
         let flags = parse_flags(args)?;
         let bind = required(&flags, "bind")?;
-        let peer = required(&flags, "peer")?
-            .parse::<SocketAddr>()
-            .map_err(|_| "invalid --peer socket addr".to_string())?;
+        let peer = flags
+            .get("peer")
+            .map(|v| {
+                v.parse::<SocketAddr>()
+                    .map_err(|_| "invalid --peer socket addr".to_string())
+            })
+            .transpose()?;
+        let discover = parse_bool(flags.get("discover"), false, "discover")?;
+        let discover_broadcast = flags
+            .get("broadcast")
+            .map(|v| {
+                v.parse::<SocketAddr>()
+                    .map_err(|_| "invalid --broadcast socket addr".to_string())
+            })
+            .transpose()?
+            .unwrap_or_else(|| {
+                "255.255.255.255:9001"
+                    .parse()
+                    .expect("valid default broadcast")
+            });
+        let discover_timeout_ms =
+            parse_u64(flags.get("discover-timeout-ms"), 800, "discover-timeout-ms")?;
+        if peer.is_none() && !discover {
+            return Err("missing --peer (or set --discover)".to_string());
+        }
         let sender = required(&flags, "sender")?;
         let db = required(&flags, "db")?;
         let retries = parse_u8(flags.get("retries"), 3, "retries")?;
@@ -101,11 +136,28 @@ mod network_cli {
         Ok(ChatArgs {
             bind,
             peer,
+            discover,
+            discover_broadcast,
+            discover_timeout_ms,
             sender,
             db,
             retries,
             ack_timeout_ms,
             seen_ttl_ms,
+        })
+    }
+
+    pub fn parse_discover(args: &[String]) -> Result<DiscoverArgs, String> {
+        let flags = parse_flags(args)?;
+        let bind = required(&flags, "bind")?;
+        let broadcast = required(&flags, "broadcast")?
+            .parse::<SocketAddr>()
+            .map_err(|_| "invalid --broadcast socket addr".to_string())?;
+        let timeout_ms = parse_u64(flags.get("timeout-ms"), 800, "timeout-ms")?;
+        Ok(DiscoverArgs {
+            bind,
+            broadcast,
+            timeout_ms,
         })
     }
 
@@ -117,10 +169,23 @@ mod network_cli {
         println!("listening on {} db={}", args.bind, args.db);
 
         loop {
-            let (msg, from) = node
-                .recv_event()
+            let (frame, from) = node
+                .recv_frame()
                 .await
                 .map_err(|e| format!("recv failed: {e}"))?;
+            let msg = match frame {
+                UdpFrame::Event(msg) => msg,
+                UdpFrame::Discover => {
+                    let local = node
+                        .local_addr()
+                        .map_err(|e| format!("local addr failed: {e}"))?;
+                    node.send_here(from, local)
+                        .await
+                        .map_err(|e| format!("here failed: {e}"))?;
+                    continue;
+                }
+                UdpFrame::Here(_) => continue,
+            };
             let now = now_utc_ms();
             let ehash = event_hash(&msg);
             let expires_at = now.saturating_add(args.seen_ttl_ms);
@@ -197,6 +262,19 @@ mod network_cli {
     }
 
     pub async fn run_chat(args: ChatArgs) -> Result<(), String> {
+        let peer = if let Some(peer) = args.peer {
+            peer
+        } else if args.discover {
+            discover_peer(
+                &args.bind,
+                args.discover_broadcast,
+                Duration::from_millis(args.discover_timeout_ms),
+            )
+            .await?
+        } else {
+            return Err("missing peer".to_string());
+        };
+
         let recv_bind = args.bind.clone();
         let recv_db = args.db.clone();
         let recv_ttl = args.seen_ttl_ms;
@@ -206,10 +284,23 @@ mod network_cli {
                 .map_err(|e| format!("bind failed: {e}"))?;
             let store = OfflineStore::open(&recv_db).map_err(|e| format!("db open failed: {e}"))?;
             loop {
-                let (msg, from) = node
-                    .recv_event()
+                let (frame, from) = node
+                    .recv_frame()
                     .await
                     .map_err(|e| format!("recv failed: {e}"))?;
+                let msg = match frame {
+                    UdpFrame::Event(msg) => msg,
+                    UdpFrame::Discover => {
+                        let local = node
+                            .local_addr()
+                            .map_err(|e| format!("local addr failed: {e}"))?;
+                        node.send_here(from, local)
+                            .await
+                            .map_err(|e| format!("here failed: {e}"))?;
+                        continue;
+                    }
+                    UdpFrame::Here(_) => continue,
+                };
                 let now = now_utc_ms();
                 let ehash = event_hash(&msg);
                 let expires_at = now.saturating_add(recv_ttl);
@@ -250,7 +341,7 @@ mod network_cli {
 
         println!(
             "chat ready: bind={} peer={} sender={} db={} (/help /id /last N /quit)",
-            args.bind, args.peer, args.sender, args.db
+            args.bind, peer, args.sender, args.db
         );
 
         let stdin = std::io::stdin();
@@ -278,10 +369,7 @@ mod network_cli {
                 continue;
             }
             if line == "/id" {
-                println!(
-                    "sender={} bind={} peer={}",
-                    args.sender, args.bind, args.peer
-                );
+                println!("sender={} bind={} peer={}", args.sender, args.bind, peer);
                 continue;
             }
             if let Some(rest) = line.strip_prefix("/last ") {
@@ -325,7 +413,7 @@ mod network_cli {
                 .map_err(|e| format!("bind failed: {e}"))?;
             match sender_node
                 .send_with_ack(
-                    args.peer,
+                    peer,
                     &msg,
                     args.retries,
                     Duration::from_millis(args.ack_timeout_ms),
@@ -349,6 +437,52 @@ mod network_cli {
         Ok(())
     }
 
+    pub async fn run_discover(args: DiscoverArgs) -> Result<(), String> {
+        let peer = discover_peer(
+            &args.bind,
+            args.broadcast,
+            Duration::from_millis(args.timeout_ms),
+        )
+        .await?;
+        println!("{}", peer);
+        Ok(())
+    }
+
+    async fn discover_peer(
+        bind: &str,
+        broadcast: SocketAddr,
+        timeout_dur: Duration,
+    ) -> Result<SocketAddr, String> {
+        let node = UdpNode::bind(bind)
+            .await
+            .map_err(|e| format!("bind failed: {e}"))?;
+        node.set_broadcast(true)
+            .map_err(|e| format!("set broadcast failed: {e}"))?;
+        node.send_discover(broadcast)
+            .await
+            .map_err(|e| format!("discover send failed: {e}"))?;
+
+        let found = timeout(timeout_dur, async {
+            loop {
+                let (frame, _from) = node
+                    .recv_frame()
+                    .await
+                    .map_err(|e| format!("recv failed: {e}"))?;
+                if let UdpFrame::Here(addr) = frame {
+                    return Ok(addr);
+                }
+            }
+            #[allow(unreachable_code)]
+            Err::<SocketAddr, String>("discover loop aborted".to_string())
+        })
+        .await;
+
+        match found {
+            Ok(result) => result,
+            Err(_) => Err("discover timeout".to_string()),
+        }
+    }
+
     fn parse_flags(args: &[String]) -> Result<HashMap<String, String>, String> {
         let mut flags = HashMap::new();
         let mut i = 0usize;
@@ -358,11 +492,17 @@ mod network_cli {
                 return Err(format!("invalid argument: {key}"));
             }
             let key = key.trim_start_matches("--").to_string();
-            let Some(value) = args.get(i + 1) else {
-                return Err(format!("missing value for --{key}"));
+            let value = match args.get(i + 1) {
+                Some(next) if !next.starts_with("--") => {
+                    i += 2;
+                    next.clone()
+                }
+                _ => {
+                    i += 1;
+                    "true".to_string()
+                }
             };
-            flags.insert(key, value.clone());
-            i += 2;
+            flags.insert(key, value);
         }
         Ok(flags)
     }
@@ -388,6 +528,17 @@ mod network_cli {
             Some(v) => v
                 .parse::<u8>()
                 .map_err(|_| format!("invalid --{key} value")),
+            None => Ok(default),
+        }
+    }
+
+    fn parse_bool(raw: Option<&String>, default: bool, key: &str) -> Result<bool, String> {
+        match raw {
+            Some(v) => match v.as_str() {
+                "1" | "true" | "TRUE" | "yes" | "YES" => Ok(true),
+                "0" | "false" | "FALSE" | "no" | "NO" => Ok(false),
+                _ => Err(format!("invalid --{key} value")),
+            },
             None => Ok(default),
         }
     }
@@ -433,6 +584,24 @@ mod network_cli {
             assert!(help.contains("/last N"));
             assert!(help.contains("/quit"));
         }
+
+        #[test]
+        fn parse_chat_accepts_discover_without_peer() {
+            let args = vec![
+                "--bind".to_string(),
+                "0.0.0.0:9001".to_string(),
+                "--discover".to_string(),
+                "--broadcast".to_string(),
+                "255.255.255.255:9001".to_string(),
+                "--sender".to_string(),
+                "node_a".to_string(),
+                "--db".to_string(),
+                "/tmp/a.db".to_string(),
+            ];
+            let parsed = parse_chat(&args).expect("parse");
+            assert!(parsed.peer.is_none());
+            assert!(parsed.discover);
+        }
     }
 }
 
@@ -451,6 +620,10 @@ async fn main() {
         },
         Some("chat") => match network_cli::parse_chat(&args[2..]) {
             Ok(cfg) => network_cli::run_chat(cfg).await,
+            Err(e) => Err(e),
+        },
+        Some("discover") => match network_cli::parse_discover(&args[2..]) {
+            Ok(cfg) => network_cli::run_discover(cfg).await,
             Err(e) => Err(e),
         },
         _ => Err(network_cli::usage().to_string()),

@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use syntax_engine::message::CanonicalMessage;
-use syntax_engine::network_udp::UdpNode;
+use syntax_engine::network_udp::{UdpFrame, UdpNode};
 
 #[tokio::test]
 async fn udp_unicast_ack_retry_loopback_two_nodes() {
@@ -43,4 +43,27 @@ async fn udp_unicast_fails_closed_when_no_ack() {
         .await
         .expect_err("must timeout");
     assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+}
+
+#[tokio::test]
+async fn udp_discovery_loopback_roundtrip() {
+    let node_a = UdpNode::bind("127.0.0.1:0").await.expect("bind a");
+    let node_b = UdpNode::bind("127.0.0.1:0").await.expect("bind b");
+    let b_addr = node_b.local_addr().expect("addr b");
+
+    let responder = tokio::spawn(async move {
+        let (frame, from) = node_b.recv_frame().await.expect("recv discover");
+        assert_eq!(frame, UdpFrame::Discover);
+        let local = node_b.local_addr().expect("local");
+        node_b.send_here(from, local).await.expect("send here");
+    });
+
+    node_a.send_discover(b_addr).await.expect("send discover");
+    let (frame, _from) = node_a.recv_frame().await.expect("recv here");
+    let UdpFrame::Here(addr) = frame else {
+        panic!("expected here response");
+    };
+    assert_eq!(addr, b_addr);
+
+    responder.await.expect("join");
 }
