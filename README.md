@@ -10,6 +10,7 @@ This project is focused on applied security engineering for deterministic system
 - [Core guarantees](#core-guarantees)
 - [Architecture overview](#architecture-overview)
 - [Quickstart (60s)](#quickstart-60s)
+- [Quick demo (2 terminals)](#quick-demo-2-terminals)
 - [Security model](#security-model)
 - [Audit and hashing](#audit-and-hashing)
   - [Basic](#basic)
@@ -82,6 +83,31 @@ BODY="$(printf '{"user_id":"quickstart_user","amount_cents":150000,"is_pep":fals
 SIG="$(cargo run --quiet --bin sign_request -- "$NEXO_HMAC_SECRET" "$NEXO_HMAC_KEY_ID" "$REQ_ID" "$TS" "$BODY")"
 curl -sS -X POST 'http://127.0.0.1:3000/evaluate' -H 'content-type: application/json' -H "x-signature: $SIG" -H "x-request-id: $REQ_ID" -H "x-timestamp: $TS" -H "x-key-id: $NEXO_HMAC_KEY_ID" --data "$BODY"
 ```
+
+## Quick demo (2 terminals)
+
+Terminal A:
+
+```bash
+cargo run --features network --bin nexo_p2p -- chat --bind 127.0.0.1:9001 --peer 127.0.0.1:9002 --sender node_a --db /tmp/nexo_a.db
+```
+
+Terminal B:
+
+```bash
+cargo run --features network --bin nexo_p2p -- chat --bind 127.0.0.1:9002 --peer 127.0.0.1:9001 --sender node_b --db /tmp/nexo_b.db
+```
+
+Example session:
+- Type `hello` on terminal A: terminal B prints `[node_a] hello`.
+- Type `hello` again (same sender + nonce always changes): another event is inserted normally.
+- Type `/last 5` to show recent persisted messages from local SQLite.
+- Type `/id` to print current sender id and bind address.
+- Type `/quit` to exit.
+
+Dedup behavior:
+- Received events are deduplicated by `event_hash`.
+- Replayed packet with the same `event_hash` is treated as duplicate and not inserted twice.
 
 ## Security model
 
