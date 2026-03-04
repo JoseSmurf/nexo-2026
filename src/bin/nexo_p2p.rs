@@ -42,9 +42,13 @@ mod network_cli {
     pub fn usage() -> &'static str {
         "nexo_p2p (network feature)\n\
          usage:\n\
-           nexo_p2p listen --bind 127.0.0.1:9001 --db /tmp/nexo_a.db [--seen-ttl-ms 120000]\n\
-           nexo_p2p send --bind 127.0.0.1:9002 --peer 127.0.0.1:9001 --sender node_b --msg \"hello\" --db /tmp/nexo_b.db [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000]\n\
-           nexo_p2p chat --bind 127.0.0.1:9001 --peer 127.0.0.1:9002 --sender node_a --db /tmp/nexo_a.db [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000]"
+          nexo_p2p listen --bind 127.0.0.1:9001 --db /tmp/nexo_a.db [--seen-ttl-ms 120000]\n\
+          nexo_p2p send --bind 127.0.0.1:9002 --peer 127.0.0.1:9001 --sender node_b --msg \"hello\" --db /tmp/nexo_b.db [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000]\n\
+          nexo_p2p chat --bind 127.0.0.1:9001 --peer 127.0.0.1:9002 --sender node_a --db /tmp/nexo_a.db [--retries 3] [--ack-timeout-ms 200] [--seen-ttl-ms 120000]"
+    }
+
+    fn chat_help() -> &'static str {
+        "chat commands: /help /id /last N /quit"
     }
 
     pub fn parse_listen(args: &[String]) -> Result<ListenArgs, String> {
@@ -210,7 +214,7 @@ mod network_cli {
         });
 
         println!(
-            "chat ready: bind={} peer={} sender={} db={} (/id /last N /quit)",
+            "chat ready: bind={} peer={} sender={} db={} (/help /id /last N /quit)",
             args.bind, args.peer, args.sender, args.db
         );
 
@@ -233,6 +237,10 @@ mod network_cli {
 
             if line == "/quit" {
                 break;
+            }
+            if line == "/help" {
+                println!("{}", chat_help());
+                continue;
             }
             if line == "/id" {
                 println!(
@@ -380,6 +388,15 @@ mod network_cli {
             let input = "ááááááááááááááááá";
             assert!(input.as_bytes().len() > 32);
             assert!(validate_chat_input_bytes(input).is_err());
+        }
+
+        #[test]
+        fn chat_help_includes_all_commands() {
+            let help = chat_help();
+            assert!(help.contains("/help"));
+            assert!(help.contains("/id"));
+            assert!(help.contains("/last N"));
+            assert!(help.contains("/quit"));
         }
     }
 }
