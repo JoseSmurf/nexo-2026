@@ -939,7 +939,13 @@ async fn run_relay_bridge_loop(
     let initial = normalize_relays(initial_relays);
     merge_relays(&mut relays, &initial);
 
-    let mut pull_since = BTreeMap::<String, u64>::new();
+    let mut pull_since = match OfflineStore::open(db_path) {
+        Ok(store) => store
+            .get_relay_state_u64(RELAY_PULL_SINCE_KEY)
+            .unwrap_or(None)
+            .unwrap_or(0),
+        Err(_) => 0,
+    };
     let mut push_since = BTreeMap::<String, u64>::new();
 
     let mut push_tick = tokio::time::interval(Duration::from_millis(push_interval_ms.max(1)));
@@ -975,7 +981,7 @@ async fn run_relay_bridge_loop(
                 };
                 let relays_now: Vec<String> = relays.iter().cloned().collect();
                 for relay in relays_now {
-                    let since = pull_since.get(&relay).copied().unwrap_or(0);
+                    let since = pull_since;
                     let pulled = match relay_pull_items(&relay, since, 200).await {
                         Ok(v) => v,
                         Err(e) => {
@@ -1010,11 +1016,9 @@ async fn run_relay_bridge_loop(
 
                     let mut inserted_count = 0usize;
                     let mut max_ts = since;
+                    let mut applied_any = false;
                     for decoded in decoded_batch {
                         let msg = decoded.msg;
-                        if msg.timestamp_utc_ms >= max_ts {
-                            max_ts = msg.timestamp_utc_ms.saturating_add(1);
-                        }
 
                         let ehash = event_hash(&msg);
                         let now = now_utc_ms();
@@ -1028,6 +1032,10 @@ async fn run_relay_bridge_loop(
                         };
                         if seen {
                             let _ = store.mark_seen(&ehash, expires_at);
+                            if msg.timestamp_utc_ms >= max_ts {
+                                max_ts = msg.timestamp_utc_ms.saturating_add(1);
+                            }
+                            applied_any = true;
                             continue;
                         }
 
@@ -1048,17 +1056,32 @@ async fn run_relay_bridge_loop(
                                 inserted_count += 1;
                                 let _ = store.mark_seen(&ehash, expires_at);
                                 let _ = store.mark_forwarded(&origin_hex, now);
+                                if msg.timestamp_utc_ms >= max_ts {
+                                    max_ts = msg.timestamp_utc_ms.saturating_add(1);
+                                }
+                                applied_any = true;
                             }
                             Ok(StoreInsertStatus::Duplicate) => {
                                 let _ = store.mark_seen(&ehash, expires_at);
+                                if msg.timestamp_utc_ms >= max_ts {
+                                    max_ts = msg.timestamp_utc_ms.saturating_add(1);
+                                }
+                                applied_any = true;
                             }
                             Err(e) => {
                                 println!("relay_pull relay={} insert_failed={e}", relay);
                             }
                         }
                     }
-                    if max_ts > since {
-                        pull_since.insert(relay.clone(), max_ts);
+                    if applied_any && max_ts > since {
+                        match store.set_relay_state_u64(RELAY_PULL_SINCE_KEY, max_ts) {
+                            Ok(()) => {
+                                pull_since = max_ts;
+                            }
+                            Err(e) => {
+                                println!("relay_pull relay={} relay_state_write_failed={e}", relay);
+                            }
+                        }
                     }
                     println!("relay_pull relay={} count={}", relay, inserted_count);
                 }
@@ -1274,6 +1297,7 @@ fn resolve_shared_key(
 
 const MAX_KNOWN_PEERS: usize = 64;
 const MAX_SHARED_PEERS: usize = 8;
+const RELAY_PULL_SINCE_KEY: &str = "last_relay_pull_since_ms";
 
 fn insert_known_peer(peers: &mut BTreeSet<SocketAddr>, peer: SocketAddr) {
     peers.insert(peer);

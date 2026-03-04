@@ -362,6 +362,40 @@ impl OfflineStore {
         Ok((pubkey, seckey))
     }
 
+    pub fn get_relay_state_u64(&self, key: &str) -> Result<Option<u64>, rusqlite::Error> {
+        if key.trim().is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName("key".to_string()));
+        }
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM relay_state WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match raw {
+            Some(v) => match v.parse::<u64>() {
+                Ok(parsed) => Ok(Some(parsed)),
+                Err(_) => Err(rusqlite::Error::InvalidParameterName(
+                    "relay_state_invalid_u64".to_string(),
+                )),
+            },
+            None => Ok(None),
+        }
+    }
+
+    pub fn set_relay_state_u64(&self, key: &str, value: u64) -> Result<(), rusqlite::Error> {
+        if key.trim().is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName("key".to_string()));
+        }
+        self.conn.execute(
+            "INSERT OR REPLACE INTO relay_state(key, value) VALUES (?1, ?2)",
+            params![key, value.to_string()],
+        )?;
+        Ok(())
+    }
+
     fn purge_seen_expired(&self, now_ms: u64) -> Result<(), rusqlite::Error> {
         self.conn.execute(
             "DELETE FROM seen_hashes WHERE expires_at_utc_ms <= ?1",
@@ -399,6 +433,10 @@ impl OfflineStore {
             CREATE TABLE IF NOT EXISTS forwarded_hashes (
                 event_hash TEXT PRIMARY KEY NOT NULL,
                 forwarded_at_ms INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS relay_state (
+                key TEXT PRIMARY KEY NOT NULL,
+                value TEXT NOT NULL
             );
             "#,
         )?;
@@ -539,5 +577,25 @@ mod tests {
         assert_eq!(status, StoreInsertStatus::Inserted);
         let rows = store.last_messages(1).expect("rows");
         assert_eq!(rows[0].channel, "ai");
+    }
+
+    #[test]
+    fn relay_state_set_get_u64() {
+        let store = OfflineStore::open_in_memory().expect("store");
+        assert_eq!(
+            store
+                .get_relay_state_u64("last_relay_pull_since_ms")
+                .expect("get"),
+            None
+        );
+        store
+            .set_relay_state_u64("last_relay_pull_since_ms", 1234)
+            .expect("set");
+        assert_eq!(
+            store
+                .get_relay_state_u64("last_relay_pull_since_ms")
+                .expect("get"),
+            Some(1234)
+        );
     }
 }
