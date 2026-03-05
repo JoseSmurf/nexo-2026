@@ -222,4 +222,47 @@ include("plca_bridge.jl")
             end
         end
     end
+
+    @testset "15) assinatura Julia == assinatura Rust (contrato canônico)" begin
+        root = normpath(joinpath(@__DIR__, ".."))
+        cargo_bin = Sys.which("cargo")
+        @test cargo_bin !== nothing
+        cargo_bin === nothing && return
+
+        secret = "contract-secret"
+        key_id = "active"
+        request_id = "3b6e8e92-1a50-4c38-9186-c7e17d2e7f7a"
+        timestamp_ms = UInt64(1_771_845_406_862)
+        payload = Dict{String, Any}(
+            "user_id" => "contract_user",
+            "amount_cents" => 150_000,
+            "is_pep" => false,
+            "has_active_kyc" => true,
+            "timestamp_utc_ms" => Int(timestamp_ms),
+            "risk_bps" => 1_234,
+            "ui_hash_valid" => true,
+            "request_id" => request_id,
+        )
+        body = canonical_json(payload)
+
+        rust_cmd = Cmd(
+            [
+                cargo_bin,
+                "run",
+                "--quiet",
+                "--bin",
+                "sign_request",
+                "--",
+                secret,
+                key_id,
+                request_id,
+                string(timestamp_ms),
+                body,
+            ],
+        )
+        rust_sig = strip(read(Cmd(rust_cmd; dir=root), String))
+        julia_sig = hmac_blake3(body, secret, key_id, request_id, timestamp_ms)
+
+        @test julia_sig == rust_sig
+    end
 end
