@@ -13,6 +13,7 @@ This project is focused on applied security engineering for deterministic system
 - [Quick demo (2 terminals)](#quick-demo-2-terminals)
 - [Relay bridge (global mode)](#relay-bridge-global-mode)
 - [Hybrid demo](#hybrid-demo)
+- [Testing commands](#testing-commands)
 - [Security model](#security-model)
 - [Audit and hashing](#audit-and-hashing)
   - [Basic](#basic)
@@ -22,6 +23,7 @@ This project is focused on applied security engineering for deterministic system
 - [Performance](#performance)
 - [Advanced deployment (optional)](#advanced-deployment-optional)
 - [Roadmap](#roadmap)
+- [Troubleshooting](#troubleshooting)
 - [Current status](#current-status)
 - [License](#license)
 
@@ -143,6 +145,9 @@ Bridge mode (manual flow):
 - Export signed events from one side and push to relay.
 - Pull from relay on the other side and ingest through existing sync/event path.
 - Dedup remains persistent by `event_hash` in both relay and local SQLite.
+- Pull cursor is persisted in SQLite (`relay_state.last_relay_pull_since_ms`) to survive restarts.
+- Relay HTTP errors use deterministic per-relay backoff (`1s -> 2s -> 4s ...` capped at `30s`, reset on success).
+- `known_peers` received from relay are not trusted immediately: they enter a candidate queue and are promoted only after valid UDP observation.
 
 ## Hybrid demo
 
@@ -157,6 +162,15 @@ What it does:
 - Starts `node_a` and `node_b` in `chat --daemon` with `--relay`.
 - Sends one `hello` message from a short `node_a` chat session.
 - Validates node B pulled at least one event from relay (`relay_pull count>0`).
+
+## Testing commands
+
+```bash
+cargo test -q
+cargo test --features network -q
+julia --project=./julia julia/test/runtests.jl
+cd tools/zig && zig build test
+```
 
 ## Security model
 
@@ -330,6 +344,13 @@ Use `.env.example` provider sections as the canonical reference for required var
 - Audit storage hardening for long-term retention and integrity controls.
 - Expanded verifier fixtures across profiles and incident modes.
 - Operational runbooks for key rotation and incident-level hash policy transitions.
+
+## Troubleshooting
+
+- `cargo run` reports multiple binaries:
+  - Use explicit binary, e.g. `cargo run --bin syntax-engine` or `cargo run --features network --bin nexo_p2p -- chat ...`.
+- API startup panic about missing HMAC secret:
+  - Set `NEXO_HMAC_SECRET` (or `NEXO_HMAC_SECRET_FILE`) before running `syntax-engine`.
 
 ## Current status
 
