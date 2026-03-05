@@ -45,7 +45,7 @@ fi
 
 julia_output="$(
   cd "$ROOT_DIR"
-  julia --project=./julia julia/test_plca.jl 2>&1
+  julia --project=./julia julia/test/runtests.jl 2>&1
 )"
 
 actual_julia="$(
@@ -55,7 +55,7 @@ actual_julia="$(
 )"
 
 if [[ -z "$actual_julia" ]]; then
-  echo "Could not parse Julia test total from julia/test_plca.jl output."
+  echo "Could not parse Julia test total from julia/test/runtests.jl output."
   printf '%s\n' "$julia_output"
   exit 1
 fi
