@@ -11,7 +11,7 @@ configure do
   set :port, 4567
 end
 
-set :state, CoreAdapter::FALLBACK_STATE.merge(event_counter: 0).dup
+set :state, CoreAdapter.build_fallback_state.merge(event_counter: 0).dup
 
 set :insights, [
   'No anomaly patterns observed in this window.',
@@ -53,10 +53,10 @@ helpers do
 
   def health_payload(state, source, source_type, adapter_status)
     ui_status = if settings.ui_mode == :demo || source_type == 'fallback'
-                  'degraded'
-                else
-                  'healthy'
-                end
+      'degraded'
+    else
+      'healthy'
+    end
 
     integrity_message =
       if ui_status == 'unavailable'
@@ -78,6 +78,36 @@ helpers do
       last_updated: Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC'),
       seed: motion_seed_from_state(state),
     }
+  end
+
+  def normalized_now
+    Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
+  end
+
+  def new_event_payload(type, origin, channel, hash_seed)
+    event_hash = Digest::SHA256.hexdigest(hash_seed)[0, 12]
+    {
+      hash: event_hash,
+      type: type,
+      timestamp: normalized_now,
+      origin: origin,
+      channel: channel,
+    }
+  end
+
+  def update_recent_events(state, event)
+    list = Array(state[:recent_events]).map(&:dup)
+    list.unshift(event)
+    state[:recent_events] = list.first(5)
+
+    latest = state[:recent_events].first
+    state[:recent_event_hash] = latest[:hash]
+    state[:last_event_hash] = latest[:hash]
+    state[:event_type] = latest[:type]
+    state[:event_timestamp] = latest[:timestamp]
+    state[:event_origin] = latest[:origin]
+    state[:event_channel] = latest[:channel]
+    state[:last_sync] = latest[:timestamp]
   end
 end
 
@@ -102,41 +132,52 @@ post '/api/simulate' do
 
   case action
   when 'event'
-    state[:recent_event_hash] = Digest::SHA256.hexdigest("event-#{state[:event_counter]}-#{state[:last_sync]}")[0, 12]
-    state[:last_event_hash] = state[:recent_event_hash]
-    state[:event_type] = 'ui_event'
-    state[:event_timestamp] = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
-    state[:event_origin] = 'cli_simulator'
-    state[:event_channel] = 'ui'
+    update_recent_events(
+      state,
+      new_event_payload(
+        'ui_event',
+        'cli_simulator',
+        'ui',
+        "event-#{state[:event_counter]}-#{state[:last_sync]}",
+      ),
+    )
     state[:system_status] = 'event_processed'
-    state[:last_sync] = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
   when 'peer_join'
     state[:peers_count] = state[:peers_count].to_i + 1
-    state[:last_event_hash] = Digest::SHA256.hexdigest("peer-#{state[:event_counter]}-#{state[:peers_count]}")[0, 12]
-    state[:event_type] = 'peer_join'
-    state[:event_timestamp] = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
-    state[:event_origin] = 'ui_simulator_peer'
-    state[:event_channel] = 'control'
+    update_recent_events(
+      state,
+      new_event_payload(
+        'peer_join',
+        'ui_simulator_peer',
+        'control',
+        "peer-#{state[:event_counter]}-#{state[:peers_count]}",
+      ),
+    )
     state[:system_status] = 'peer_joined'
-    state[:last_sync] = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
   when 'relay_toggle'
     state[:relay_enabled] = !state[:relay_enabled]
-    state[:last_event_hash] = Digest::SHA256.hexdigest("relay-#{state[:event_counter]}-#{state[:relay_status]}")[0, 12]
-    state[:event_type] = 'relay_toggle'
-    state[:event_timestamp] = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
-    state[:event_origin] = 'ui_simulator_relay'
-    state[:event_channel] = 'control'
     state[:relay_status] = state[:relay_enabled] ? 'sync-bridge online' : 'sync-bridge disabled'
-    state[:last_sync] = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
+    update_recent_events(
+      state,
+      new_event_payload(
+        'relay_toggle',
+        'ui_simulator_relay',
+        'control',
+        "relay-#{state[:event_counter]}-#{state[:relay_status]}",
+      ),
+    )
   when 'ai_insight'
     state[:ai_last_insight] = settings.insights[state[:event_counter] % settings.insights.length]
-    state[:last_event_hash] = Digest::SHA256.hexdigest("insight-#{state[:event_counter]}-#{state[:ai_last_insight]}")[0, 12]
-    state[:event_type] = 'ai_insight'
-    state[:event_timestamp] = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
-    state[:event_origin] = 'ui_simulator_ai'
-    state[:event_channel] = 'ai'
+    update_recent_events(
+      state,
+      new_event_payload(
+        'ai_insight',
+        'ui_simulator_ai',
+        'ai',
+        "insight-#{state[:event_counter]}-#{state[:ai_last_insight]}",
+      ),
+    )
     state[:system_status] = 'insight_generated'
-    state[:last_sync] = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
   else
     halt 400, { error: 'unknown action' }.to_json
   end

@@ -24,6 +24,8 @@
     healthCard: document.getElementById('card-integrity'),
   };
 
+  const recentEventsMax = 5;
+
   const metaLabel = {
     system_status: 'system_status',
     peers_count: 'peers_count',
@@ -47,14 +49,40 @@
     events: 'Events',
   };
 
+  function escapeHtml(value) {
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function sanitizeEvents(state) {
+    const events = Array.isArray(state.recent_events) ? state.recent_events.slice(0, recentEventsMax) : [];
+    if (events.length > 0) {
+      return events;
+    }
+
+    return [{
+      hash: state.last_event_hash || 'n/a',
+      type: state.event_type || 'n/a',
+      origin: state.event_origin || 'n/a',
+      channel: state.event_channel || 'n/a',
+      timestamp: state.event_timestamp || 'n/a',
+    }];
+  }
+
   function formatEvents(state) {
-    return [
-      `hash: ${state.last_event_hash || 'n/a'}`,
-      `type: ${state.event_type || 'n/a'}`,
-      `origin: ${state.event_origin || 'n/a'}`,
-      `channel: ${state.event_channel || 'n/a'}`,
-      `ts: ${state.event_timestamp || 'n/a'}`,
-    ].join('\n');
+    const events = sanitizeEvents(state);
+    return events.map((event, index) => {
+      const rowClass = index === 0 ? 'event-row latest' : 'event-row';
+      return `<div class="${rowClass}">
+        #${index + 1} ${escapeHtml(event.timestamp || 'n/a')} | ${escapeHtml(event.origin || 'n/a')} | ${escapeHtml(event.channel || 'n/a')}
+        type=${escapeHtml(event.type || 'n/a')}
+        hash=${escapeHtml(event.hash || 'n/a')}
+      </div>`;
+    }).join('');
   }
 
   const sourceNode = document.getElementById('data-source');
@@ -120,7 +148,7 @@
     }
 
     if (cardNodes.events) {
-      cardNodes.events.textContent = formatEvents(state);
+      cardNodes.events.innerHTML = formatEvents(state);
     }
 
     if (state.last_sync && stateNodes.last_sync) {

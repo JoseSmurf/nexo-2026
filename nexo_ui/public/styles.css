@@ -270,6 +270,16 @@ button:hover {
   overflow: hidden;
 }
 
+.event-row {
+  margin-bottom: 6px;
+  white-space: pre;
+}
+
+.event-row.latest {
+  color: #b8d3ff;
+  font-weight: 600;
+}
+
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }

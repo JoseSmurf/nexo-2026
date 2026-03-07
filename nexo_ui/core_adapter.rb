@@ -15,7 +15,32 @@ module CoreAdapter
     event_timestamp: nil,
     event_origin: 'ui_fallback',
     event_channel: 'system',
+    recent_events: [],
   }.freeze
+
+  FALLBACK_RECENT_EVENTS = [
+    {
+      hash: '88e0b1c3d7a44e6f9d2f8a1124cd3b90f',
+      type: 'audit_sync',
+      timestamp: '2026-03-07 00:02:00 UTC',
+      origin: 'relay',
+      channel: 'system',
+    },
+    {
+      hash: 'a12d9f8b56ca4d90c3b88f4f7a2e12345',
+      type: 'bootstrap',
+      timestamp: '2026-03-07 00:01:00 UTC',
+      origin: 'core_adapter',
+      channel: 'control',
+    },
+    {
+      hash: 'bf5cfda1e218837d2f8a597f8011b4096',
+      type: 'startup',
+      timestamp: '2026-03-07 00:00:00 UTC',
+      origin: 'ui_fallback',
+      channel: 'system',
+    },
+  ].freeze
 
   def build_state
     from_json, status = read_json_state
@@ -24,7 +49,13 @@ module CoreAdapter
     from_sqlite, sqlite_status = read_sqlite_state
     return [from_sqlite, 'real', 'sqlite', sqlite_status] if from_sqlite
 
-    [FALLBACK_STATE.dup, 'fallback_simulated', 'fallback', status || sqlite_status || 'fallback_no_data_source']
+    [build_fallback_state, 'fallback_simulated', 'fallback', status || sqlite_status || 'fallback_no_data_source']
+  end
+
+  def build_fallback_state
+    state = FALLBACK_STATE.dup
+    state[:recent_events] = normalize_events(payload_to_events(FALLBACK_RECENT_EVENTS))
+    state
   end
 
   def read_json_state
@@ -80,12 +111,25 @@ module CoreAdapter
     relay = payload['relay_status'] || payload['relayStatus'] || payload[:relay_status] || 'unknown'
     insight = payload['ai_last_insight'] || payload['aiLastInsight'] || payload[:ai_last_insight] || 'No insight available.'
     hash = payload['recent_event_hash'] || payload['recentEventHash'] || payload[:recent_event_hash] || '000000000000'
-    sync = payload['last_sync'] || payload['lastSync'] || payload[:last_sync] || Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
-    event_hash = payload['last_event_hash'] || payload['lastEventHash'] || payload[:last_event_hash] || hash
-    event_type = payload['event_type'] || payload['eventType'] || payload[:event_type] || 'unknown'
-    event_timestamp = payload['event_timestamp'] || payload['eventTimestamp'] || payload[:event_timestamp] || Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
-    event_origin = payload['event_origin'] || payload['eventOrigin'] || payload[:event_origin] || 'unknown'
-    event_channel = payload['event_channel'] || payload['eventChannel'] || payload[:event_channel] || 'unknown'
+    sync = payload['last_sync'] || payload['lastSync'] || payload[:last_sync] || 'n/a'
+    events = payload['recent_events'] || payload[:recent_events]
+    recent_events = normalize_events(events)
+
+    if recent_events.empty?
+      recent_events = payload_to_events(
+        [
+          {
+            hash: event_hash(payload, hash),
+            type: payload_event_type(payload, 'unknown'),
+            timestamp: payload_event_timestamp(payload),
+            origin: payload_event_origin(payload),
+            channel: payload_event_channel(payload),
+          },
+        ],
+      )
+    end
+
+    latest = recent_events.first
 
     {
       system_status: status,
@@ -94,11 +138,66 @@ module CoreAdapter
       ai_last_insight: insight,
       recent_event_hash: hash,
       last_sync: sync,
-      last_event_hash: event_hash,
-      event_type: event_type,
-      event_timestamp: event_timestamp,
-      event_origin: event_origin,
-      event_channel: event_channel,
+      last_event_hash: latest[:hash],
+      event_type: latest[:type],
+      event_timestamp: latest[:timestamp],
+      event_origin: latest[:origin],
+      event_channel: latest[:channel],
+      recent_events: recent_events,
     }
+  end
+
+  def payload_event_type(payload, default = 'unknown')
+    payload['event_type'] || payload['eventType'] || payload[:event_type] || default
+  end
+
+  def payload_event_timestamp(payload)
+    payload['event_timestamp'] || payload['eventTimestamp'] || payload[:event_timestamp] || 'n/a'
+  end
+
+  def payload_event_origin(payload)
+    payload['event_origin'] || payload['eventOrigin'] || payload[:event_origin] || 'unknown'
+  end
+
+  def payload_event_channel(payload)
+    payload['event_channel'] || payload['eventChannel'] || payload[:event_channel] || 'unknown'
+  end
+
+  def event_hash(payload, fallback)
+    payload['last_event_hash'] || payload['lastEventHash'] || payload[:last_event_hash] || fallback
+  end
+
+  def normalize_events(events)
+    normalized = []
+
+    return fallback_recent_events if events.nil?
+
+    unless events.is_a?(Array)
+      return fallback_recent_events
+    end
+
+    events.each do |item|
+      next unless item.is_a?(Hash)
+
+      normalized << {
+        hash: item['hash'] || item['event_hash'] || item[:hash] || item[:event_hash] || '000000000000',
+        type: item['type'] || item['event_type'] || item[:type] || item[:event_type] || 'unknown',
+        timestamp: item['timestamp'] || item['event_timestamp'] || item[:timestamp] || item[:event_timestamp] || 'n/a',
+        origin: item['origin'] || item['event_origin'] || item[:origin] || item[:event_origin] || 'unknown',
+        channel: item['channel'] || item['event_channel'] || item[:channel] || item[:event_channel] || 'unknown',
+      }
+    end
+
+    return fallback_recent_events if normalized.empty?
+
+    normalized.first(5)
+  end
+
+  def payload_to_events(events)
+    normalize_events(events).map(&:dup)
+  end
+
+  def fallback_recent_events
+    payload_to_events(FALLBACK_RECENT_EVENTS).map(&:dup)
   end
 end

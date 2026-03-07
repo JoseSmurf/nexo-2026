@@ -55,13 +55,19 @@
                 last_updated: <%= @health[:last_updated] %>
               </p>
             <% elsif card[:key] == :events %>
-              <p class="value events-lines" id="value-events">
-                hash: <%= @state[:last_event_hash] %><br />
-                type: <%= @state[:event_type] %><br />
-                origin: <%= @state[:event_origin] %><br />
-                channel: <%= @state[:event_channel] %><br />
-                ts: <%= @state[:event_timestamp] %>
-              </p>
+              <div class="value events-lines" id="value-events">
+                <% events = Array(@state[:recent_events] || []).take(5) %>
+                <% if events.empty? %>
+                  no events
+                <% else %>
+                  <% events.each_with_index do |event, index| %>
+                    <div class="event-row <%= index.zero? ? 'latest' : '' %>">
+                      #<%= index + 1 %> <%= event[:timestamp] || event['timestamp'] %> | <%= event[:origin] || event['origin'] %> | <%= event[:channel] || event['channel'] %>
+                      type=<%= event[:type] || event['type'] %> hash=<%= event[:hash] || event['hash'] %>
+                    </div>
+                  <% end %>
+                <% end %>
+              </div>
             <% else %>
               <p class="value <%= card[:mono] ? 'mono' : '' %>" id="value-<%= card[:key] %>">
                 <%= card[:label] ? "#{card[:label]}: #{ @state[card[:key]] }" : @state[card[:key]] %>

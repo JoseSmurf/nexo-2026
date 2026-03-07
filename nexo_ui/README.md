@@ -27,11 +27,19 @@ http://127.0.0.1:4567
 
 - `/api/status` returns `state`, `seed`, `last_updated`, and `data_source`.
   State now includes event activity fields:
+  - `recent_events`
   - `last_event_hash`
   - `event_type`
   - `event_timestamp`
   - `event_origin`
   - `event_channel`
+
+- `recent_events` is a short timeline (up to 5 entries), most recent first:
+  - `hash`
+  - `type`
+  - `timestamp`
+  - `origin`
+  - `channel`
 - `/api/health` returns:
   - `ui_status`
   - `data_source`
@@ -55,3 +63,4 @@ http://127.0.0.1:4567
 - `event_timestamp`
 - `event_origin`
 - `event_channel`
+- `recent_events`
