@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NEXO UI v1</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <p class="eyebrow">NEXO / UI Layer</p>
+        <h1>Dragon skin status matrix</h1>
+        <p class="subline">Minimal deterministic surface with simulated state and subtle motion seed.</p>
+      </header>
+
+      <section class="dragon-grid" aria-label="System cards">
+        <% @viewport[:cards].each_with_index do |card, i| %>
+          <% motion = @viewport[:seed][i] %>
+          <article
+            class="card card-<%= card[:tone] %>"
+            style="--dx: <%= motion[:drift_x] %>; --dy: <%= motion[:drift_y] %>; --alpha: <%= motion[:opacity] %>; --flicker: <%= motion[:flicker] %>;"
+          >
+            <h2><%= card[:name] %></h2>
+            <p><%= card[:value] %></p>
+          </article>
+        <% end %>
+      </section>
+
+      <section class="meta-panel">
+        <div><span>system_status:</span> <%= @viewport[:state][:system_status] %></div>
+        <div><span>peers_count:</span> <%= @viewport[:state][:peers_count] %></div>
+        <div><span>relay_status:</span> <%= @viewport[:state][:relay_status] %></div>
+        <div><span>ai_last_insight:</span> <%= @viewport[:state][:ai_last_insight] %></div>
+        <div><span>recent_event_hash:</span> <%= @viewport[:state][:recent_event_hash] %></div>
+        <div><span>last_sync:</span> <%= @viewport[:state][:last_sync] %></div>
+      </section>
+
+      <p class="hint">Ready for future integration with a core_adapter bridge.</p>
+    </main>
+  </body>
+</html>
