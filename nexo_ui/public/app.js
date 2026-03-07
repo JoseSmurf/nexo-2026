@@ -40,6 +40,7 @@
   const chatInputNode = document.getElementById('chat-message-input');
   const chatSendBtnNode = document.getElementById('send-chat-message');
   const chatCardNode = document.getElementById('card-globalchat');
+  const liveFlowCardNode = document.getElementById('card-liveflow');
   const causes = {
     events: document.getElementById('cause-events'),
     ai: document.getElementById('cause-ai'),
@@ -59,6 +60,8 @@
   let previousChatHash = null;
   let chatPulseTimer = null;
   let meshChatPulseTimer = null;
+  let previousLiveFlowTop = null;
+  let liveFlowPulseTimer = null;
 
   const recentEventsMax = 5;
   const recentAiInsightsMax = 3;
@@ -359,7 +362,7 @@
     return 'event';
   }
 
-  function formatLiveFlow(state) {
+  function formatLiveFlow(state, shouldPulseLatestRow = false) {
     const flowItems = sanitizeLiveFlow(state);
     if (flowItems.length === 0) {
       return 'no live flow';
@@ -369,13 +372,73 @@
       const kind = sanitizeFlowKind(item.kind);
       const summary = escapeHtml(item.summary || '');
       const hash = item.hash || '';
-      return `<div class="flow-item flow-item-${kind} ${index === 0 ? 'latest' : ''}">
+      let rowClass = `flow-item flow-item-${kind} ${index === 0 ? 'latest' : ''}`;
+      if (index === 0 && shouldPulseLatestRow) {
+        rowClass += ' pulse';
+      }
+      return `<div class="${rowClass}">
         #${index + 1} ${escapeHtml(item.timestamp || 'n/a')} | ${escapeHtml(item.origin || 'unknown')}
         (${escapeHtml(kind)})${item.channel ? ` | ${escapeHtml(item.channel)}` : ''}
         <div class="flow-summary">${summary}</div>
         ${hash ? `<span class="mono flow-hash">hash=${escapeHtml(hash)}</span>` : ''}
       </div>`;
     }).join('');
+  }
+
+  function flowTopSignature(state) {
+    const flowItems = sanitizeLiveFlow(state);
+    const top = flowItems[0];
+    if (!top) {
+      return null;
+    }
+    return [
+      sanitizeFlowKind(top.kind),
+      top.origin || 'unknown',
+      top.summary || '',
+      top.timestamp || 'n/a',
+      top.hash || '',
+      top.channel || '',
+    ].join('|');
+  }
+
+  function shouldPulseForLiveFlow(state) {
+    const signature = flowTopSignature(state);
+
+    if (signature === null) {
+      if (previousLiveFlowTop === null) {
+        previousLiveFlowTop = null;
+      }
+      return false;
+    }
+
+    if (previousLiveFlowTop === null) {
+      previousLiveFlowTop = signature;
+      return false;
+    }
+
+    if (signature !== previousLiveFlowTop) {
+      previousLiveFlowTop = signature;
+      return true;
+    }
+
+    return false;
+  }
+
+  function triggerLiveFlowPulse() {
+    if (!liveFlowCardNode) {
+      return;
+    }
+
+    liveFlowCardNode.classList.remove('card-liveflow-pulse');
+    void liveFlowCardNode.offsetWidth;
+    liveFlowCardNode.classList.add('card-liveflow-pulse');
+
+    clearTimeout(liveFlowPulseTimer);
+    liveFlowPulseTimer = setTimeout(() => {
+      if (liveFlowCardNode) {
+        liveFlowCardNode.classList.remove('card-liveflow-pulse');
+      }
+    }, 620);
   }
 
   function setCardCause(cardName, text) {
@@ -735,7 +798,11 @@
     }
 
     if (cardNodes.recent_flow) {
-      cardNodes.recent_flow.innerHTML = formatLiveFlow(state);
+      const hasLiveFlowPulse = shouldPulseForLiveFlow(state);
+      if (hasLiveFlowPulse) {
+        triggerLiveFlowPulse();
+      }
+      cardNodes.recent_flow.innerHTML = formatLiveFlow(state, hasLiveFlowPulse);
     }
 
     const hasAiPulse = shouldPulseForAiInsight(state);
