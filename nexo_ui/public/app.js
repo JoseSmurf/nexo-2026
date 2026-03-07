@@ -25,10 +25,16 @@
   };
   const eventsCardNode = document.getElementById('card-events');
   const aiCardNode = document.getElementById('card-ai');
+  const networkCardNode = document.getElementById('card-network');
+  const relayCardNode = document.getElementById('card-relay');
   let previousEventHash = null;
   let eventPulseTimer = null;
   let previousAiInsight = null;
   let aiPulseTimer = null;
+  let previousPeersCount = null;
+  let previousRelayStatus = null;
+  let networkPulseTimer = null;
+  let relayPulseTimer = null;
 
   const recentEventsMax = 5;
 
@@ -137,6 +143,86 @@
         aiCardNode.classList.remove('card-ai-pulse');
       }
     }, 550);
+  }
+
+  function triggerNetworkPulse() {
+    if (!networkCardNode) {
+      return;
+    }
+
+    networkCardNode.classList.remove('card-network-pulse');
+    void networkCardNode.offsetWidth;
+    networkCardNode.classList.add('card-network-pulse');
+
+    clearTimeout(networkPulseTimer);
+    networkPulseTimer = setTimeout(() => {
+      if (networkCardNode) {
+        networkCardNode.classList.remove('card-network-pulse');
+      }
+    }, 620);
+  }
+
+  function triggerRelayPulse() {
+    if (!relayCardNode) {
+      return;
+    }
+
+    relayCardNode.classList.remove('card-relay-pulse');
+    void relayCardNode.offsetWidth;
+    relayCardNode.classList.add('card-relay-pulse');
+
+    clearTimeout(relayPulseTimer);
+    relayPulseTimer = setTimeout(() => {
+      if (relayCardNode) {
+        relayCardNode.classList.remove('card-relay-pulse');
+      }
+    }, 620);
+  }
+
+  function shouldPulseForNetwork(state) {
+    const peersCount = state && state.peers_count !== undefined ? String(state.peers_count).trim() : null;
+
+    if (peersCount === null || peersCount === '') {
+      if (previousPeersCount === null) {
+        previousPeersCount = peersCount;
+      }
+      return false;
+    }
+
+    if (previousPeersCount === null) {
+      previousPeersCount = peersCount;
+      return false;
+    }
+
+    if (peersCount !== previousPeersCount) {
+      previousPeersCount = peersCount;
+      return true;
+    }
+
+    return false;
+  }
+
+  function shouldPulseForRelay(state) {
+    const relayStatus = state && state.relay_status !== undefined ? String(state.relay_status).trim() : null;
+
+    if (relayStatus === null || relayStatus === '') {
+      if (previousRelayStatus === null) {
+        previousRelayStatus = relayStatus;
+      }
+      return false;
+    }
+
+    if (previousRelayStatus === null) {
+      previousRelayStatus = relayStatus;
+      return false;
+    }
+
+    if (relayStatus !== previousRelayStatus) {
+      previousRelayStatus = relayStatus;
+      return true;
+    }
+
+    return false;
   }
 
   function shouldPulseForAiInsight(state) {
@@ -260,6 +346,16 @@
     const hasAiPulse = shouldPulseForAiInsight(state);
     if (hasAiPulse) {
       triggerAiPulse();
+    }
+
+    const hasNetworkPulse = shouldPulseForNetwork(state);
+    if (hasNetworkPulse) {
+      triggerNetworkPulse();
+    }
+
+    const hasRelayPulse = shouldPulseForRelay(state);
+    if (hasRelayPulse) {
+      triggerRelayPulse();
     }
 
     if (state.last_sync && stateNodes.last_sync) {
