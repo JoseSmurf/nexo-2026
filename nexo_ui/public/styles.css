@@ -220,6 +220,12 @@ button:hover {
   text-overflow: ellipsis;
 }
 
+.value-sub {
+  margin-top: 4px;
+  opacity: 0.88;
+  font-size: 0.8rem;
+}
+
 .card-cause {
   margin-top: 6px;
   color: #8ba0bf;

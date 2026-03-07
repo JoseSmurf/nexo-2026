@@ -7,6 +7,8 @@ module CoreAdapter
     system_status: 'operational',
     peers_count: 8,
     relay_status: 'sync-bridge online',
+    network_mode: 'mesh',
+    mesh_status: 'stable',
     ai_last_insight: 'No anomaly patterns observed in this window.',
     recent_event_hash: 'bf5cfda1e218837d2f8a597f8011b4096',
     last_sync: nil,
@@ -126,6 +128,8 @@ module CoreAdapter
     status = payload['system_status'] || payload['systemStatus'] || payload[:system_status] || 'unknown'
     peers = payload['peers_count'] || payload['peersCount'] || payload[:peers_count] || 0
     relay = payload['relay_status'] || payload['relayStatus'] || payload[:relay_status] || 'unknown'
+    network_mode = normalize_network_mode(payload['network_mode'] || payload['networkMode'] || payload[:network_mode] || payload[:networkMode])
+    mesh_status = normalize_mesh_status(payload['mesh_status'] || payload['meshStatus'] || payload[:mesh_status] || payload[:meshStatus])
     insight = payload['ai_last_insight'] || payload['aiLastInsight'] || payload[:ai_last_insight] || 'No insight available.'
     hash = payload['recent_event_hash'] || payload['recentEventHash'] || payload[:recent_event_hash] || '000000000000'
     sync = payload['last_sync'] || payload['lastSync'] || payload[:last_sync] || 'n/a'
@@ -153,6 +157,8 @@ module CoreAdapter
       system_status: status,
       peers_count: peers.to_i,
       relay_status: relay,
+      network_mode: network_mode,
+      mesh_status: mesh_status,
       ai_last_insight: insight,
       recent_event_hash: hash,
       last_sync: sync,
@@ -212,6 +218,22 @@ module CoreAdapter
 
   def payload_event_channel(payload)
     payload['event_channel'] || payload['eventChannel'] || payload[:event_channel] || 'unknown'
+  end
+
+  def normalize_network_mode(value)
+    return 'mesh' if value.to_s.empty?
+    mode = value.to_s.strip.downcase
+    return mode if %w[mesh relay hybrid].include?(mode)
+
+    'hybrid'
+  end
+
+  def normalize_mesh_status(value)
+    return 'stable' if value.to_s.empty?
+    status = value.to_s.strip.downcase
+    return status if %w[stable unstable].include?(status)
+
+    'stable'
   end
 
   def event_hash(payload, fallback)

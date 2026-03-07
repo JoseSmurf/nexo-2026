@@ -33,6 +33,8 @@ http://127.0.0.1:4567
   - `event_timestamp`
   - `event_origin`
   - `event_channel`
+  - `network_mode` (`mesh` | `relay` | `hybrid`)
+  - `mesh_status` (`stable` | `unstable`)
 
 - `recent_events` is a short timeline (up to 5 entries), most recent first:
   - `hash`
@@ -65,3 +67,5 @@ http://127.0.0.1:4567
 - `event_channel`
 - `recent_ai_insights` (até 3 itens: text, timestamp, type, origin)
 - `recent_events`
+- `network_mode` (mesh|relay|hybrid)
+- `mesh_status` (stable|unstable)

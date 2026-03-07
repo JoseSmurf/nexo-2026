@@ -73,6 +73,14 @@
               <p class="value <%= card[:mono] ? 'mono' : '' %>" id="value-<%= card[:key] %>">
                 <%= card[:label] ? "#{card[:label]}: #{ @state[card[:key]] }" : @state[card[:key]] %>
               </p>
+              <% if card[:key] == :peers_count %>
+                <p class="value value-sub" id="value-network_mode">
+                  network_mode: <%= @state[:network_mode] || 'mesh' %>
+                </p>
+                <p class="value value-sub" id="value-mesh_status">
+                  mesh_status: <%= @state[:mesh_status] || 'stable' %>
+                </p>
+              <% end %>
               <% if card[:key] == :ai_last_insight %>
                 <div class="value ai-insights-lines" id="value-ai_recent_insights">
                   <% insights = Array(@state[:recent_ai_insights] || []).take(3) %>
@@ -103,6 +111,8 @@
       <section class="meta-panel">
         <div id="meta-system_status"><span>system_status:</span> <%= @state[:system_status] %></div>
         <div id="meta-peers_count"><span>peers_count:</span> <%= @state[:peers_count] %></div>
+        <div id="meta-network_mode"><span>network_mode:</span> <%= @state[:network_mode] %></div>
+        <div id="meta-mesh_status"><span>mesh_status:</span> <%= @state[:mesh_status] %></div>
         <div id="meta-relay_status"><span>relay_status:</span> <%= @state[:relay_status] %></div>
         <div id="meta-ai_last_insight"><span>ai_last_insight:</span> <%= @state[:ai_last_insight] %></div>
         <div id="meta-recent_event_hash"><span>recent_event_hash:</span> <%= @state[:recent_event_hash] %></div>

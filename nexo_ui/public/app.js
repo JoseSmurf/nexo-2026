@@ -2,6 +2,8 @@
   const stateNodes = {
     system_status: document.getElementById('meta-system_status'),
     peers_count: document.getElementById('meta-peers_count'),
+    network_mode: document.getElementById('meta-network_mode'),
+    mesh_status: document.getElementById('meta-mesh_status'),
     relay_status: document.getElementById('meta-relay_status'),
     ai_last_insight: document.getElementById('meta-ai_last_insight'),
     recent_event_hash: document.getElementById('meta-recent_event_hash'),
@@ -16,6 +18,8 @@
   const cardNodes = {
     system_status: document.getElementById('value-system_status'),
     peers_count: document.getElementById('value-peers_count'),
+    network_mode: document.getElementById('value-network_mode'),
+    mesh_status: document.getElementById('value-mesh_status'),
     relay_status: document.getElementById('value-relay_status'),
     ai_last_insight: document.getElementById('value-ai_last_insight'),
     recent_event_hash: document.getElementById('value-recent_event_hash'),
@@ -49,6 +53,8 @@
   const metaLabel = {
     system_status: 'system_status',
     peers_count: 'peers_count',
+    network_mode: 'network_mode',
+    mesh_status: 'mesh_status',
     relay_status: 'relay_status',
     ai_last_insight: 'ai_last_insight',
     recent_event_hash: 'recent_event_hash',
@@ -348,6 +354,18 @@
 
     if (key === 'peers_count') {
       cardNodes[key].textContent = `${labelByKey[key]}: ${value}`;
+      return;
+    }
+
+    if (key === 'network_mode') {
+      if (!cardNodes.network_mode) return;
+      cardNodes.network_mode.textContent = `network_mode: ${value}`;
+      return;
+    }
+
+    if (key === 'mesh_status') {
+      if (!cardNodes.mesh_status) return;
+      cardNodes.mesh_status.textContent = `mesh_status: ${value}`;
       return;
     }
 
