@@ -23,6 +23,9 @@
     events: document.getElementById('value-events'),
     healthCard: document.getElementById('card-integrity'),
   };
+  const eventsCardNode = document.getElementById('card-events');
+  let previousEventHash = null;
+  let eventPulseTimer = null;
 
   const recentEventsMax = 5;
 
@@ -73,16 +76,61 @@
     }];
   }
 
-  function formatEvents(state) {
+  function formatEvents(state, shouldPulseLatestRow = false) {
     const events = sanitizeEvents(state);
     return events.map((event, index) => {
-      const rowClass = index === 0 ? 'event-row latest' : 'event-row';
+      let rowClass = index === 0 ? 'event-row latest' : 'event-row';
+      if (index === 0 && shouldPulseLatestRow) {
+        rowClass += ' pulse';
+      }
       return `<div class="${rowClass}">
         #${index + 1} ${escapeHtml(event.timestamp || 'n/a')} | ${escapeHtml(event.origin || 'n/a')} | ${escapeHtml(event.channel || 'n/a')}
         type=${escapeHtml(event.type || 'n/a')}
         hash=${escapeHtml(event.hash || 'n/a')}
       </div>`;
     }).join('');
+  }
+
+  function triggerEventPulse() {
+    if (!eventsCardNode) {
+      return;
+    }
+
+    eventsCardNode.classList.remove('card-events-pulse');
+    void eventsCardNode.offsetWidth;
+    eventsCardNode.classList.add('card-events-pulse');
+
+    clearTimeout(eventPulseTimer);
+    eventPulseTimer = setTimeout(() => {
+      if (eventsCardNode) {
+        eventsCardNode.classList.remove('card-events-pulse');
+      }
+    }, 600);
+  }
+
+  function shouldPulseForEvents(state) {
+    const events = sanitizeEvents(state);
+    const latest = events[0];
+    const latestHash = latest && latest.hash ? `${latest.hash}` : null;
+
+    if (latestHash === null || latestHash === 'n/a') {
+      if (previousEventHash === null) {
+        previousEventHash = latestHash;
+      }
+      return false;
+    }
+
+    if (previousEventHash === null) {
+      previousEventHash = latestHash;
+      return false;
+    }
+
+    if (latestHash !== previousEventHash) {
+      previousEventHash = latestHash;
+      return true;
+    }
+
+    return false;
   }
 
   const sourceNode = document.getElementById('data-source');
@@ -148,7 +196,11 @@
     }
 
     if (cardNodes.events) {
-      cardNodes.events.innerHTML = formatEvents(state);
+      const hasEventPulse = shouldPulseForEvents(state);
+      if (hasEventPulse) {
+        triggerEventPulse();
+      }
+      cardNodes.events.innerHTML = formatEvents(state, hasEventPulse);
     }
 
     if (state.last_sync && stateNodes.last_sync) {
