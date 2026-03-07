@@ -131,12 +131,14 @@
     const sourceType = data && data.source_type ? data.source_type : 'unknown';
     const adapterStatus = data && data.adapter_status ? data.adapter_status : 'unreachable';
     const lastUpdated = data && data.last_updated ? data.last_updated : 'n/a';
+    const integrityMessage = data && data.integrity_message ? data.integrity_message : 'health source unreachable';
 
     cardNodes.health.innerHTML = `
       source: ${dataSource}<br />
       adapter_status: ${adapterStatus}<br />
       source_type: ${sourceType}<br />
       ui_status: ${uiStatus}<br />
+      integrity_message: ${integrityMessage}<br />
       last_updated: ${lastUpdated}
     `;
 

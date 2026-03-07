@@ -58,11 +58,23 @@ helpers do
                   'healthy'
                 end
 
+    integrity_message =
+      if ui_status == 'unavailable'
+        'health source unreachable'
+      elsif source_type == 'demo' || adapter_status == 'manual_demo_override'
+        'manual demo override active'
+      elsif ui_status == 'degraded' && source_type == 'fallback'
+        'running from fallback source'
+      else
+        'reading real source'
+      end
+
     {
       ui_status: ui_status,
       data_source: source,
       source_type: source_type,
       adapter_status: adapter_status,
+      integrity_message: integrity_message,
       last_updated: Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC'),
       seed: motion_seed_from_state(state),
     }

@@ -49,9 +49,10 @@
               <p class="value health-lines" id="value-health">
                 source: <%= @health[:data_source] %><br />
                 adapter_status: <%= @health[:adapter_status] %><br />
-                last_updated: <%= @health[:last_updated] %><br />
+                integrity_message: <%= @health[:integrity_message] %><br />
                 source_type: <%= @health[:source_type] %><br />
-                ui_status: <%= @health[:ui_status] %>
+                ui_status: <%= @health[:ui_status] %><br />
+                last_updated: <%= @health[:last_updated] %>
               </p>
             <% else %>
               <p class="value" id="value-<%= card[:key] %>">
