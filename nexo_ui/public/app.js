@@ -24,8 +24,11 @@
     healthCard: document.getElementById('card-integrity'),
   };
   const eventsCardNode = document.getElementById('card-events');
+  const aiCardNode = document.getElementById('card-ai');
   let previousEventHash = null;
   let eventPulseTimer = null;
+  let previousAiInsight = null;
+  let aiPulseTimer = null;
 
   const recentEventsMax = 5;
 
@@ -106,6 +109,57 @@
         eventsCardNode.classList.remove('card-events-pulse');
       }
     }, 600);
+  }
+
+  function normalizeInsight(value) {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    const text = String(value).trim();
+    if (text === '' || text.toLowerCase() === 'n/a') {
+      return null;
+    }
+    return text;
+  }
+
+  function triggerAiPulse() {
+    if (!aiCardNode) {
+      return;
+    }
+
+    aiCardNode.classList.remove('card-ai-pulse');
+    void aiCardNode.offsetWidth;
+    aiCardNode.classList.add('card-ai-pulse');
+
+    clearTimeout(aiPulseTimer);
+    aiPulseTimer = setTimeout(() => {
+      if (aiCardNode) {
+        aiCardNode.classList.remove('card-ai-pulse');
+      }
+    }, 550);
+  }
+
+  function shouldPulseForAiInsight(state) {
+    const insight = normalizeInsight(state && state.ai_last_insight);
+
+    if (insight === null) {
+      if (previousAiInsight === null) {
+        previousAiInsight = null;
+      }
+      return false;
+    }
+
+    if (previousAiInsight === null) {
+      previousAiInsight = insight;
+      return false;
+    }
+
+    if (insight !== previousAiInsight) {
+      previousAiInsight = insight;
+      return true;
+    }
+
+    return false;
   }
 
   function shouldPulseForEvents(state) {
@@ -201,6 +255,11 @@
         triggerEventPulse();
       }
       cardNodes.events.innerHTML = formatEvents(state, hasEventPulse);
+    }
+
+    const hasAiPulse = shouldPulseForAiInsight(state);
+    if (hasAiPulse) {
+      triggerAiPulse();
     }
 
     if (state.last_sync && stateNodes.last_sync) {
