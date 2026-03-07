@@ -26,6 +26,13 @@ http://127.0.0.1:4567
   - `"fallback_simulated"` when no real state source is available.
 
 - `/api/status` returns `state`, `seed`, `last_updated`, and `data_source`.
+- `/api/health` returns:
+  - `ui_status`
+  - `data_source`
+  - `source_type` (`file` | `sqlite` | `fallback` | `demo`)
+  - `adapter_status`
+  - `last_updated`
+  - `seed`
 - `/api/simulate` is kept as **demo mode** and returns `data_source: "fallback_simulated"`.
 
 ## Simulated state fields

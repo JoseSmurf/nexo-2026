@@ -13,36 +13,36 @@ module CoreAdapter
   }.freeze
 
   def build_state
-    from_json = read_json_state
-    return [from_json, 'real'] if from_json
+    from_json, status = read_json_state
+    return [from_json, 'real', 'file', status] if from_json
 
-    from_sqlite = read_sqlite_state
-    return [from_sqlite, 'real'] if from_sqlite
+    from_sqlite, sqlite_status = read_sqlite_state
+    return [from_sqlite, 'real', 'sqlite', sqlite_status] if from_sqlite
 
-    [FALLBACK_STATE.dup, 'fallback_simulated']
+    [FALLBACK_STATE.dup, 'fallback_simulated', 'fallback', status || sqlite_status || 'fallback_no_data_source']
   end
 
   def read_json_state
     path = ENV['NEXO_UI_STATE_PATH'] || ENV['NEXO_STATE_PATH'] || File.join(Dir.pwd, 'state.json')
 
-    return nil unless path && !path.empty? && File.file?(path)
+    return [nil, 'json_path_missing'] unless path && !path.empty? && File.file?(path)
 
     raw = File.read(path)
-    return nil if raw.nil? || raw.empty?
+    return [nil, 'json_empty'] if raw.nil? || raw.empty?
 
     parsed = JSON.parse(raw)
-    return nil unless parsed.is_a?(Hash)
+    return [nil, 'json_not_object'] unless parsed.is_a?(Hash)
 
     normalized = normalize(parsed)
-    return nil unless normalized
+    return [nil, 'json_invalid_normalized'] unless normalized
 
-    normalized
-  rescue StandardError
-    nil
+    [normalized, 'ok']
+  rescue StandardError => e
+    [nil, "json_read_error: #{e.class.name}"]
   end
 
   def read_sqlite_state
-    return nil unless File.file?(sqlite_path)
+    return [nil, 'sqlite_path_missing'] unless File.file?(sqlite_path)
 
     require 'sqlite3'
 
@@ -50,13 +50,17 @@ module CoreAdapter
     db.results_as_hash = true
 
     row = db.get_first_row('SELECT payload FROM nexo_state WHERE id = 1;')
-    return nil unless row && row['payload']
+    return [nil, 'sqlite_no_payload'] unless row && row['payload']
 
     parsed = JSON.parse(row['payload'])
+    return [nil, 'sqlite_invalid_payload'] unless parsed.is_a?(Hash)
+
     normalized = normalize(parsed)
-    normalized
-  rescue StandardError
-    nil
+    return [nil, 'sqlite_invalid_normalized'] unless normalized
+
+    [normalized, 'ok']
+  rescue StandardError => e
+    [nil, "sqlite_read_error: #{e.class.name}"]
   ensure
     db&.close
   end

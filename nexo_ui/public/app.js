@@ -14,6 +14,8 @@
     relay_status: document.getElementById('value-relay_status'),
     ai_last_insight: document.getElementById('value-ai_last_insight'),
     recent_event_hash: document.getElementById('value-recent_event_hash'),
+    health: document.getElementById('value-health'),
+    healthCard: document.getElementById('card-integrity'),
   };
 
   const metaLabel = {
@@ -34,10 +36,12 @@
   };
 
   const sourceNode = document.getElementById('data-source');
+  const healthCardNode = cardNodes.healthCard;
   const seedTargets = [];
-  for (let i = 0; i < 5; i++) {
-    const cardName = ['core', 'network', 'relay', 'ai', 'hash'][i];
-    const element = document.getElementById(`card-${cardName === 'core' ? 'core' : cardName === 'network' ? 'network' : cardName === 'relay' ? 'relay' : cardName === 'ai' ? 'ai' : 'hash'}`);
+  const cardNames = ['core', 'network', 'relay', 'ai', 'hash', 'integrity'];
+  for (let i = 0; i < cardNames.length; i++) {
+    const cardName = cardNames[i];
+    const element = document.getElementById(`card-${cardName}`);
     if (element) {
       seedTargets.push(element);
     }
@@ -105,12 +109,45 @@
     }
   }
 
+  function applyHealth(data) {
+    if (!cardNodes.health) {
+      return;
+    }
+
+    cardNodes.health.innerHTML = `
+      source: ${data.data_source}<br />
+      adapter_status: ${data.adapter_status}<br />
+      source_type: ${data.source_type}<br />
+      ui_status: ${data.ui_status}<br />
+      last_updated: ${data.last_updated}
+    `;
+
+    if (healthCardNode) {
+      if (data.ui_status !== 'healthy') {
+        healthCardNode.classList.add('card-health-warning');
+      } else {
+        healthCardNode.classList.remove('card-health-warning');
+      }
+    }
+  }
+
   async function fetchStatus() {
     try {
       const response = await fetch('/api/status');
       if (!response.ok) return;
       const payload = await response.json();
       applyState(payload);
+    } catch (_err) {
+      // fail-closed on UI side: preserve old state silently
+    }
+  }
+
+  async function fetchHealth() {
+    try {
+      const response = await fetch('/api/health');
+      if (!response.ok) return;
+      const payload = await response.json();
+      applyHealth(payload);
     } catch (_err) {
       // fail-closed on UI side: preserve old state silently
     }
@@ -127,14 +164,24 @@
       if (!response.ok) return;
       const payload = await response.json();
       applyState(payload);
+      await fetchHealth();
     } catch (_err) {
       // fail-closed on UI side: preserve old state silently
     }
   }
 
-  document.getElementById('refresh-btn').addEventListener('click', fetchStatus);
+  document.getElementById('refresh-btn').addEventListener('click', () => {
+    fetchStatus();
+    fetchHealth();
+  });
   document.querySelectorAll('.simulate-button').forEach((button) => {
     button.addEventListener('click', () => simulate(button.getAttribute('data-action')));
   });
-  setInterval(fetchStatus, 3000);
+  setInterval(() => {
+    fetchStatus();
+    fetchHealth();
+  }, 3000);
+
+  fetchStatus();
+  fetchHealth();
 })();

@@ -11,6 +11,7 @@
   --relay: #7c4dff;
   --ai: #ff6ec7;
   --hash: #ffd166;
+  --health: #5eead4;
 }
 
 * {
@@ -173,6 +174,26 @@ button:hover {
 .card-relay h2 { color: var(--relay); }
 .card-ai h2 { color: var(--ai); }
 .card-hash h2 { color: var(--hash); }
+.card-health h2 { color: var(--health); }
+
+.card-health-warning {
+  border-color: rgba(255, 112, 102, 0.5);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 120, 106, 0.38),
+    0 10px 30px rgba(255, 52, 58, 0.26);
+}
+
+.card-health-warning h2 {
+  color: #ff8b8b;
+}
+
+.health-lines {
+  white-space: normal;
+  line-height: 1.3;
+  word-break: break-word;
+  max-height: 5.2rem;
+  overflow: hidden;
+}
 
 .meta-panel {
   margin-top: 14px;

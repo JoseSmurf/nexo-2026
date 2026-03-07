@@ -20,12 +20,15 @@ set :insights, [
   'AI baseline stable; no intervention needed.',
 ]
 
+set :ui_mode, :live
+
 helpers do
   def motion_seed_from_state(state)
+    seed_size = 6
     payload = state.to_a.reject { |kv| kv.first == :event_counter }.map { |kv| kv.last.to_s }.join('|')
     digest = Digest::SHA256.digest(payload)
 
-    5.times.map do |i|
+    seed_size.times.map do |i|
       {
         drift_x: digest.getbyte(i) % 8,
         drift_y: digest.getbyte(i + 5) % 8,
@@ -46,6 +49,23 @@ helpers do
 
   def current_status_state
     CoreAdapter.build_state
+  end
+
+  def health_payload(state, source, source_type, adapter_status)
+    ui_status = if settings.ui_mode == :demo || source_type == 'fallback'
+                  'degraded'
+                else
+                  'healthy'
+                end
+
+    {
+      ui_status: ui_status,
+      data_source: source,
+      source_type: source_type,
+      adapter_status: adapter_status,
+      last_updated: Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC'),
+      seed: motion_seed_from_state(state),
+    }
   end
 end
 
@@ -90,6 +110,7 @@ post '/api/simulate' do
   end
 
   content_type :json
+  settings.ui_mode = :demo
   to_payload(
     state.reject { |k, _v| k == :event_counter },
     'fallback_simulated',
@@ -97,7 +118,8 @@ post '/api/simulate' do
 end
 
 get '/' do
-  @state, @data_source = current_status_state
+  settings.ui_mode = :live
+  @state, @data_source, @source_type, @adapter_status = current_status_state
   @seed = motion_seed_from_state(@state)
   @cards = [
     { name: 'Core', key: :system_status, tone: 'core' },
@@ -105,13 +127,35 @@ get '/' do
     { name: 'Relay', key: :relay_status, tone: 'relay' },
     { name: 'AI', key: :ai_last_insight, tone: 'ai' },
     { name: 'Hash Pulse', key: :recent_event_hash, tone: 'hash', mono: true },
+    { name: 'Integrity', key: :health, tone: 'health', mono: true },
   ]
+
+  @health = health_payload(@state, @data_source, @source_type, @adapter_status)
+  @health[:source_type] = @source_type
 
   erb :index
 end
 
 get '/api/status' do
   content_type :json
-  state, source = current_status_state
+  settings.ui_mode = :live
+  state, source, source_type, adapter_status = current_status_state
   to_payload(state, source).to_json
+end
+
+get '/api/health' do
+  content_type :json
+  if settings.ui_mode == :demo
+    state = settings.state
+    health = health_payload(
+      state,
+      'fallback_simulated',
+      'demo',
+      'manual_demo_override',
+    )
+    return health.to_json
+  end
+
+  state, source, source_type, adapter_status = current_status_state
+  health_payload(state, source, source_type, adapter_status).to_json
 end

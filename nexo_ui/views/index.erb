@@ -39,9 +39,19 @@
             style="--dx: <%= motion[:drift_x] %>; --dy: <%= motion[:drift_y] %>; --alpha: <%= motion[:opacity] %>; --flicker: <%= motion[:flicker] %>;"
           >
             <h2><%= card[:name] %></h2>
-            <p class="value" id="value-<%= card[:key] %>">
-              <%= card[:label] ? "#{card[:label]}: #{ @state[card[:key]] }" : @state[card[:key]] %>
-            </p>
+            <% if card[:key] == :health %>
+              <p class="value health-lines" id="value-health">
+                source: <%= @health[:data_source] %><br />
+                adapter_status: <%= @health[:adapter_status] %><br />
+                last_updated: <%= @health[:last_updated] %><br />
+                source_type: <%= @health[:source_type] %><br />
+                ui_status: <%= @health[:ui_status] %>
+              </p>
+            <% else %>
+              <p class="value" id="value-<%= card[:key] %>">
+                <%= card[:label] ? "#{card[:label]}: #{ @state[card[:key]] }" : @state[card[:key]] %>
+              </p>
+            <% end %>
           </article>
         <% end %>
       </section>
