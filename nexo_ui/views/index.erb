@@ -19,6 +19,13 @@
         <span class="muted">Auto polling every 3s</span>
       </section>
 
+      <section class="controls simulate-controls" aria-label="simulate controls">
+        <button class="simulate-button" data-action="event" type="button">Simulate Event</button>
+        <button class="simulate-button" data-action="peer_join" type="button">Simulate Peer Join</button>
+        <button class="simulate-button" data-action="relay_toggle" type="button">Toggle Relay</button>
+        <button class="simulate-button" data-action="ai_insight" type="button">Simulate AI Insight</button>
+      </section>
+
       <section class="dragon-grid" aria-label="System cards">
         <% @cards.each_with_index do |card, i| %>
           <% motion = @seed[i] %>

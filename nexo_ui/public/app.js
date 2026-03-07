@@ -25,6 +25,14 @@
     last_sync: 'last_sync',
   };
 
+  const labelByKey = {
+    system_status: 'system_status',
+    peers_count: 'Peers',
+    relay_status: 'Relay',
+    ai_last_insight: 'AI',
+    recent_event_hash: 'Hash Pulse',
+  };
+
   const seedTargets = [];
   for (let i = 0; i < 5; i++) {
     const cardName = ['core', 'network', 'relay', 'ai', 'hash'][i];
@@ -34,24 +42,41 @@
     }
   }
 
+  function updateMetaText(key, value) {
+    if (!stateNodes[key]) {
+      return;
+    }
+    stateNodes[key].textContent = `${metaLabel[key]}: ${value}`;
+  }
+
+  function updateCardText(key, value) {
+    if (!cardNodes[key]) {
+      return;
+    }
+    if (key === 'peers_count') {
+      cardNodes[key].textContent = `${labelByKey[key]}: ${value}`;
+      return;
+    }
+
+    if (key === 'ai_last_insight') {
+      cardNodes[key].textContent = `${labelByKey[key]}: ${value}`;
+      return;
+    }
+
+    if (key === 'recent_event_hash') {
+      cardNodes[key].textContent = `${labelByKey[key]}: ${value}`;
+      return;
+    }
+
+    cardNodes[key].textContent = value;
+  }
+
   function applyState(data) {
     const state = data.state;
-    const labels = {
-      system_status: 'system_status',
-      peers_count: `Peers: ${state.peers_count}`,
-      relay_status: state.relay_status,
-      ai_last_insight: state.ai_last_insight,
-      recent_event_hash: state.recent_event_hash,
-    };
 
     for (const key of Object.keys(state)) {
-      if (stateNodes[key]) {
-        const value = state[key];
-        stateNodes[key].textContent = `${metaLabel[key]}: ${value}`;
-      }
-      if (cardNodes[key]) {
-        cardNodes[key].textContent = labels[key] || `${key}: ${state[key]}`;
-      }
+      updateMetaText(key, state[key]);
+      updateCardText(key, state[key]);
     }
 
     if (state.last_sync && stateNodes.last_sync) {
@@ -77,9 +102,23 @@
   async function fetchStatus() {
     try {
       const response = await fetch('/api/status');
-      if (!response.ok) {
-        return;
-      }
+      if (!response.ok) return;
+      const payload = await response.json();
+      applyState(payload);
+    } catch (_err) {
+      // fail-closed on UI side: preserve old state silently
+    }
+  }
+
+  async function simulate(action) {
+    try {
+      const response = await fetch('/api/simulate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+
+      if (!response.ok) return;
       const payload = await response.json();
       applyState(payload);
     } catch (_err) {
@@ -88,5 +127,8 @@
   }
 
   document.getElementById('refresh-btn').addEventListener('click', fetchStatus);
+  document.querySelectorAll('.simulate-button').forEach((button) => {
+    button.addEventListener('click', () => simulate(button.getAttribute('data-action')));
+  });
   setInterval(fetchStatus, 3000);
 })();

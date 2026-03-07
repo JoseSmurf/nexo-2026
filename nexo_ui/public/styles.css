@@ -62,7 +62,8 @@ h1 {
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 10px;
   margin-bottom: 14px;
 }
 
@@ -83,6 +84,20 @@ button:hover {
 .muted {
   color: #8699b4;
   font-size: 0.85rem;
+}
+
+.simulate-controls {
+  margin-bottom: 18px;
+}
+
+.simulate-button {
+  border-color: rgba(255, 156, 86, 0.44);
+  color: #ffd7b8;
+  background: rgba(48, 17, 5, 0.72);
+}
+
+.simulate-button:hover {
+  background: rgba(78, 29, 6, 0.85);
 }
 
 .dragon-grid {
