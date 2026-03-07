@@ -41,7 +41,7 @@
 
       <section class="dragon-grid" aria-label="System cards">
         <% @cards.each_with_index do |card, i| %>
-          <% motion = @seed[i] %>
+          <% motion = @seed[i] || { drift_x: 0, drift_y: 0, opacity: 0.85, flicker: 1.0 } %>
           <article
             class="card card-<%= card[:tone] %>"
             id="card-<%= card[:name].downcase.delete(' ') %>"
@@ -74,6 +74,23 @@
                 <% end %>
               </div>
               <div class="card-cause" id="cause-events" aria-live="polite"></div>
+            <% elsif card[:key] == :recent_flow %>
+              <div class="value flow-lines" id="value-recent_flow">
+                <% flow_items = Array(@state[:recent_flow] || []).take(5) %>
+                <% if flow_items.empty? %>
+                  no live flow
+                <% else %>
+                  <% flow_items.each_with_index do |item, index| %>
+                    <div class="flow-item flow-item-<%= item[:kind] || 'event' %> <%= index.zero? ? 'latest' : '' %>">
+                      #<%= index + 1 %> <%= item[:timestamp] || 'n/a' %> | <%= item[:kind] || 'event' %> | <%= item[:origin] || 'unknown' %> | <%= item[:channel].to_s.empty? ? 'n/a' : item[:channel] %>
+                      <div class="flow-summary"><%= item[:summary] || '' %></div>
+                      <% if item[:hash].to_s.size.positive? %>
+                        <span class="mono flow-hash">hash=<%= item[:hash] %></span>
+                      <% end %>
+                    </div>
+                  <% end %>
+                <% end %>
+              </div>
             <% elsif card[:key] == :recent_chat_messages %>
               <div class="value chat-lines" id="value-recent_chat_messages">
                 <% messages = Array(@state[:recent_chat_messages] || []).take(5) %>

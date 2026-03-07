@@ -1,6 +1,7 @@
 require 'sinatra'
 require 'json'
 require 'digest'
+require 'time'
 require_relative 'core_adapter'
 
 set :public_folder, File.join(__dir__, 'public')
@@ -22,9 +23,20 @@ set :insights, [
 
 set :ui_mode, :live
 
+CARD_DEFS = [
+  { name: 'Core', key: :system_status, tone: 'core' },
+  { name: 'Network', key: :peers_count, tone: 'network', label: 'Peers' },
+  { name: 'Relay', key: :relay_status, tone: 'relay' },
+  { name: 'AI', key: :ai_last_insight, tone: 'ai' },
+  { name: 'Hash Pulse', key: :recent_event_hash, tone: 'hash', mono: true },
+  { name: 'Events', key: :events, tone: :events, mono: true },
+  { name: 'Live Flow', key: :recent_flow, tone: 'flow', mono: true },
+  { name: 'Global Chat', key: :recent_chat_messages, tone: 'chat', mono: true },
+  { name: 'Integrity', key: :health, tone: 'health', mono: true },
+].freeze
+
 helpers do
-  def motion_seed_from_state(state)
-    seed_size = 7
+  def motion_seed_from_state(state, seed_size = CARD_DEFS.length)
     payload = state.to_a.reject { |kv| kv.first == :event_counter }.map { |kv| kv.last.to_s }.join('|')
     digest = Digest::SHA256.digest(payload)
 
@@ -41,7 +53,7 @@ helpers do
   def to_payload(state, source, network_cause: nil)
     {
       state: state,
-      seed: motion_seed_from_state(state),
+      seed: motion_seed_from_state(state, CARD_DEFS.length),
       last_updated: Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC'),
       data_source: source,
       network_cause: network_cause,
@@ -146,6 +158,81 @@ helpers do
     list.unshift(chat_message)
     state[:recent_chat_messages] = list.first(5)
   end
+
+  def flow_candidates_from_event(event, index)
+    {
+      kind: 'event',
+      origin: event[:origin] || event['origin'] || 'unknown',
+      summary: event[:type] || event['type'] || 'event',
+      timestamp: event[:timestamp] || event['timestamp'] || 'n/a',
+      hash: event[:hash] || event['hash'] || event[:event_hash] || event['event_hash'],
+      channel: event[:channel] || event['channel'] || event[:event_channel] || event['event_channel'],
+      _time: parse_flow_timestamp(event[:timestamp] || event['timestamp']),
+      _rank: 0,
+      _index: index,
+    }
+  end
+
+  def flow_candidates_from_ai(insight, index)
+    {
+      kind: 'ai',
+      origin: insight[:origin] || insight['origin'] || 'ui_simulator_ai',
+      summary: insight[:text] || insight['text'] || 'AI insight',
+      timestamp: insight[:timestamp] || insight['timestamp'] || 'n/a',
+      hash: insight[:hash] || insight['hash'],
+      channel: insight[:type] || insight['type'] || 'ui_insight',
+      _time: parse_flow_timestamp(insight[:timestamp] || insight['timestamp']),
+      _rank: 1,
+      _index: index,
+    }
+  end
+
+  def flow_candidates_from_chat(message, index)
+    {
+      kind: 'chat',
+      origin: message[:origin] || message['origin'] || 'ui_simulator_chat',
+      summary: message[:text] || message['text'] || '(empty)',
+      timestamp: message[:timestamp] || message['timestamp'] || 'n/a',
+      hash: message[:hash] || message['hash'],
+      channel: message[:channel] || message['channel'] || 'global',
+      _time: parse_flow_timestamp(message[:timestamp] || message['timestamp']),
+      _rank: 2,
+      _index: index,
+    }
+  end
+
+  def parse_flow_timestamp(raw_timestamp)
+    return raw_timestamp.to_i if raw_timestamp.is_a?(Integer)
+    return raw_timestamp.to_f if raw_timestamp.is_a?(Float)
+
+    text = raw_timestamp.to_s
+    stripped = text.strip
+    return stripped.to_i if stripped =~ /\A\d+\z/
+
+    begin
+      Time.parse(stripped).to_i
+    rescue StandardError
+      0
+    end
+  end
+
+  def build_live_flow(state)
+    events = Array(state[:recent_events] || []).each_with_index.map { |event, index| flow_candidates_from_event(event, index) }
+    insights = Array(state[:recent_ai_insights] || []).each_with_index.map { |insight, index| flow_candidates_from_ai(insight, index) }
+    messages = Array(state[:recent_chat_messages] || []).each_with_index.map { |message, index| flow_candidates_from_chat(message, index) }
+
+    candidates = (events + insights + messages).sort_by { |item| [-item[:_time], item[:_rank], item[:_index]] }
+    candidates.first(5).map do |item|
+      {
+        kind: item[:kind],
+        origin: item[:origin],
+        summary: item[:summary],
+        timestamp: item[:timestamp],
+        hash: item[:hash],
+        channel: item[:channel],
+      }
+    end
+  end
 end
 
 post '/api/simulate' do
@@ -180,6 +267,7 @@ post '/api/simulate' do
       ),
     )
     state[:system_status] = 'event_processed'
+    state[:recent_flow] = build_live_flow(state)
   when 'peer_join'
     network_cause = 'peer joined'
     state[:peers_count] = state[:peers_count].to_i + 1
@@ -193,6 +281,7 @@ post '/api/simulate' do
       ),
     )
     state[:system_status] = 'peer_joined'
+    state[:recent_flow] = build_live_flow(state)
   when 'relay_toggle'
     network_cause = 'relay path changed'
     state[:relay_enabled] = !state[:relay_enabled]
@@ -206,6 +295,7 @@ post '/api/simulate' do
         "relay-#{state[:event_counter]}-#{state[:relay_status]}",
       ),
     )
+    state[:recent_flow] = build_live_flow(state)
   when 'ai_insight'
     state[:ai_last_insight] = settings.insights[state[:event_counter] % settings.insights.length]
     update_recent_ai_insights(
@@ -225,6 +315,7 @@ post '/api/simulate' do
       ),
     )
     state[:system_status] = 'insight_generated'
+    state[:recent_flow] = build_live_flow(state)
   when 'chat_message'
     text = data['text'].to_s
     if text.bytesize > 32
@@ -249,6 +340,7 @@ post '/api/simulate' do
       ),
     )
     state[:system_status] = 'chat_message_sent'
+    state[:recent_flow] = build_live_flow(state)
   else
     halt 400, { error: 'unknown action' }.to_json
   end
@@ -265,17 +357,8 @@ end
 get '/' do
   settings.ui_mode = :live
   @state, @data_source, @source_type, @adapter_status = current_status_state
-  @seed = motion_seed_from_state(@state)
-  @cards = [
-    { name: 'Core', key: :system_status, tone: 'core' },
-    { name: 'Network', key: :peers_count, tone: 'network', label: 'Peers' },
-    { name: 'Relay', key: :relay_status, tone: 'relay' },
-    { name: 'AI', key: :ai_last_insight, tone: 'ai' },
-    { name: 'Hash Pulse', key: :recent_event_hash, tone: 'hash', mono: true },
-    { name: 'Events', key: :events, tone: :events, mono: true },
-    { name: 'Global Chat', key: :recent_chat_messages, tone: 'chat', mono: true },
-    { name: 'Integrity', key: :health, tone: 'health', mono: true },
-  ]
+  @cards = CARD_DEFS
+  @seed = motion_seed_from_state(@state, @cards.length)
 
   @health = health_payload(@state, @data_source, @source_type, @adapter_status)
   @health[:source_type] = @source_type
