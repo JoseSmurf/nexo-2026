@@ -74,6 +74,21 @@
                 <%= card[:label] ? "#{card[:label]}: #{ @state[card[:key]] }" : @state[card[:key]] %>
               </p>
               <% if card[:key] == :ai_last_insight %>
+                <div class="value ai-insights-lines" id="value-ai_recent_insights">
+                  <% insights = Array(@state[:recent_ai_insights] || []).take(3) %>
+                  <% if insights.empty? %>
+                    no AI insights yet
+                  <% else %>
+                    <% insights.each_with_index do |insight, index| %>
+                      <div class="ai-insight-row <%= index.zero? ? 'latest' : '' %>">
+                        <div> #<%= index + 1 %> <%= insight[:timestamp] || insight['timestamp'] %> | <%= insight[:type] || insight['type'] %></div>
+                        <div> <%= insight[:text] || insight['text'] %></div>
+                      </div>
+                    <% end %>
+                  <% end %>
+                </div>
+              <% end %>
+              <% if card[:key] == :ai_last_insight %>
                 <div class="card-cause" id="cause-ai" aria-live="polite"></div>
               <% elsif card[:key] == :peers_count %>
                 <div class="card-cause" id="cause-network" aria-live="polite"></div>

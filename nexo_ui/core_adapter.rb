@@ -16,7 +16,23 @@ module CoreAdapter
     event_origin: 'ui_fallback',
     event_channel: 'system',
     recent_events: [],
+    recent_ai_insights: [],
   }.freeze
+
+  FALLBACK_AI_INSIGHTS = [
+    {
+      text: 'No anomaly patterns observed in this window.',
+      timestamp: '2026-03-07 00:00:00 UTC',
+      type: 'bootstrap',
+      origin: 'ui_fallback',
+    },
+    {
+      text: 'AI model confidence stable across recent pulses.',
+      timestamp: '2026-03-07 00:00:30 UTC',
+      type: 'bootstrap',
+      origin: 'ui_fallback',
+    },
+  ].freeze
 
   FALLBACK_RECENT_EVENTS = [
     {
@@ -55,6 +71,7 @@ module CoreAdapter
   def build_fallback_state
     state = FALLBACK_STATE.dup
     state[:recent_events] = normalize_events(payload_to_events(FALLBACK_RECENT_EVENTS))
+    state[:recent_ai_insights] = payload_to_ai_insights(FALLBACK_AI_INSIGHTS)
     state
   end
 
@@ -114,6 +131,7 @@ module CoreAdapter
     sync = payload['last_sync'] || payload['lastSync'] || payload[:last_sync] || 'n/a'
     events = payload['recent_events'] || payload[:recent_events]
     recent_events = normalize_events(events)
+    recent_ai_insights = normalize_ai_insights(payload['recent_ai_insights'] || payload[:recent_ai_insights] || payload['ai_recent_insights'] || payload[:ai_recent_insights])
 
     if recent_events.empty?
       recent_events = payload_to_events(
@@ -144,7 +162,40 @@ module CoreAdapter
       event_origin: latest[:origin],
       event_channel: latest[:channel],
       recent_events: recent_events,
+      recent_ai_insights: recent_ai_insights,
     }
+  end
+
+  def normalize_ai_insights(insights)
+    normalized = []
+
+    return fallback_ai_insights if insights.nil?
+
+    return fallback_ai_insights unless insights.is_a?(Array)
+
+    insights.each do |item|
+      next unless item.is_a?(Hash)
+
+      normalized << {
+        text: item['text'] || item[:text] || 'No insight available.',
+        timestamp: item['timestamp'] || item['time'] || item[:timestamp] || item[:time] || 'n/a',
+        type: item['type'] || item[:type] || 'ai_insight',
+        origin: item['origin'] || item[:origin] || 'unknown',
+      }
+    end
+
+    normalized = normalized.first(3)
+    return fallback_ai_insights if normalized.empty?
+
+    normalized
+  end
+
+  def fallback_ai_insights
+    payload_to_ai_insights(FALLBACK_AI_INSIGHTS).map(&:dup)
+  end
+
+  def payload_to_ai_insights(insights)
+    normalize_ai_insights(insights)
   end
 
   def payload_event_type(payload, default = 'unknown')

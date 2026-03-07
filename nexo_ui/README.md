@@ -63,4 +63,5 @@ http://127.0.0.1:4567
 - `event_timestamp`
 - `event_origin`
 - `event_channel`
+- `recent_ai_insights` (até 3 itens: text, timestamp, type, origin)
 - `recent_events`

@@ -22,6 +22,7 @@
     health: document.getElementById('value-health'),
     events: document.getElementById('value-events'),
     healthCard: document.getElementById('card-integrity'),
+    ai_recent_insights: document.getElementById('value-ai_recent_insights'),
   };
   const eventsCardNode = document.getElementById('card-events');
   const aiCardNode = document.getElementById('card-ai');
@@ -43,6 +44,7 @@
   let relayPulseTimer = null;
 
   const recentEventsMax = 5;
+  const recentAiInsightsMax = 3;
 
   const metaLabel = {
     system_status: 'system_status',
@@ -102,6 +104,35 @@
         #${index + 1} ${escapeHtml(event.timestamp || 'n/a')} | ${escapeHtml(event.origin || 'n/a')} | ${escapeHtml(event.channel || 'n/a')}
         type=${escapeHtml(event.type || 'n/a')}
         hash=${escapeHtml(event.hash || 'n/a')}
+      </div>`;
+    }).join('');
+  }
+
+  function sanitizeAiInsights(state) {
+    const insights = Array.isArray(state.recent_ai_insights) ? state.recent_ai_insights.slice(0, recentAiInsightsMax) : [];
+    if (insights.length > 0) {
+      return insights;
+    }
+
+    return [{
+      text: state.ai_last_insight || 'No insight available.',
+      timestamp: state.last_sync || 'n/a',
+      type: 'unknown',
+      origin: 'unknown',
+    }];
+  }
+
+  function formatAiInsights(state, shouldPulseLatestRow = false) {
+    const insights = sanitizeAiInsights(state);
+    return insights.map((insight, index) => {
+      let rowClass = index === 0 ? 'ai-insight-row latest' : 'ai-insight-row';
+      if (index === 0 && shouldPulseLatestRow) {
+        rowClass += ' pulse';
+      }
+
+      return `<div class="${rowClass}">
+        #${index + 1} ${escapeHtml(insight.timestamp || 'n/a')} | ${escapeHtml(insight.type || 'n/a')} | ${escapeHtml(insight.origin || 'unknown')}
+        <div>${escapeHtml(insight.text || '')}</div>
       </div>`;
     }).join('');
   }
@@ -334,6 +365,10 @@
       return;
     }
 
+    if (key === 'recent_ai_insights') {
+      return;
+    }
+
     if (key === 'last_event_hash' || key === 'event_type' || key === 'event_timestamp' || key === 'event_origin' || key === 'event_channel') {
       return;
     }
@@ -362,6 +397,10 @@
     if (hasAiPulse) {
       triggerAiPulse();
       setCardCause('ai', 'new insight detected');
+    }
+
+    if (cardNodes.ai_recent_insights) {
+      cardNodes.ai_recent_insights.innerHTML = formatAiInsights(state, hasAiPulse);
     }
 
     const hasNetworkPulse = shouldPulseForNetwork(state);

@@ -288,6 +288,25 @@ button:hover {
   font-weight: 600;
 }
 
+.ai-insights-lines {
+  margin-top: 8px;
+  white-space: normal;
+  line-height: 1.3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  word-break: break-word;
+  max-height: 7rem;
+  overflow: hidden;
+}
+
+.ai-insight-row {
+  margin-bottom: 6px;
+}
+
+.ai-insight-row.latest {
+  color: #ffc5ef;
+  font-weight: 600;
+}
+
 .card-events-pulse {
   border-color: rgba(128, 190, 255, 0.7);
   box-shadow:

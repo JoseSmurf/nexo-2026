@@ -95,6 +95,15 @@ helpers do
     }
   end
 
+  def new_ai_insight_payload(text, origin = 'ui_simulator_ai')
+    {
+      text: text,
+      timestamp: normalized_now,
+      type: 'ui_insight',
+      origin: origin,
+    }
+  end
+
   def update_recent_events(state, event)
     list = Array(state[:recent_events]).map(&:dup)
     list.unshift(event)
@@ -108,6 +117,17 @@ helpers do
     state[:event_origin] = latest[:origin]
     state[:event_channel] = latest[:channel]
     state[:last_sync] = latest[:timestamp]
+  end
+
+  def update_recent_ai_insights(state, insight)
+    list = Array(state[:recent_ai_insights]).map(&:dup)
+    list.unshift(insight)
+    state[:recent_ai_insights] = list.first(3)
+
+    latest = state[:recent_ai_insights]&.first
+    return unless latest
+
+    state[:ai_last_insight] = latest[:text]
   end
 end
 
@@ -168,6 +188,13 @@ post '/api/simulate' do
     )
   when 'ai_insight'
     state[:ai_last_insight] = settings.insights[state[:event_counter] % settings.insights.length]
+    update_recent_ai_insights(
+      state,
+      new_ai_insight_payload(
+        state[:ai_last_insight],
+        'ui_simulator_ai',
+      ),
+    )
     update_recent_events(
       state,
       new_event_payload(
