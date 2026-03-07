@@ -19,6 +19,7 @@ module CoreAdapter
     event_channel: 'system',
     recent_events: [],
     recent_ai_insights: [],
+    recent_chat_messages: [],
   }.freeze
 
   FALLBACK_AI_INSIGHTS = [
@@ -33,6 +34,23 @@ module CoreAdapter
       timestamp: '2026-03-07 00:00:30 UTC',
       type: 'bootstrap',
       origin: 'ui_fallback',
+    },
+  ].freeze
+
+  FALLBACK_CHAT_MESSAGES = [
+    {
+      hash: 'chatb01a9f8c4e2d13f0e5a7',
+      origin: 'ui_fallback',
+      channel: 'global',
+      text: 'Welcome to the global chat channel.',
+      timestamp: '2026-03-07 00:02:05 UTC',
+    },
+    {
+      hash: 'chatb02f7b1a4c6e98f9d4a0c',
+      origin: 'ui_fallback',
+      channel: 'global',
+      text: 'Offline mode active. Messages are simulated.',
+      timestamp: '2026-03-07 00:01:40 UTC',
     },
   ].freeze
 
@@ -74,6 +92,7 @@ module CoreAdapter
     state = FALLBACK_STATE.dup
     state[:recent_events] = normalize_events(payload_to_events(FALLBACK_RECENT_EVENTS))
     state[:recent_ai_insights] = payload_to_ai_insights(FALLBACK_AI_INSIGHTS)
+    state[:recent_chat_messages] = normalize_chat_messages(payload_to_chat_messages(FALLBACK_CHAT_MESSAGES))
     state
   end
 
@@ -136,6 +155,11 @@ module CoreAdapter
     events = payload['recent_events'] || payload[:recent_events]
     recent_events = normalize_events(events)
     recent_ai_insights = normalize_ai_insights(payload['recent_ai_insights'] || payload[:recent_ai_insights] || payload['ai_recent_insights'] || payload[:ai_recent_insights])
+    chat_payload = payload['recent_chat_messages']
+    chat_payload = payload[:recent_chat_messages] if chat_payload.nil?
+    chat_payload = payload['chat_messages'] if chat_payload.nil?
+    chat_payload = payload[:chat_messages] if chat_payload.nil?
+    recent_chat_messages = chat_payload.nil? ? fallback_chat_messages : normalize_chat_messages(chat_payload)
 
     if recent_events.empty?
       recent_events = payload_to_events(
@@ -169,6 +193,7 @@ module CoreAdapter
       event_channel: latest[:channel],
       recent_events: recent_events,
       recent_ai_insights: recent_ai_insights,
+      recent_chat_messages: recent_chat_messages,
     }
   end
 
@@ -202,6 +227,34 @@ module CoreAdapter
 
   def payload_to_ai_insights(insights)
     normalize_ai_insights(insights)
+  end
+
+  def normalize_chat_messages(messages)
+    normalized = []
+
+    return [] unless messages.is_a?(Array)
+
+    messages.each do |item|
+      next unless item.is_a?(Hash)
+
+      normalized << {
+        hash: item['hash'] || item[:hash] || item['message_hash'] || item[:message_hash] || '000000000000',
+        origin: item['origin'] || item[:origin] || 'unknown',
+        channel: item['channel'] || item[:channel] || 'global',
+        text: item['text'] || item[:text] || '',
+        timestamp: item['timestamp'] || item['time'] || item[:timestamp] || item[:time] || 'n/a',
+      }
+    end
+
+    return normalized.first(5)
+  end
+
+  def payload_to_chat_messages(messages)
+    normalize_chat_messages(messages)
+  end
+
+  def fallback_chat_messages
+    payload_to_chat_messages(FALLBACK_CHAT_MESSAGES).map(&:dup)
   end
 
   def payload_event_type(payload, default = 'unknown')

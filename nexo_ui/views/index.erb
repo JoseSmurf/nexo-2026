@@ -34,6 +34,11 @@
         <span class="hint">Demo mode active for simulation actions.</span>
       </section>
 
+      <section class="chat-controls" aria-label="global chat controls">
+        <input id="chat-message-input" type="text" maxlength="32" placeholder="Type a global chat message (max 32 bytes)" />
+        <button id="send-chat-message" type="button">Send</button>
+      </section>
+
       <section class="dragon-grid" aria-label="System cards">
         <% @cards.each_with_index do |card, i| %>
           <% motion = @seed[i] %>
@@ -69,6 +74,21 @@
                 <% end %>
               </div>
               <div class="card-cause" id="cause-events" aria-live="polite"></div>
+            <% elsif card[:key] == :recent_chat_messages %>
+              <div class="value chat-lines" id="value-recent_chat_messages">
+                <% messages = Array(@state[:recent_chat_messages] || []).take(5) %>
+                <% if messages.empty? %>
+                  no messages yet
+                <% else %>
+                  <% messages.each_with_index do |message, index| %>
+                    <div class="chat-row <%= index.zero? ? 'latest' : '' %>">
+                      #<%= index + 1 %> [<%= message[:origin] || message['origin'] %>/<%= message[:channel] || message['channel'] %>] <%= message[:timestamp] || message['timestamp'] %><br />
+                      <span class="chat-text"><%= message[:text] || message['text'] %></span><br />
+                      <span class="mono chat-hash">hash=<%= message[:hash] || message['hash'] %></span>
+                    </div>
+                  <% end %>
+                <% end %>
+              </div>
             <% else %>
               <p class="value <%= card[:mono] ? 'mono' : '' %>" id="value-<%= card[:key] %>">
                 <%= card[:label] ? "#{card[:label]}: #{ @state[card[:key]] }" : @state[card[:key]] %>

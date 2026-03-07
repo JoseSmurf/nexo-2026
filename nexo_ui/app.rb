@@ -105,6 +105,16 @@ helpers do
     }
   end
 
+  def new_chat_message_payload(text, origin = 'ui_simulator_chat', channel = 'global')
+    {
+      hash: Digest::SHA256.hexdigest("#{origin}|#{channel}|#{text}|#{Time.now.utc.to_f}")[0, 12],
+      origin: origin,
+      channel: channel,
+      text: text,
+      timestamp: normalized_now,
+    }
+  end
+
   def update_recent_events(state, event)
     list = Array(state[:recent_events]).map(&:dup)
     list.unshift(event)
@@ -129,6 +139,12 @@ helpers do
     return unless latest
 
     state[:ai_last_insight] = latest[:text]
+  end
+
+  def update_recent_chat_messages(state, chat_message)
+    list = Array(state[:recent_chat_messages]).map(&:dup)
+    list.unshift(chat_message)
+    state[:recent_chat_messages] = list.first(5)
   end
 end
 
@@ -209,6 +225,30 @@ post '/api/simulate' do
       ),
     )
     state[:system_status] = 'insight_generated'
+  when 'chat_message'
+    text = data['text'].to_s
+    if text.bytesize > 32
+      halt 400, { error: 'chat_message_too_long', max_bytes: 32 }.to_json
+    end
+
+    update_recent_chat_messages(
+      state,
+      new_chat_message_payload(
+        text,
+        data['origin'] || 'ui_simulator_chat',
+        data['channel'] || 'global',
+      ),
+    )
+    update_recent_events(
+      state,
+      new_event_payload(
+        'chat_message',
+        data['origin'] || 'ui_simulator_chat',
+        data['channel'] || 'global',
+        "chat-msg-#{state[:event_counter]}-#{text}",
+      ),
+    )
+    state[:system_status] = 'chat_message_sent'
   else
     halt 400, { error: 'unknown action' }.to_json
   end
@@ -233,6 +273,7 @@ get '/' do
     { name: 'AI', key: :ai_last_insight, tone: 'ai' },
     { name: 'Hash Pulse', key: :recent_event_hash, tone: 'hash', mono: true },
     { name: 'Events', key: :events, tone: :events, mono: true },
+    { name: 'Global Chat', key: :recent_chat_messages, tone: 'chat', mono: true },
     { name: 'Integrity', key: :health, tone: 'health', mono: true },
   ]
 

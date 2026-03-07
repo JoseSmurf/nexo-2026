@@ -25,6 +25,7 @@
     recent_event_hash: document.getElementById('value-recent_event_hash'),
     health: document.getElementById('value-health'),
     events: document.getElementById('value-events'),
+    recent_chat_messages: document.getElementById('value-recent_chat_messages'),
     healthCard: document.getElementById('card-integrity'),
     ai_recent_insights: document.getElementById('value-ai_recent_insights'),
   };
@@ -35,6 +36,9 @@
   const relayCardNode = document.getElementById('card-relay');
   const topologyHintNode = document.getElementById('topology-hint');
   const networkCauseHintNode = document.getElementById('network-cause-hint');
+  const chatInputNode = document.getElementById('chat-message-input');
+  const chatSendBtnNode = document.getElementById('send-chat-message');
+  const chatCardNode = document.getElementById('card-globalchat');
   const causes = {
     events: document.getElementById('cause-events'),
     ai: document.getElementById('cause-ai'),
@@ -51,9 +55,12 @@
   let relayPulseTimer = null;
   let meshPulseTimer = null;
   let hasInitializedNetworkState = false;
+  let previousChatHash = null;
+  let chatPulseTimer = null;
 
   const recentEventsMax = 5;
   const recentAiInsightsMax = 3;
+  const recentChatMessagesMax = 5;
 
   const metaLabel = {
     system_status: 'system_status',
@@ -189,6 +196,28 @@
       return `<div class="${rowClass}">
         #${index + 1} ${escapeHtml(insight.timestamp || 'n/a')} | ${escapeHtml(insight.type || 'n/a')} | ${escapeHtml(insight.origin || 'unknown')}
         <div>${escapeHtml(insight.text || '')}</div>
+      </div>`;
+    }).join('');
+  }
+
+  function sanitizeChatMessages(state) {
+    const messages = Array.isArray(state.recent_chat_messages) ? state.recent_chat_messages.slice(0, recentChatMessagesMax) : [];
+    return messages;
+  }
+
+  function formatChatMessages(state) {
+    const messages = sanitizeChatMessages(state);
+    if (messages.length === 0) {
+      return 'no messages yet';
+    }
+
+    return messages.map((message, index) => {
+      const rowClass = index === 0 ? 'chat-row latest' : 'chat-row';
+      return `<div class="${rowClass}">
+        #${index + 1} [${escapeHtml(message.origin || message.from || 'unknown')}/${escapeHtml(message.channel || 'global')}] ${escapeHtml(message.timestamp || 'n/a')}
+        <br />
+        <span class="chat-text">${escapeHtml(message.text || '')}</span><br />
+        <span class="mono chat-hash">hash=${escapeHtml(message.hash || 'n/a')}</span>
       </div>`;
     }).join('');
   }
@@ -356,6 +385,48 @@
     return false;
   }
 
+  function shouldPulseForChat(state) {
+    const messages = sanitizeChatMessages(state);
+    const latest = messages[0];
+    const latestHash = latest && latest.hash ? `${latest.hash}` : null;
+
+    if (latestHash === null) {
+      if (previousChatHash === null) {
+        previousChatHash = latestHash;
+      }
+      return false;
+    }
+
+    if (previousChatHash === null) {
+      previousChatHash = latestHash;
+      return false;
+    }
+
+    if (latestHash !== previousChatHash) {
+      previousChatHash = latestHash;
+      return true;
+    }
+
+    return false;
+  }
+
+  function triggerChatPulse() {
+    if (!chatCardNode) {
+      return;
+    }
+
+    chatCardNode.classList.remove('card-chat-pulse');
+    void chatCardNode.offsetWidth;
+    chatCardNode.classList.add('card-chat-pulse');
+
+    clearTimeout(chatPulseTimer);
+    chatPulseTimer = setTimeout(() => {
+      if (chatCardNode) {
+        chatCardNode.classList.remove('card-chat-pulse');
+      }
+    }, 560);
+  }
+
   function shouldPulseForAiInsight(state) {
     const insight = normalizeInsight(state && state.ai_last_insight);
 
@@ -411,7 +482,7 @@
   const healthSourceNode = document.getElementById('health-policy-source');
   const healthDotNode = document.getElementById('health-dot');
   const seedTargets = [];
-  const cardNames = ['core', 'network', 'relay', 'ai', 'hash', 'events', 'integrity'];
+  const cardNames = ['core', 'network', 'relay', 'ai', 'hash', 'events', 'globalchat', 'integrity'];
   for (let i = 0; i < cardNames.length; i++) {
     const cardName = cardNames[i];
     const element = document.getElementById(`card-${cardName}`);
@@ -467,6 +538,10 @@
       return;
     }
 
+    if (key === 'recent_chat_messages') {
+      return;
+    }
+
     if (key === 'last_event_hash' || key === 'event_type' || key === 'event_timestamp' || key === 'event_origin' || key === 'event_channel') {
       return;
     }
@@ -506,6 +581,14 @@
 
     if (cardNodes.ai_recent_insights) {
       cardNodes.ai_recent_insights.innerHTML = formatAiInsights(state, hasAiPulse);
+    }
+
+    const hasChatPulse = shouldPulseForChat(state);
+    if (cardNodes.recent_chat_messages) {
+      cardNodes.recent_chat_messages.innerHTML = formatChatMessages(state);
+      if (hasChatPulse) {
+        triggerChatPulse();
+      }
     }
 
     const hasNetworkPulse = shouldPulseForNetwork(state);
@@ -653,12 +736,13 @@
     }
   }
 
-  async function simulate(action) {
+  async function simulate(action, extraPayload = {}) {
+    const payload = Object.assign({ action }, extraPayload || {});
     try {
       const response = await fetch('/api/simulate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action }),
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) return;
@@ -670,6 +754,37 @@
     }
   }
 
+  function bytesize(value) {
+    if (value === null || value === undefined) {
+      return 0;
+    }
+
+    if (typeof window.TextEncoder === 'undefined') {
+      return String(value).length;
+    }
+
+    return new TextEncoder().encode(String(value)).length;
+  }
+
+  function sendChatMessage() {
+    if (!chatInputNode) {
+      return;
+    }
+
+    const text = chatInputNode.value;
+    if (!text || text.trim() === '') {
+      return;
+    }
+
+    if (bytesize(text) > 32) {
+      return;
+    }
+
+    simulate('chat_message', { text }).then(() => {
+      chatInputNode.value = '';
+    });
+  }
+
   document.getElementById('refresh-btn').addEventListener('click', () => {
     fetchStatus();
     fetchHealth();
@@ -677,6 +792,17 @@
   document.querySelectorAll('.simulate-button').forEach((button) => {
     button.addEventListener('click', () => simulate(button.getAttribute('data-action')));
   });
+  if (chatSendBtnNode) {
+    chatSendBtnNode.addEventListener('click', sendChatMessage);
+  }
+  if (chatInputNode) {
+    chatInputNode.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        sendChatMessage();
+      }
+    });
+  }
   setInterval(() => {
     fetchStatus();
     fetchHealth();

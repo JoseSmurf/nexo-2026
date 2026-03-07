@@ -42,6 +42,12 @@ http://127.0.0.1:4567
   - `timestamp`
   - `origin`
   - `channel`
+- `recent_chat_messages` is a short global chat feed (up to 5 entries), most recent first:
+  - `hash`
+  - `origin`
+  - `channel`
+  - `text`
+  - `timestamp`
 - `/api/health` returns:
   - `ui_status`
   - `data_source`
@@ -51,6 +57,9 @@ http://127.0.0.1:4567
   - `seed`
 - `/api/health` failures (network/server error) are rendered as `ui_status: "unavailable"` by the UI policy banner and Integrity card.
 - `/api/simulate` is kept as **demo mode** and returns `data_source: "fallback_simulated"`.
+- `chat_message` action is available:
+  - `POST /api/simulate` body: `{ "action": "chat_message", "text": "..." }`
+  - `text` is limited to <= 32 bytes.
 
 ## Simulated state fields
 
@@ -65,6 +74,7 @@ http://127.0.0.1:4567
 - `event_timestamp`
 - `event_origin`
 - `event_channel`
+- `recent_chat_messages`
 - `recent_ai_insights` (até 3 itens: text, timestamp, type, origin)
 - `recent_events`
 - `network_mode` (mesh|relay|hybrid)
