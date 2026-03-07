@@ -57,6 +57,7 @@
   let hasInitializedNetworkState = false;
   let previousChatHash = null;
   let chatPulseTimer = null;
+  let meshChatPulseTimer = null;
 
   const recentEventsMax = 5;
   const recentAiInsightsMax = 3;
@@ -104,7 +105,7 @@
     return n;
   }
 
-  function renderMeshPreview(peersCountRaw) {
+  function renderMeshPreview(peersCountRaw, highlight = null) {
     if (!meshPreviewNode) {
       return;
     }
@@ -112,10 +113,18 @@
     const peerCount = normalizePeersCount(peersCountRaw);
     const renderedPeers = Math.min(peerCount, 10);
 
-    const localNode = '<span class="mesh-dot mesh-dot-local" title="local node" aria-label="local node"></span>';
+    const localClasses = ['mesh-dot', 'mesh-dot-local'];
+    if (highlight && highlight.type === 'local') {
+      localClasses.push('mesh-dot-local-highlight');
+    }
+    const localNode = `<span class="${localClasses.join(' ')}" title="local node" aria-label="local node" data-peer="local"></span>`;
     const peerNodes = Array.from({ length: renderedPeers }, (_item, index) => {
       const delay = (index % 4) * 120;
-      return `<span class="mesh-dot mesh-dot-peer" title="peer ${index + 1}" aria-label="peer ${index + 1}" style="animation-delay:${delay}ms"></span>`;
+      const classes = ['mesh-dot', 'mesh-dot-peer'];
+      if (highlight && highlight.type === 'peer' && highlight.index === index + 1) {
+        classes.push('mesh-dot-peer-highlight');
+      }
+      return `<span class="${classes.join(' ')}" title="peer ${index + 1}" aria-label="peer ${index + 1}" style="animation-delay:${delay}ms" data-peer="${index + 1}"></span>`;
     }).join('');
 
     meshPreviewNode.innerHTML = `${localNode}${peerNodes}`;
@@ -125,6 +134,112 @@
       : `peers: ${peerCount} (${renderedPeers} shown)`;
     meshPreviewNode.setAttribute('data-peers', String(peerCount));
     meshPreviewNode.setAttribute('aria-label', `network mesh preview (${summary})`);
+
+    if (highlight && highlight.type) {
+      triggerMeshDotHighlight(highlight);
+    }
+  }
+
+  function parseStableMeshOrigin(origin) {
+    if (origin === null || origin === undefined) {
+      return null;
+    }
+
+    const raw = String(origin).trim().toLowerCase();
+    if (!raw) {
+      return null;
+    }
+
+    if (raw === 'local' || raw === 'self' || raw === 'localhost' || raw === 'me') {
+      return { kind: 'local' };
+    }
+
+    const match = raw.match(/^(?:node|peer|user)[-_]?(?:id[_-]?)?(.+)$/);
+    if (!match) {
+      return null;
+    }
+
+    const value = match[1].trim();
+    if (!value) {
+      return null;
+    }
+
+    return { kind: 'named', value };
+  }
+
+  function stableStringHash(input) {
+    let h = 0;
+    for (let i = 0; i < input.length; i++) {
+      h = (h * 31 + input.charCodeAt(i)) >>> 0;
+    }
+    return h;
+  }
+
+  function resolveChatOriginForPeerDot(origin, peersCountRaw) {
+    const parsed = parseStableMeshOrigin(origin);
+    if (!parsed) {
+      return null;
+    }
+
+    const peerCount = normalizePeersCount(peersCountRaw);
+    if (peerCount <= 0) {
+      if (parsed.kind === 'local') {
+        return { type: 'local' };
+      }
+      return null;
+    }
+
+    if (parsed.kind === 'local') {
+      return { type: 'local' };
+    }
+
+    const numberMatch = parsed.value.match(/(\d+)/);
+    if (numberMatch) {
+      const asNumber = Number.parseInt(numberMatch[0], 10);
+      if (Number.isFinite(asNumber) && asNumber >= 0) {
+        const idx = (asNumber % peerCount) + 1;
+        return { type: 'peer', index: idx };
+      }
+    }
+
+    const idx = (stableStringHash(parsed.value) % peerCount) + 1;
+    return { type: 'peer', index: idx };
+  }
+
+  function triggerMeshDotHighlight(target) {
+    if (!meshPreviewNode || !target || !target.type) {
+      return;
+    }
+
+    clearTimeout(meshChatPulseTimer);
+    const dots = meshPreviewNode.querySelectorAll('.mesh-dot');
+    dots.forEach((dot) => {
+      dot.classList.remove('mesh-dot-peer-highlight', 'mesh-dot-local-highlight');
+    });
+
+    let selector = '';
+    if (target.type === 'local') {
+      selector = '.mesh-dot-local';
+    } else if (target.type === 'peer' && target.index > 0) {
+      selector = `.mesh-dot-peer[data-peer="${target.index}"]`;
+    }
+
+    const dot = selector ? meshPreviewNode.querySelector(selector) : null;
+    if (!dot) {
+      return;
+    }
+
+    if (target.type === 'local') {
+      dot.classList.add('mesh-dot-local-highlight');
+    } else {
+      dot.classList.add('mesh-dot-peer-highlight');
+    }
+
+    meshPreviewNode.classList.add('mesh-preview-highlight');
+    meshChatPulseTimer = setTimeout(() => {
+      dot.classList.remove('mesh-dot-peer-highlight', 'mesh-dot-local-highlight');
+      meshPreviewNode.classList.remove('mesh-preview-highlight');
+    }, 700);
   }
 
   function updateTopologyHint(peersCountRaw) {
@@ -391,25 +506,26 @@
     const messages = sanitizeChatMessages(state);
     const latest = messages[0];
     const latestHash = latest && latest.hash ? `${latest.hash}` : null;
+    const latestOrigin = latest ? latest.origin || latest.from || null : null;
 
     if (latestHash === null) {
       if (previousChatHash === null) {
         previousChatHash = latestHash;
       }
-      return false;
+      return { changed: false, origin: latestOrigin };
     }
 
     if (previousChatHash === null) {
       previousChatHash = latestHash;
-      return false;
+      return { changed: false, origin: latestOrigin };
     }
 
     if (latestHash !== previousChatHash) {
       previousChatHash = latestHash;
-      return true;
+      return { changed: true, origin: latestOrigin };
     }
 
-    return false;
+    return { changed: false, origin: latestOrigin };
   }
 
   function triggerChatPulse() {
@@ -588,8 +704,12 @@
     const hasChatPulse = shouldPulseForChat(state);
     if (cardNodes.recent_chat_messages) {
       cardNodes.recent_chat_messages.innerHTML = formatChatMessages(state);
-      if (hasChatPulse) {
+      if (hasChatPulse.changed) {
         triggerChatPulse();
+        const chatHighlight = resolveChatOriginForPeerDot(hasChatPulse.origin, state.peers_count);
+        if (chatHighlight && state && state.peers_count !== undefined) {
+          renderMeshPreview(state.peers_count, chatHighlight);
+        }
       }
     }
 
