@@ -18,6 +18,12 @@
         <button id="refresh-btn" type="button">Refresh now</button>
         <span class="muted">Auto polling every 3s</span>
         <span class="muted" id="data-source">source: <%= @data_source %></span>
+        <span class="health-banner health-state-<%= @health[:ui_status] %>" id="health-banner">
+          <span class="health-dot" id="health-dot"></span>
+          <span class="health-policy">Health policy:</span>
+          <strong id="health-policy-state"><%= @health[:ui_status] %></strong>
+          <span class="muted" id="health-policy-source">Source: <%= @health[:source_type] %></span>
+        </span>
       </section>
 
       <section class="controls simulate-controls" aria-label="simulate controls">

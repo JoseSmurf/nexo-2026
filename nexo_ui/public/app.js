@@ -37,6 +37,10 @@
 
   const sourceNode = document.getElementById('data-source');
   const healthCardNode = cardNodes.healthCard;
+  const healthBannerNode = document.getElementById('health-banner');
+  const healthPolicyNode = document.getElementById('health-policy-state');
+  const healthSourceNode = document.getElementById('health-policy-source');
+  const healthDotNode = document.getElementById('health-dot');
   const seedTargets = [];
   const cardNames = ['core', 'network', 'relay', 'ai', 'hash', 'integrity'];
   for (let i = 0; i < cardNames.length; i++) {
@@ -109,24 +113,60 @@
     }
   }
 
+  function normalizeHealthState(state) {
+    if (state === 'healthy' || state === 'degraded' || state === 'demo' || state === 'unavailable') {
+      return state;
+    }
+
+    return 'unavailable';
+  }
+
   function applyHealth(data) {
     if (!cardNodes.health) {
       return;
     }
 
+    const uiStatus = normalizeHealthState(data && data.ui_status ? data.ui_status : 'unavailable');
+    const dataSource = data && data.data_source ? data.data_source : 'unknown';
+    const sourceType = data && data.source_type ? data.source_type : 'unknown';
+    const adapterStatus = data && data.adapter_status ? data.adapter_status : 'unreachable';
+    const lastUpdated = data && data.last_updated ? data.last_updated : 'n/a';
+
     cardNodes.health.innerHTML = `
-      source: ${data.data_source}<br />
-      adapter_status: ${data.adapter_status}<br />
-      source_type: ${data.source_type}<br />
-      ui_status: ${data.ui_status}<br />
-      last_updated: ${data.last_updated}
+      source: ${dataSource}<br />
+      adapter_status: ${adapterStatus}<br />
+      source_type: ${sourceType}<br />
+      ui_status: ${uiStatus}<br />
+      last_updated: ${lastUpdated}
     `;
 
+    if (healthBannerNode) {
+      healthBannerNode.classList.remove('health-state-healthy', 'health-state-degraded', 'health-state-demo', 'health-state-unavailable');
+      healthBannerNode.classList.add(`health-state-${uiStatus}`);
+
+      if (healthPolicyNode) {
+        healthPolicyNode.textContent = uiStatus;
+      }
+
+      if (healthSourceNode) {
+        healthSourceNode.textContent = `Source: ${sourceType}`;
+      }
+    }
+
+    if (healthDotNode) {
+      healthDotNode.style.opacity = '1';
+      healthDotNode.classList.remove('health-state-healthy', 'health-state-degraded', 'health-state-demo', 'health-state-unavailable');
+      healthDotNode.classList.add(`health-state-${uiStatus}`);
+    }
+
     if (healthCardNode) {
-      if (data.ui_status !== 'healthy') {
-        healthCardNode.classList.add('card-health-warning');
-      } else {
-        healthCardNode.classList.remove('card-health-warning');
+      healthCardNode.classList.remove('card-health-warning', 'card-health-degraded', 'card-health-unavailable');
+      if (uiStatus === 'degraded' || uiStatus === 'demo') {
+        healthCardNode.classList.add('card-health-warning', 'card-health-degraded');
+      }
+
+      if (uiStatus === 'unavailable') {
+        healthCardNode.classList.add('card-health-unavailable');
       }
     }
   }
@@ -145,11 +185,20 @@
   async function fetchHealth() {
     try {
       const response = await fetch('/api/health');
-      if (!response.ok) return;
+      if (!response.ok) {
+        throw new Error('health endpoint not ok');
+      }
       const payload = await response.json();
       applyHealth(payload);
     } catch (_err) {
-      // fail-closed on UI side: preserve old state silently
+      applyHealth({
+        ui_status: 'unavailable',
+        data_source: 'unknown',
+        source_type: 'unreachable',
+        adapter_status: 'request_failed',
+        last_updated: new Date().toISOString().replace('T', ' ').replace('Z', ' UTC'),
+        seed: [],
+      });
     }
   }
 

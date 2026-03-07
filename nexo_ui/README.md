@@ -33,6 +33,7 @@ http://127.0.0.1:4567
   - `adapter_status`
   - `last_updated`
   - `seed`
+- `/api/health` failures (network/server error) are rendered as `ui_status: "unavailable"` by the UI policy banner and Integrity card.
 - `/api/simulate` is kept as **demo mode** and returns `data_source: "fallback_simulated"`.
 
 ## Simulated state fields

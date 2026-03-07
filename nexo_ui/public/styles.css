@@ -41,6 +41,56 @@ body {
   backdrop-filter: blur(6px);
 }
 
+.health-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(127, 199, 255, 0.16);
+  padding: 6px 10px;
+  font-size: 0.85rem;
+  color: #cce0ff;
+}
+
+.health-banner.health-state-healthy {
+  background: rgba(0, 197, 165, 0.14);
+  border-color: rgba(0, 197, 165, 0.42);
+  color: #9ff9dc;
+}
+
+.health-banner.health-state-degraded,
+.health-banner.health-state-demo {
+  background: rgba(255, 183, 77, 0.12);
+  border-color: rgba(255, 183, 77, 0.36);
+  color: #ffe5ba;
+}
+
+.health-banner.health-state-unavailable {
+  background: rgba(255, 88, 88, 0.15);
+  border-color: rgba(255, 88, 88, 0.42);
+  color: #ffd0d0;
+}
+
+.health-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  display: inline-block;
+  box-shadow: 0 0 9px currentColor;
+}
+
+.health-banner.health-state-healthy .health-dot,
+.health-dot.health-state-healthy { color: #9ff9dc; }
+
+.health-banner.health-state-degraded .health-dot,
+.health-banner.health-state-demo .health-dot,
+.health-dot.health-state-degraded,
+.health-dot.health-state-demo { color: #ffcf78; }
+
+.health-banner.health-state-unavailable .health-dot,
+.health-dot.health-state-unavailable { color: #ff7b7b; }
+
 .eyebrow {
   margin: 0;
   color: var(--muted);
@@ -185,6 +235,19 @@ button:hover {
 
 .card-health-warning h2 {
   color: #ff8b8b;
+}
+
+.card-health-degraded {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 184, 76, 0.32),
+    0 10px 30px rgba(255, 160, 45, 0.18);
+}
+
+.card-health-unavailable {
+  border-color: rgba(255, 112, 102, 0.7);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 120, 106, 0.55),
+    0 10px 30px rgba(255, 52, 58, 0.5);
 }
 
 .health-lines {
