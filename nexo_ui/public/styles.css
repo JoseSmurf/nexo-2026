@@ -399,6 +399,11 @@ button:hover {
   animation-duration: 1s;
 }
 
+.mesh-preview-pulse {
+  border-color: rgba(122, 220, 255, 0.56);
+  box-shadow: 0 0 20px rgba(76, 208, 225, 0.45);
+}
+
 @keyframes mesh-dot-pulse {
   0% {
     transform: scale(1);

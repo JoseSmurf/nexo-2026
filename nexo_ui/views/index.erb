@@ -88,6 +88,7 @@
                     data-peers="<%= @state[:peers_count] || 0 %>"></div>
                 </div>
                 <p class="value value-sub" id="topology-hint">topology: local + peers</p>
+                <p class="value value-sub" id="network-cause-hint"></p>
               <% end %>
               <% if card[:key] == :ai_last_insight %>
                 <div class="value ai-insights-lines" id="value-ai_recent_insights">

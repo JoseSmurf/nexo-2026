@@ -34,6 +34,7 @@
   const networkCardNode = document.getElementById('card-network');
   const relayCardNode = document.getElementById('card-relay');
   const topologyHintNode = document.getElementById('topology-hint');
+  const networkCauseHintNode = document.getElementById('network-cause-hint');
   const causes = {
     events: document.getElementById('cause-events'),
     ai: document.getElementById('cause-ai'),
@@ -48,6 +49,8 @@
   let previousRelayStatus = null;
   let networkPulseTimer = null;
   let relayPulseTimer = null;
+  let meshPulseTimer = null;
+  let hasInitializedNetworkState = false;
 
   const recentEventsMax = 5;
   const recentAiInsightsMax = 3;
@@ -277,6 +280,36 @@
     }, 620);
   }
 
+  function triggerMeshPulse() {
+    if (!meshPreviewNode) {
+      return;
+    }
+
+    meshPreviewNode.classList.remove('mesh-preview-pulse');
+    void meshPreviewNode.offsetWidth;
+    meshPreviewNode.classList.add('mesh-preview-pulse');
+
+    clearTimeout(meshPulseTimer);
+    meshPulseTimer = setTimeout(() => {
+      if (meshPreviewNode) {
+        meshPreviewNode.classList.remove('mesh-preview-pulse');
+      }
+    }, 550);
+  }
+
+  function inferNetworkCause(data, hasNetworkPulse) {
+    const causePayload = data && data.network_cause ? String(data.network_cause).trim() : '';
+    if (causePayload === 'peer joined' || causePayload === 'relay path changed') {
+      return causePayload;
+    }
+
+    if (hasNetworkPulse) {
+      return 'peer count changed';
+    }
+
+    return '';
+  }
+
   function shouldPulseForNetwork(state) {
     const peersCount = state && state.peers_count !== undefined ? String(state.peers_count).trim() : null;
 
@@ -478,7 +511,25 @@
     const hasNetworkPulse = shouldPulseForNetwork(state);
     if (hasNetworkPulse) {
       triggerNetworkPulse();
-      setCardCause('network', 'peer count changed');
+      triggerMeshPulse();
+      const networkCause = inferNetworkCause(data, true);
+      if (networkCause) {
+        setCardCause('network', networkCause);
+      }
+    } else if (hasInitializedNetworkState) {
+      const networkCause = inferNetworkCause(data, false);
+      if (networkCause) {
+        setCardCause('network', networkCause);
+      }
+    }
+
+    if (networkCauseHintNode) {
+      const networkCause = inferNetworkCause(data, hasNetworkPulse);
+      networkCauseHintNode.textContent = networkCause ? `network cause: ${networkCause}` : '';
+    }
+
+    if (!hasInitializedNetworkState) {
+      hasInitializedNetworkState = true;
     }
 
     const hasRelayPulse = shouldPulseForRelay(state);

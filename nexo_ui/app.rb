@@ -38,12 +38,13 @@ helpers do
     end
   end
 
-  def to_payload(state, source)
+  def to_payload(state, source, network_cause: nil)
     {
       state: state,
       seed: motion_seed_from_state(state),
       last_updated: Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC'),
       data_source: source,
+      network_cause: network_cause,
     }
   end
 
@@ -149,6 +150,7 @@ post '/api/simulate' do
   state = settings.state
   state[:event_counter] ||= 0
   state[:event_counter] += 1
+  network_cause = nil
 
   case action
   when 'event'
@@ -163,6 +165,7 @@ post '/api/simulate' do
     )
     state[:system_status] = 'event_processed'
   when 'peer_join'
+    network_cause = 'peer joined'
     state[:peers_count] = state[:peers_count].to_i + 1
     update_recent_events(
       state,
@@ -175,6 +178,7 @@ post '/api/simulate' do
     )
     state[:system_status] = 'peer_joined'
   when 'relay_toggle'
+    network_cause = 'relay path changed'
     state[:relay_enabled] = !state[:relay_enabled]
     state[:relay_status] = state[:relay_enabled] ? 'sync-bridge online' : 'sync-bridge disabled'
     update_recent_events(
@@ -214,6 +218,7 @@ post '/api/simulate' do
   to_payload(
     state.reject { |k, _v| k == :event_counter },
     'fallback_simulated',
+    network_cause: network_cause,
   ).to_json
 end
 
