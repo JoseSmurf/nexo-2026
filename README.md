@@ -13,6 +13,7 @@ This project is focused on applied security engineering for deterministic system
 - [Quick demo (2 terminals)](#quick-demo-2-terminals)
 - [Relay bridge (global mode)](#relay-bridge-global-mode)
 - [Hybrid demo](#hybrid-demo)
+- [P2P Protocol & Operations](#p2p-protocol--operations)
 - [Testing commands](#testing-commands)
 - [Security model](#security-model)
 - [Audit and hashing](#audit-and-hashing)
@@ -162,6 +163,107 @@ What it does:
 - Starts `node_a` and `node_b` in `chat --daemon` with `--relay`.
 - Sends one `hello` message from a short `node_a` chat session.
 - Validates node B pulled at least one event from relay (`relay_pull count>0`).
+
+## P2P Protocol & Operations
+
+### Supported CLI commands
+
+- `listen` starts a UDP node and prints accepted events.
+  - Use `--bind` to choose local UDP endpoint and `--db` for persistence.
+  - Typical command:
+    - `cargo run --features network --bin nexo_p2p -- listen --bind 127.0.0.1:9001 --db /tmp/nexo_a.db --sender node_a`
+- `send` sends one signed event to a peer.
+  - Example:
+    - `cargo run --features network --bin nexo_p2p -- send --bind 127.0.0.1:9002 --peer 127.0.0.1:9001 --sender node_b --db /tmp/nexo_b.db --msg "hello"`
+- `sync` pulls/pushes offline history using `SyncItem` frames.
+  - Typical command:
+    - `cargo run --features network --bin nexo_p2p -- sync --bind 127.0.0.1:9003 --peer 127.0.0.1:9001 --db /tmp/nexo_sync.db --since-ms 0`
+- `discover` runs UDP peer discovery handshake.
+  - Example:
+    - `cargo run --features network --bin nexo_p2p -- discover --bind 0.0.0.0:9001 --broadcast 255.255.255.255:9001 --timeout-ms 800`
+- `ai` stores deterministic AI-channel prompts and responses for deterministic analysis.
+  - Example:
+    - `cargo run --features network --bin nexo_p2p -- ai --sender node_a --db /tmp/nexo_a.db --msg "como reduzir risco de fraude"`
+
+### SignedEvent contract
+
+- `sender_id` (`String`): sender identifier.
+- `timestamp_utc_ms` (`u64`): millisecond timestamp.
+- `nonce` (`u64`): monotonic counter per sender persisted in SQLite.
+- `content` (`String`): human payload for transport.
+- `content_hash` (`String`): BLAKE3 digest of canonical bytes.
+- `content_len` (`u8`): byte-size bound for validation.
+- `event_hash` (`String`): canonical frame hash used for dedup and forwarding decisions.
+- `sender_pubkey` (`Vec<u8, 32>`): Ed25519 public key identity.
+- `signature` (`Vec<u8, 64>`): Ed25519 signature over framed bytes.
+- `hops_remaining` (`u8`): forwarding hop budget, decremented on each relay-forward.
+- `origin_event_hash` (`String`): immutable hash of the original origin event.
+- `known_peers` (`Vec<String>`): up to bounded peers carried on forward.
+- `content_encrypted` (`Option<Vec<u8>>`): optional encrypted payload when crypto is enabled.
+- `crypto_nonce` (`Option<[u8; 24]>`): optional AEAD nonce separate from `nonce` (never reused).
+
+Frame-level rules:
+- Sequence is fixed and deterministic and is never reordered.
+- ACK/retry:
+  - Sender keeps the socket open with bounded retries.
+- Replay and anti-loop:
+  - Event is only accepted once by `event_hash`.
+  - Forwarding stops when `hops_remaining == 0`.
+  - Forwarded hashes are persisted and checked before any re-forward.
+
+### ACK/retry, dedup and anti-loop
+
+- ACK is required for successful send completion.
+- Retry is deterministic and bounded by feature path.
+- Replay dedup is enforced by persisted `seen_hashes`.
+- Anti-loop is enforced by:
+  - persisted `forwarded_hashes` table
+  - `origin_event_hash` carrying origin
+  - `hops_remaining` budget
+  - candidate-peer promotion before trust elevation
+- A valid event must pass verification before it is ever persisted or forwarded.
+
+### SQLite persistence and guarantees
+
+Core tables used by the P2P layer:
+
+| Table | Role | Guarantee |
+|---|---|---|
+| `messages` | persisted event timeline | durable local store for global/ai flows; supports history queries |
+| `seen_hashes` | `event_hash` replay index | duplicate replay rejection across process restarts |
+| `forwarded_hashes` | anti-loop marker | prevents repeated forward cycles and loops |
+| `relay_state` | relay cursor metadata | persists `last_relay_pull_since_ms` per DB and survives restart |
+| `sender_counters` | monotonic nonce state | guarantees per-sender monotonic `nonce` |
+| `node_identity` | Ed25519 keypair | persistent local identity, required for signature verification |
+
+Operationally, listener paths must:
+- consult `seen_hashes` before insert,
+- persist via `INSERT OR IGNORE` and mark as seen only when accepted,
+- write successful messages to `messages` and forwarding decisions to `forwarded_hashes` under success criteria.
+
+### P2P security model
+
+- All forwarded user payloads are fail-closed on verification:
+  - `invalid_sig` is rejected and not persisted.
+  - `decrypt_failed` (when crypto is enabled) is rejected and not persisted.
+- Signature and optional decryption are evaluated before persistence and before forwarding.
+- Relay candidate promotion:
+  - peers observed from relay are put in a candidate queue first,
+  - they are promoted to local known peers only after a valid UDP event/ACK evidence.
+- Replay protection and anti-loop are enforced before business handling, so malformed or duplicate frames cannot be injected by timing.
+
+### Operational limits and runtime behavior
+
+- Human input hard limit is **32 bytes** (`UTF-8` bytes). Failures are explicit and fail-closed.
+- Relay pull cursor is persisted.
+  - On restart, chat continues from persisted `last_relay_pull_since_ms`.
+  - Cursor updates only after verified, deduplicated inserts.
+- Relay backoff is deterministic and bounded:
+  - start `1000ms`, then `2000ms`, `4000ms`, doubling to max `30000ms`, reset on success.
+- Network hardening defaults:
+  - bounded peer list (deterministic ordering),
+  - bounded peer count,
+  - bounded known relay count.
 
 ## Testing commands
 
