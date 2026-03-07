@@ -27,6 +27,12 @@
   const aiCardNode = document.getElementById('card-ai');
   const networkCardNode = document.getElementById('card-network');
   const relayCardNode = document.getElementById('card-relay');
+  const causes = {
+    events: document.getElementById('cause-events'),
+    ai: document.getElementById('cause-ai'),
+    network: document.getElementById('cause-network'),
+    relay: document.getElementById('cause-relay'),
+  };
   let previousEventHash = null;
   let eventPulseTimer = null;
   let previousAiInsight = null;
@@ -98,6 +104,14 @@
         hash=${escapeHtml(event.hash || 'n/a')}
       </div>`;
     }).join('');
+  }
+
+  function setCardCause(cardName, text) {
+    const causeNode = causes[cardName];
+    if (!causeNode) {
+      return;
+    }
+    causeNode.textContent = text;
   }
 
   function triggerEventPulse() {
@@ -339,6 +353,7 @@
       const hasEventPulse = shouldPulseForEvents(state);
       if (hasEventPulse) {
         triggerEventPulse();
+        setCardCause('events', 'latest event changed');
       }
       cardNodes.events.innerHTML = formatEvents(state, hasEventPulse);
     }
@@ -346,16 +361,19 @@
     const hasAiPulse = shouldPulseForAiInsight(state);
     if (hasAiPulse) {
       triggerAiPulse();
+      setCardCause('ai', 'new insight detected');
     }
 
     const hasNetworkPulse = shouldPulseForNetwork(state);
     if (hasNetworkPulse) {
       triggerNetworkPulse();
+      setCardCause('network', 'peer count changed');
     }
 
     const hasRelayPulse = shouldPulseForRelay(state);
     if (hasRelayPulse) {
       triggerRelayPulse();
+      setCardCause('relay', 'relay status changed');
     }
 
     if (state.last_sync && stateNodes.last_sync) {

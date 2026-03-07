@@ -220,6 +220,14 @@ button:hover {
   text-overflow: ellipsis;
 }
 
+.card-cause {
+  margin-top: 6px;
+  color: #8ba0bf;
+  font-size: 0.74rem;
+  line-height: 1.25;
+  min-height: 0.9rem;
+}
+
 .card-core h2 { color: var(--core); }
 .card-network h2 { color: var(--network); }
 .card-relay h2 { color: var(--relay); }

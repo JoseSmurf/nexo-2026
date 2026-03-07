@@ -68,10 +68,18 @@
                   <% end %>
                 <% end %>
               </div>
+              <div class="card-cause" id="cause-events" aria-live="polite"></div>
             <% else %>
               <p class="value <%= card[:mono] ? 'mono' : '' %>" id="value-<%= card[:key] %>">
                 <%= card[:label] ? "#{card[:label]}: #{ @state[card[:key]] }" : @state[card[:key]] %>
               </p>
+              <% if card[:key] == :ai_last_insight %>
+                <div class="card-cause" id="cause-ai" aria-live="polite"></div>
+              <% elsif card[:key] == :peers_count %>
+                <div class="card-cause" id="cause-network" aria-live="polite"></div>
+              <% elsif card[:key] == :relay_status %>
+                <div class="card-cause" id="cause-relay" aria-live="polite"></div>
+              <% end %>
             <% end %>
           </article>
         <% end %>
