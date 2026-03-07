@@ -82,7 +82,10 @@
                 <% else %>
                   <% messages.each_with_index do |message, index| %>
                     <div class="chat-row <%= index.zero? ? 'latest' : '' %>">
-                      #<%= index + 1 %> [<%= message[:origin] || message['origin'] %>/<%= message[:channel] || message['channel'] %>] <%= message[:timestamp] || message['timestamp'] %><br />
+                      <div class="chat-meta">
+                        #<%= index + 1 %> | origin=<%= message[:origin] || message['origin'] || 'unknown' %> | channel=<%= message[:channel] || message['channel'] || 'global' %><br />
+                        <%= message[:timestamp] || message['timestamp'] || 'n/a' %>
+                      </div>
                       <span class="chat-text"><%= message[:text] || message['text'] %></span><br />
                       <span class="mono chat-hash">hash=<%= message[:hash] || message['hash'] %></span>
                     </div>

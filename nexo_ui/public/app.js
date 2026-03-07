@@ -213,9 +213,11 @@
 
     return messages.map((message, index) => {
       const rowClass = index === 0 ? 'chat-row latest' : 'chat-row';
+      const origin = escapeHtml(message.origin || message.from || 'unknown');
+      const channel = escapeHtml(message.channel || 'global');
+      const timestamp = escapeHtml(message.timestamp || 'n/a');
       return `<div class="${rowClass}">
-        #${index + 1} [${escapeHtml(message.origin || message.from || 'unknown')}/${escapeHtml(message.channel || 'global')}] ${escapeHtml(message.timestamp || 'n/a')}
-        <br />
+        <span class="chat-meta">#${index + 1} | origin=${origin} | channel=${channel}<br />${timestamp}</span>
         <span class="chat-text">${escapeHtml(message.text || '')}</span><br />
         <span class="mono chat-hash">hash=${escapeHtml(message.hash || 'n/a')}</span>
       </div>`;

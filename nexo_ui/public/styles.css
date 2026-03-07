@@ -358,6 +358,14 @@ button:hover {
   margin-bottom: 2px;
 }
 
+.chat-meta {
+  display: block;
+  margin-bottom: 3px;
+  color: #8ea3bf;
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
 .chat-hash {
   font-size: 0.78rem;
   color: #88a7c6;
