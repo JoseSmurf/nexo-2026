@@ -24,7 +24,7 @@ set :ui_mode, :live
 
 helpers do
   def motion_seed_from_state(state)
-    seed_size = 6
+    seed_size = 7
     payload = state.to_a.reject { |kv| kv.first == :event_counter }.map { |kv| kv.last.to_s }.join('|')
     digest = Digest::SHA256.digest(payload)
 
@@ -103,18 +103,38 @@ post '/api/simulate' do
   case action
   when 'event'
     state[:recent_event_hash] = Digest::SHA256.hexdigest("event-#{state[:event_counter]}-#{state[:last_sync]}")[0, 12]
+    state[:last_event_hash] = state[:recent_event_hash]
+    state[:event_type] = 'ui_event'
+    state[:event_timestamp] = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
+    state[:event_origin] = 'cli_simulator'
+    state[:event_channel] = 'ui'
     state[:system_status] = 'event_processed'
     state[:last_sync] = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
   when 'peer_join'
     state[:peers_count] = state[:peers_count].to_i + 1
+    state[:last_event_hash] = Digest::SHA256.hexdigest("peer-#{state[:event_counter]}-#{state[:peers_count]}")[0, 12]
+    state[:event_type] = 'peer_join'
+    state[:event_timestamp] = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
+    state[:event_origin] = 'ui_simulator_peer'
+    state[:event_channel] = 'control'
     state[:system_status] = 'peer_joined'
     state[:last_sync] = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
   when 'relay_toggle'
     state[:relay_enabled] = !state[:relay_enabled]
+    state[:last_event_hash] = Digest::SHA256.hexdigest("relay-#{state[:event_counter]}-#{state[:relay_status]}")[0, 12]
+    state[:event_type] = 'relay_toggle'
+    state[:event_timestamp] = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
+    state[:event_origin] = 'ui_simulator_relay'
+    state[:event_channel] = 'control'
     state[:relay_status] = state[:relay_enabled] ? 'sync-bridge online' : 'sync-bridge disabled'
     state[:last_sync] = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
   when 'ai_insight'
     state[:ai_last_insight] = settings.insights[state[:event_counter] % settings.insights.length]
+    state[:last_event_hash] = Digest::SHA256.hexdigest("insight-#{state[:event_counter]}-#{state[:ai_last_insight]}")[0, 12]
+    state[:event_type] = 'ai_insight'
+    state[:event_timestamp] = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
+    state[:event_origin] = 'ui_simulator_ai'
+    state[:event_channel] = 'ai'
     state[:system_status] = 'insight_generated'
     state[:last_sync] = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
   else
@@ -139,6 +159,7 @@ get '/' do
     { name: 'Relay', key: :relay_status, tone: 'relay' },
     { name: 'AI', key: :ai_last_insight, tone: 'ai' },
     { name: 'Hash Pulse', key: :recent_event_hash, tone: 'hash', mono: true },
+    { name: 'Events', key: :events, tone: :events, mono: true },
     { name: 'Integrity', key: :health, tone: 'health', mono: true },
   ]
 

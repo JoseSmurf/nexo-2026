@@ -26,6 +26,12 @@ http://127.0.0.1:4567
   - `"fallback_simulated"` when no real state source is available.
 
 - `/api/status` returns `state`, `seed`, `last_updated`, and `data_source`.
+  State now includes event activity fields:
+  - `last_event_hash`
+  - `event_type`
+  - `event_timestamp`
+  - `event_origin`
+  - `event_channel`
 - `/api/health` returns:
   - `ui_status`
   - `data_source`
@@ -44,3 +50,8 @@ http://127.0.0.1:4567
 - `ai_last_insight`
 - `recent_event_hash`
 - `last_sync`
+- `last_event_hash`
+- `event_type`
+- `event_timestamp`
+- `event_origin`
+- `event_channel`

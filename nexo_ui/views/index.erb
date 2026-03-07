@@ -54,8 +54,16 @@
                 ui_status: <%= @health[:ui_status] %><br />
                 last_updated: <%= @health[:last_updated] %>
               </p>
+            <% elsif card[:key] == :events %>
+              <p class="value events-lines" id="value-events">
+                hash: <%= @state[:last_event_hash] %><br />
+                type: <%= @state[:event_type] %><br />
+                origin: <%= @state[:event_origin] %><br />
+                channel: <%= @state[:event_channel] %><br />
+                ts: <%= @state[:event_timestamp] %>
+              </p>
             <% else %>
-              <p class="value" id="value-<%= card[:key] %>">
+              <p class="value <%= card[:mono] ? 'mono' : '' %>" id="value-<%= card[:key] %>">
                 <%= card[:label] ? "#{card[:label]}: #{ @state[card[:key]] }" : @state[card[:key]] %>
               </p>
             <% end %>
@@ -69,6 +77,11 @@
         <div id="meta-relay_status"><span>relay_status:</span> <%= @state[:relay_status] %></div>
         <div id="meta-ai_last_insight"><span>ai_last_insight:</span> <%= @state[:ai_last_insight] %></div>
         <div id="meta-recent_event_hash"><span>recent_event_hash:</span> <%= @state[:recent_event_hash] %></div>
+        <div id="meta-last_event_hash"><span>last_event_hash:</span> <%= @state[:last_event_hash] %></div>
+        <div id="meta-event_type"><span>event_type:</span> <%= @state[:event_type] %></div>
+        <div id="meta-event_timestamp"><span>event_timestamp:</span> <%= @state[:event_timestamp] %></div>
+        <div id="meta-event_origin"><span>event_origin:</span> <%= @state[:event_origin] %></div>
+        <div id="meta-event_channel"><span>event_channel:</span> <%= @state[:event_channel] %></div>
         <div id="meta-last_sync"><span>last_sync:</span> <%= @state[:last_sync] %></div>
       </section>
 

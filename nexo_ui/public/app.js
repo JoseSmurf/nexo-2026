@@ -6,6 +6,11 @@
     ai_last_insight: document.getElementById('meta-ai_last_insight'),
     recent_event_hash: document.getElementById('meta-recent_event_hash'),
     last_sync: document.getElementById('meta-last_sync'),
+    last_event_hash: document.getElementById('meta-last_event_hash'),
+    event_type: document.getElementById('meta-event_type'),
+    event_timestamp: document.getElementById('meta-event_timestamp'),
+    event_origin: document.getElementById('meta-event_origin'),
+    event_channel: document.getElementById('meta-event_channel'),
   };
 
   const cardNodes = {
@@ -15,6 +20,7 @@
     ai_last_insight: document.getElementById('value-ai_last_insight'),
     recent_event_hash: document.getElementById('value-recent_event_hash'),
     health: document.getElementById('value-health'),
+    events: document.getElementById('value-events'),
     healthCard: document.getElementById('card-integrity'),
   };
 
@@ -24,6 +30,11 @@
     relay_status: 'relay_status',
     ai_last_insight: 'ai_last_insight',
     recent_event_hash: 'recent_event_hash',
+    last_event_hash: 'last_event_hash',
+    event_type: 'event_type',
+    event_timestamp: 'event_timestamp',
+    event_origin: 'event_origin',
+    event_channel: 'event_channel',
     last_sync: 'last_sync',
   };
 
@@ -33,7 +44,18 @@
     relay_status: 'Relay',
     ai_last_insight: 'AI',
     recent_event_hash: 'Hash Pulse',
+    events: 'Events',
   };
+
+  function formatEvents(state) {
+    return [
+      `hash: ${state.last_event_hash || 'n/a'}`,
+      `type: ${state.event_type || 'n/a'}`,
+      `origin: ${state.event_origin || 'n/a'}`,
+      `channel: ${state.event_channel || 'n/a'}`,
+      `ts: ${state.event_timestamp || 'n/a'}`,
+    ].join('\n');
+  }
 
   const sourceNode = document.getElementById('data-source');
   const healthCardNode = cardNodes.healthCard;
@@ -42,7 +64,7 @@
   const healthSourceNode = document.getElementById('health-policy-source');
   const healthDotNode = document.getElementById('health-dot');
   const seedTargets = [];
-  const cardNames = ['core', 'network', 'relay', 'ai', 'hash', 'integrity'];
+  const cardNames = ['core', 'network', 'relay', 'ai', 'hash', 'events', 'integrity'];
   for (let i = 0; i < cardNames.length; i++) {
     const cardName = cardNames[i];
     const element = document.getElementById(`card-${cardName}`);
@@ -78,6 +100,14 @@
       return;
     }
 
+    if (key === 'events') {
+      return;
+    }
+
+    if (key === 'last_event_hash' || key === 'event_type' || key === 'event_timestamp' || key === 'event_origin' || key === 'event_channel') {
+      return;
+    }
+
     cardNodes[key].textContent = value;
   }
 
@@ -87,6 +117,10 @@
     for (const key of Object.keys(state)) {
       updateMetaText(key, state[key]);
       updateCardText(key, state[key]);
+    }
+
+    if (cardNodes.events) {
+      cardNodes.events.textContent = formatEvents(state);
     }
 
     if (state.last_sync && stateNodes.last_sync) {
