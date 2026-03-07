@@ -1,4 +1,5 @@
 require 'json'
+require 'time'
 
 module CoreAdapter
   module_function
@@ -20,6 +21,7 @@ module CoreAdapter
     recent_events: [],
     recent_ai_insights: [],
     recent_chat_messages: [],
+    recent_flow: [],
   }.freeze
 
   FALLBACK_AI_INSIGHTS = [
@@ -93,6 +95,11 @@ module CoreAdapter
     state[:recent_events] = normalize_events(payload_to_events(FALLBACK_RECENT_EVENTS))
     state[:recent_ai_insights] = payload_to_ai_insights(FALLBACK_AI_INSIGHTS)
     state[:recent_chat_messages] = normalize_chat_messages(payload_to_chat_messages(FALLBACK_CHAT_MESSAGES))
+    state[:recent_flow] = build_recent_flow(
+      state[:recent_events],
+      state[:recent_ai_insights],
+      state[:recent_chat_messages],
+    )
     state
   end
 
@@ -160,6 +167,7 @@ module CoreAdapter
     chat_payload = payload['chat_messages'] if chat_payload.nil?
     chat_payload = payload[:chat_messages] if chat_payload.nil?
     recent_chat_messages = chat_payload.nil? ? fallback_chat_messages : normalize_chat_messages(chat_payload)
+    recent_flow = normalize_flow(payload['recent_flow'] || payload[:recent_flow], recent_events, recent_ai_insights, recent_chat_messages)
 
     if recent_events.empty?
       recent_events = payload_to_events(
@@ -194,7 +202,116 @@ module CoreAdapter
       recent_events: recent_events,
       recent_ai_insights: recent_ai_insights,
       recent_chat_messages: recent_chat_messages,
+      recent_flow: recent_flow,
     }
+  end
+
+  def normalize_flow(flow_items, events, ai_insights, chat_messages)
+    normalized = []
+
+    return build_recent_flow(events, ai_insights, chat_messages) if flow_items.nil?
+    return build_recent_flow(events, ai_insights, chat_messages) unless flow_items.is_a?(Array)
+
+    flow_items.each do |item|
+      next unless item.is_a?(Hash)
+
+      kind = (item['kind'] || item[:kind] || 'event').to_s
+      next unless %w[event chat ai].include?(kind)
+
+      normalized << {
+        kind: kind,
+        origin: item['origin'] || item[:origin] || 'unknown',
+        summary: item['summary'] || item[:summary] || item['text'] || item[:text] || '',
+        timestamp: item['timestamp'] || item[:timestamp] || 'n/a',
+        hash: item['hash'] || item[:hash],
+        channel: item['channel'] || item[:channel] || '',
+      }
+    end
+
+    normalized = normalized.first(5)
+    return build_recent_flow(events, ai_insights, chat_messages) if normalized.empty?
+
+    normalized.sort_by! do |item|
+      ts = flow_item_timestamp(item['timestamp'] || item[:timestamp])
+      kind_order = item[:kind] == 'event' ? 0 : item[:kind] == 'ai' ? 1 : 2
+      [-ts, kind_order]
+    end
+    normalized
+  end
+
+  def build_recent_flow(events, ai_insights, chat_messages)
+    candidates = []
+
+    Array(events).each_with_index do |event, index|
+      candidates << {
+        kind: 'event',
+        origin: event[:origin] || event['origin'] || 'unknown',
+        summary: event[:type] || event['type'] || 'event',
+        timestamp: event[:timestamp] || event['timestamp'] || 'n/a',
+        hash: event[:hash] || event['hash'],
+        channel: event[:channel] || event['channel'] || '',
+        _time: flow_item_timestamp(event[:timestamp] || event['timestamp']),
+        _rank: 0,
+        _index: index,
+      }
+    end
+
+    Array(ai_insights).each_with_index do |insight, index|
+      candidates << {
+        kind: 'ai',
+        origin: insight[:origin] || insight['origin'] || 'ui_simulator_ai',
+        summary: insight[:text] || insight['text'] || 'AI insight',
+        timestamp: insight[:timestamp] || insight['timestamp'] || 'n/a',
+        hash: insight[:hash] || insight['hash'],
+        channel: insight[:type] || insight['type'] || 'ui_insight',
+        _time: flow_item_timestamp(insight[:timestamp] || insight['timestamp']),
+        _rank: 1,
+        _index: index,
+      }
+    end
+
+    Array(chat_messages).each_with_index do |message, index|
+      candidates << {
+        kind: 'chat',
+        origin: message[:origin] || message['origin'] || 'ui_simulator_chat',
+        summary: message[:text] || message['text'] || '(empty)',
+        timestamp: message[:timestamp] || message['timestamp'] || 'n/a',
+        hash: message[:hash] || message['hash'],
+        channel: message[:channel] || message['channel'] || 'global',
+        _time: flow_item_timestamp(message[:timestamp] || message['timestamp']),
+        _rank: 2,
+        _index: index,
+      }
+    end
+
+    ordered = candidates.sort_by { |item| [-item[:_time], item[:_rank], item[:_index]] }
+    ordered.first(5).map do |item|
+      {
+        kind: item[:kind],
+        origin: item[:origin],
+        summary: item[:summary],
+        timestamp: item[:timestamp],
+        hash: item[:hash],
+        channel: item[:channel],
+      }
+    end
+  end
+
+  def flow_item_timestamp(raw_timestamp)
+    return raw_timestamp.to_i if raw_timestamp.is_a?(Integer)
+    return raw_timestamp.to_f if raw_timestamp.is_a?(Float)
+
+    text = raw_timestamp.to_s
+    return 0 if text.nil? || text.empty?
+
+    stripped = text.strip
+    return stripped.to_i if stripped =~ /\A\d+\z/
+
+    begin
+      Time.parse(stripped).to_i
+    rescue StandardError
+      0
+    end
   end
 
   def normalize_ai_insights(insights)

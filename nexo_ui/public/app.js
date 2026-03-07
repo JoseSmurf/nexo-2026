@@ -26,6 +26,7 @@
     health: document.getElementById('value-health'),
     events: document.getElementById('value-events'),
     recent_chat_messages: document.getElementById('value-recent_chat_messages'),
+    recent_flow: document.getElementById('value-recent_flow'),
     healthCard: document.getElementById('card-integrity'),
     ai_recent_insights: document.getElementById('value-ai_recent_insights'),
   };
@@ -62,6 +63,7 @@
   const recentEventsMax = 5;
   const recentAiInsightsMax = 3;
   const recentChatMessagesMax = 5;
+  const recentFlowMax = 5;
 
   const metaLabel = {
     system_status: 'system_status',
@@ -339,6 +341,43 @@
     }).join('');
   }
 
+  function sanitizeLiveFlow(state) {
+    const items = Array.isArray(state.recent_flow) ? state.recent_flow.slice(0, recentFlowMax) : [];
+    if (items.length > 0) {
+      return items;
+    }
+
+    return [];
+  }
+
+  function sanitizeFlowKind(value) {
+    const kind = String(value || 'event');
+    if (kind === 'ai' || kind === 'chat' || kind === 'event') {
+      return kind;
+    }
+
+    return 'event';
+  }
+
+  function formatLiveFlow(state) {
+    const flowItems = sanitizeLiveFlow(state);
+    if (flowItems.length === 0) {
+      return 'no live flow';
+    }
+
+    return flowItems.map((item, index) => {
+      const kind = sanitizeFlowKind(item.kind);
+      const summary = escapeHtml(item.summary || '');
+      const hash = item.hash || '';
+      return `<div class="flow-item flow-item-${kind} ${index === 0 ? 'latest' : ''}">
+        #${index + 1} ${escapeHtml(item.timestamp || 'n/a')} | ${escapeHtml(item.origin || 'unknown')}
+        (${escapeHtml(kind)})${item.channel ? ` | ${escapeHtml(item.channel)}` : ''}
+        <div class="flow-summary">${summary}</div>
+        ${hash ? `<span class="mono flow-hash">hash=${escapeHtml(hash)}</span>` : ''}
+      </div>`;
+    }).join('');
+  }
+
   function setCardCause(cardName, text) {
     const causeNode = causes[cardName];
     if (!causeNode) {
@@ -600,7 +639,7 @@
   const healthSourceNode = document.getElementById('health-policy-source');
   const healthDotNode = document.getElementById('health-dot');
   const seedTargets = [];
-  const cardNames = ['core', 'network', 'relay', 'ai', 'hash', 'events', 'globalchat', 'integrity'];
+  const cardNames = ['core', 'network', 'relay', 'ai', 'hash', 'events', 'liveflow', 'globalchat', 'integrity'];
   for (let i = 0; i < cardNames.length; i++) {
     const cardName = cardNames[i];
     const element = document.getElementById(`card-${cardName}`);
@@ -660,6 +699,10 @@
       return;
     }
 
+    if (key === 'recent_flow') {
+      return;
+    }
+
     if (key === 'last_event_hash' || key === 'event_type' || key === 'event_timestamp' || key === 'event_origin' || key === 'event_channel') {
       return;
     }
@@ -689,6 +732,10 @@
         setCardCause('events', 'latest event changed');
       }
       cardNodes.events.innerHTML = formatEvents(state, hasEventPulse);
+    }
+
+    if (cardNodes.recent_flow) {
+      cardNodes.recent_flow.innerHTML = formatLiveFlow(state);
     }
 
     const hasAiPulse = shouldPulseForAiInsight(state);

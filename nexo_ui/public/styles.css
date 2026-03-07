@@ -14,6 +14,7 @@
   --health: #5eead4;
   --events: #6c8bff;
   --chat: #8ae0ff;
+  --flow: #a78bfa;
 }
 
 * {
@@ -264,6 +265,7 @@ button:hover {
 .card-events h2 { color: var(--events); }
 .card-health h2 { color: var(--health); }
 .card-chat h2 { color: var(--chat); }
+.card-flow h2 { color: var(--flow); }
 
 .card-health-warning {
   border-color: rgba(255, 112, 102, 0.5);
@@ -369,6 +371,49 @@ button:hover {
 .chat-hash {
   font-size: 0.78rem;
   color: #88a7c6;
+}
+
+.flow-lines {
+  white-space: normal;
+  line-height: 1.25;
+  max-height: 7rem;
+  overflow: hidden;
+}
+
+.flow-item {
+  margin-bottom: 6px;
+  line-height: 1.3;
+  white-space: normal;
+}
+
+.flow-item.latest {
+  color: #dbc8ff;
+  font-weight: 600;
+}
+
+.flow-summary {
+  font-size: 0.8rem;
+  color: #adc0dd;
+}
+
+.flow-item-event {
+  border-left: 2px solid rgba(108, 139, 255, 0.45);
+  padding-left: 6px;
+}
+
+.flow-item-chat {
+  border-left: 2px solid rgba(138, 224, 255, 0.45);
+  padding-left: 6px;
+}
+
+.flow-item-ai {
+  border-left: 2px solid rgba(255, 110, 199, 0.45);
+  padding-left: 6px;
+}
+
+.flow-hash {
+  font-size: 0.72rem;
+  color: #7f95b5;
 }
 
 .card-events-pulse {
