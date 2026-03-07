@@ -80,6 +80,13 @@
                 <p class="value value-sub" id="value-mesh_status">
                   mesh_status: <%= @state[:mesh_status] || 'stable' %>
                 </p>
+                <div class="mesh-preview-wrap">
+                  <div
+                    id="mesh-preview"
+                    class="mesh-preview"
+                    aria-label="network mesh preview"
+                    data-peers="<%= @state[:peers_count] || 0 %>"></div>
+                </div>
               <% end %>
               <% if card[:key] == :ai_last_insight %>
                 <div class="value ai-insights-lines" id="value-ai_recent_insights">

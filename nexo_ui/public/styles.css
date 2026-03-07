@@ -355,6 +355,65 @@ button:hover {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
+.mesh-preview-wrap {
+  margin-top: 8px;
+}
+
+.mesh-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid rgba(121, 210, 222, 0.2);
+  border-radius: 10px;
+  background: rgba(2, 20, 32, 0.42);
+  min-height: 28px;
+}
+
+.mesh-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: 0 0 12px;
+  box-shadow: 0 0 10px currentColor;
+}
+
+.mesh-dot-local {
+  background: #9ce4ff;
+  color: #9ce4ff;
+  transform: scale(1.1);
+}
+
+.mesh-dot-peer {
+  background: #4dd0e1;
+  color: #4dd0e1;
+  animation: mesh-dot-pulse 0.9s ease-in-out infinite;
+}
+
+.mesh-dot-peer:nth-child(odd) {
+  animation-duration: 0.8s;
+}
+
+.mesh-dot-peer:nth-child(3n) {
+  animation-duration: 1s;
+}
+
+@keyframes mesh-dot-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.72;
+  }
+  50% {
+    transform: scale(1.22);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 0.72;
+  }
+}
+
 .meta-panel {
   margin-top: 14px;
   border-radius: 14px;

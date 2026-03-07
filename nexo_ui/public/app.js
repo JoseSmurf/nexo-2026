@@ -28,6 +28,7 @@
     healthCard: document.getElementById('card-integrity'),
     ai_recent_insights: document.getElementById('value-ai_recent_insights'),
   };
+  const meshPreviewNode = document.getElementById('mesh-preview');
   const eventsCardNode = document.getElementById('card-events');
   const aiCardNode = document.getElementById('card-ai');
   const networkCardNode = document.getElementById('card-network');
@@ -82,6 +83,37 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+  }
+
+  function normalizePeersCount(value) {
+    const n = Number.parseInt(value, 10);
+    if (!Number.isFinite(n) || n <= 0) {
+      return 0;
+    }
+    return n;
+  }
+
+  function renderMeshPreview(peersCountRaw) {
+    if (!meshPreviewNode) {
+      return;
+    }
+
+    const peerCount = normalizePeersCount(peersCountRaw);
+    const renderedPeers = Math.min(peerCount, 10);
+
+    const localNode = '<span class="mesh-dot mesh-dot-local" title="local node" aria-label="local node"></span>';
+    const peerNodes = Array.from({ length: renderedPeers }, (_item, index) => {
+      const delay = (index % 4) * 120;
+      return `<span class="mesh-dot mesh-dot-peer" title="peer ${index + 1}" aria-label="peer ${index + 1}" style="animation-delay:${delay}ms"></span>`;
+    }).join('');
+
+    meshPreviewNode.innerHTML = `${localNode}${peerNodes}`;
+
+    const summary = renderedPeers === 0
+      ? 'peers: 0 (local only)'
+      : `peers: ${peerCount} (${renderedPeers} shown)`;
+    meshPreviewNode.setAttribute('data-peers', String(peerCount));
+    meshPreviewNode.setAttribute('aria-label', `network mesh preview (${summary})`);
   }
 
   function sanitizeEvents(state) {
@@ -400,6 +432,10 @@
     for (const key of Object.keys(state)) {
       updateMetaText(key, state[key]);
       updateCardText(key, state[key]);
+    }
+
+    if (state && state.peers_count !== undefined) {
+      renderMeshPreview(state.peers_count);
     }
 
     if (cardNodes.events) {
