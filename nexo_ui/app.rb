@@ -1,6 +1,7 @@
 require 'sinatra'
 require 'json'
 require 'digest'
+require_relative 'core_adapter'
 
 set :public_folder, File.join(__dir__, 'public')
 set :views, File.join(__dir__, 'views')
@@ -10,16 +11,7 @@ configure do
   set :port, 4567
 end
 
-set :state, {
-  system_status: 'operational',
-  peers_count: 8,
-  relay_status: 'sync-bridge online',
-  ai_last_insight: 'No anomaly patterns observed in this window.',
-  recent_event_hash: 'bf5cfda1e218837d2f8a597f8011b4096',
-  relay_enabled: true,
-  last_sync: Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC'),
-  event_counter: 0,
-}
+set :state, CoreAdapter::FALLBACK_STATE.merge(event_counter: 0).dup
 
 set :insights, [
   'No anomaly patterns observed in this window.',
@@ -28,27 +20,7 @@ set :insights, [
   'AI baseline stable; no intervention needed.',
 ]
 
-set :random_proxy, ['00', 'aa', 'f0', '12', '9c', '7e', '31', '48', 'c3', '55']
-
 helpers do
-  def current_state
-    settings.state.dup
-  end
-
-  def state_payload
-    state = current_state
-    {
-      state: state.reject { |k, _v| k == :event_counter },
-      seed: motion_seed_from_state(state),
-      last_updated: Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC'),
-    }
-  end
-
-  def next_hash(seed)
-    digest = Digest::SHA256.hexdigest(seed)
-    "#{digest[0, 12]}"
-  end
-
   def motion_seed_from_state(state)
     payload = state.to_a.reject { |kv| kv.first == :event_counter }.map { |kv| kv.last.to_s }.join('|')
     digest = Digest::SHA256.digest(payload)
@@ -61,6 +33,19 @@ helpers do
         flicker: 0.8 + (digest.getbyte(i + 15) % 20) / 10.0,
       }
     end
+  end
+
+  def to_payload(state, source)
+    {
+      state: state,
+      seed: motion_seed_from_state(state),
+      last_updated: Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC'),
+      data_source: source,
+    }
+  end
+
+  def current_status_state
+    CoreAdapter.build_state
   end
 end
 
@@ -85,7 +70,7 @@ post '/api/simulate' do
 
   case action
   when 'event'
-    state[:recent_event_hash] = next_hash("event-#{state[:event_counter]}-#{state[:last_sync]}")
+    state[:recent_event_hash] = Digest::SHA256.hexdigest("event-#{state[:event_counter]}-#{state[:last_sync]}")[0, 12]
     state[:system_status] = 'event_processed'
     state[:last_sync] = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC')
   when 'peer_join'
@@ -104,13 +89,16 @@ post '/api/simulate' do
     halt 400, { error: 'unknown action' }.to_json
   end
 
-  state_payload.to_json
+  content_type :json
+  to_payload(
+    state.reject { |k, _v| k == :event_counter },
+    'fallback_simulated',
+  ).to_json
 end
 
 get '/' do
-  @state = current_state
-  @state = @state.reject { |k, _v| k == :event_counter }
-  @seed = motion_seed_from_state(settings.state)
+  @state, @data_source = current_status_state
+  @seed = motion_seed_from_state(@state)
   @cards = [
     { name: 'Core', key: :system_status, tone: 'core' },
     { name: 'Network', key: :peers_count, tone: 'network', label: 'Peers' },
@@ -124,5 +112,6 @@ end
 
 get '/api/status' do
   content_type :json
-  state_payload.to_json
+  state, source = current_status_state
+  to_payload(state, source).to_json
 end

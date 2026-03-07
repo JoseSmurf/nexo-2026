@@ -11,12 +11,13 @@
       <header class="hero">
         <p class="eyebrow">NEXO / UI Layer</p>
         <h1>Dragon skin status matrix</h1>
-        <p class="subline">Live simulated dashboard with deterministic visual seed.</p>
+        <p class="subline">Live status surface with first core adapter path.</p>
       </header>
 
       <section class="controls" aria-label="dashboard controls">
         <button id="refresh-btn" type="button">Refresh now</button>
         <span class="muted">Auto polling every 3s</span>
+        <span class="muted" id="data-source">source: <%= @data_source %></span>
       </section>
 
       <section class="controls simulate-controls" aria-label="simulate controls">
@@ -24,6 +25,7 @@
         <button class="simulate-button" data-action="peer_join" type="button">Simulate Peer Join</button>
         <button class="simulate-button" data-action="relay_toggle" type="button">Toggle Relay</button>
         <button class="simulate-button" data-action="ai_insight" type="button">Simulate AI Insight</button>
+        <span class="hint">Demo mode active for simulation actions.</span>
       </section>
 
       <section class="dragon-grid" aria-label="System cards">
@@ -53,7 +55,7 @@
         <div id="meta-last_sync"><span>last_sync:</span> <%= @state[:last_sync] %></div>
       </section>
 
-      <p class="hint">Ready for future integration with a core_adapter bridge.</p>
+      <p class="hint">Ready for future deeper integration with full core adapter bridge.</p>
       <p class="updated-line">last updated: <span id="last-updated"><%= Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC') %></span></p>
     </main>
 

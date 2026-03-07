@@ -33,6 +33,7 @@
     recent_event_hash: 'Hash Pulse',
   };
 
+  const sourceNode = document.getElementById('data-source');
   const seedTargets = [];
   for (let i = 0; i < 5; i++) {
     const cardName = ['core', 'network', 'relay', 'ai', 'hash'][i];
@@ -53,6 +54,7 @@
     if (!cardNodes[key]) {
       return;
     }
+
     if (key === 'peers_count') {
       cardNodes[key].textContent = `${labelByKey[key]}: ${value}`;
       return;
@@ -91,6 +93,10 @@
         seedTargets[i].style.setProperty('--alpha', s.opacity);
         seedTargets[i].style.setProperty('--flicker', s.flicker);
       });
+    }
+
+    if (sourceNode && data.data_source) {
+      sourceNode.textContent = `source: ${data.data_source}`;
     }
 
     if (data.last_updated) {

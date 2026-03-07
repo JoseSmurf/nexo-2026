@@ -1,14 +1,11 @@
 # NEXO UI v1 (Ruby + Sinatra)
 
-This is the first visual layer for NEXO. It is intentionally minimal and uses
-simulated state only.
+This is the first visual layer for NEXO.
 
 ## Run locally
 
 ```bash
 cd nexo_ui
-# Install Sinatra if needed
-# gem install --user-install sinatra
 ruby app.rb
 ```
 
@@ -18,14 +15,20 @@ Open in browser:
 http://127.0.0.1:4567
 ```
 
-## Files
+## Current behavior
 
-- `app.rb` - Sinatra app with `/` route and simple motion seed from state hash
-- `views/index.erb` - dashboard layout and cards
-- `public/styles.css` - dragon-scale inspired dark interface
-- `README.md` - this file
+- Real-ish status source with fallback:
+  - Reads JSON state from `NEXO_UI_STATE_PATH` (or `state.json`).
+  - If unavailable, tries simple SQLite read from `state.db` (`nexo_state` table).
+  - If unavailable, falls back to deterministic simulated state.
+- `/api/status` includes `data_source`:
+  - `"real"` when state was loaded from JSON/SQLite.
+  - `"fallback_simulated"` when no real state source is available.
 
-## State fields currently mocked in app.rb
+- `/api/status` returns `state`, `seed`, `last_updated`, and `data_source`.
+- `/api/simulate` is kept as **demo mode** and returns `data_source: "fallback_simulated"`.
+
+## Simulated state fields
 
 - `system_status`
 - `peers_count`
@@ -33,6 +36,3 @@ http://127.0.0.1:4567
 - `ai_last_insight`
 - `recent_event_hash`
 - `last_sync`
-
-The motion effect is generated from a SHA-256 digest of these state fields and can
-be replaced by a future `core_adapter` connector without changing the layout.
