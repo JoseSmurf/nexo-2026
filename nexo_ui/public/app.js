@@ -33,6 +33,7 @@
   const aiCardNode = document.getElementById('card-ai');
   const networkCardNode = document.getElementById('card-network');
   const relayCardNode = document.getElementById('card-relay');
+  const topologyHintNode = document.getElementById('topology-hint');
   const causes = {
     events: document.getElementById('cause-events'),
     ai: document.getElementById('cause-ai'),
@@ -114,6 +115,20 @@
       : `peers: ${peerCount} (${renderedPeers} shown)`;
     meshPreviewNode.setAttribute('data-peers', String(peerCount));
     meshPreviewNode.setAttribute('aria-label', `network mesh preview (${summary})`);
+  }
+
+  function updateTopologyHint(peersCountRaw) {
+    if (!topologyHintNode) {
+      return;
+    }
+
+    const peersCount = normalizePeersCount(peersCountRaw);
+    if (peersCount > 10) {
+      topologyHintNode.textContent = 'topology: local + peers (>10)';
+      return;
+    }
+
+    topologyHintNode.textContent = 'topology: local + peers';
   }
 
   function sanitizeEvents(state) {
@@ -436,6 +451,9 @@
 
     if (state && state.peers_count !== undefined) {
       renderMeshPreview(state.peers_count);
+      updateTopologyHint(state.peers_count);
+    } else {
+      updateTopologyHint(0);
     }
 
     if (cardNodes.events) {
