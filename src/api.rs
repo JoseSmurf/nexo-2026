@@ -24,6 +24,8 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::audit_store::{AuditRecord, AuditStore};
+#[cfg(feature = "network")]
+use crate::offline_store::OfflineStore;
 use crate::profile::{profile_from_env, RuleProfile};
 use crate::telemetry::{Metrics, MetricsSnapshot};
 use crate::{
@@ -54,6 +56,7 @@ const DEFAULT_ADMIN_API_ENABLED: bool = false;
 const DEFAULT_REDIS_OP_TIMEOUT_MS: u64 = 100;
 const DEFAULT_HIGH_THRESHOLD_CENTS: u64 = 5_000_000;
 const DEFAULT_SHAKE_BITS: u16 = 512;
+const DEFAULT_STATE_CHAT_LIMIT: usize = 5;
 const ADAPTIVE_RISK_BPS_THRESHOLD: u16 = 8_000;
 
 const HEADER_SIGNATURE: &str = "x-signature";
@@ -101,6 +104,7 @@ pub struct AppState {
     pub sha3_shadow_enabled: bool,
     pub admin_api_enabled: bool,
     pub admin_api_token: Option<String>,
+    pub p2p_db_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -288,6 +292,15 @@ pub struct StateFlowItem {
 }
 
 #[derive(Debug, Serialize)]
+pub struct StateChatMessage {
+    pub hash: String,
+    pub origin: String,
+    pub channel: String,
+    pub text: String,
+    pub timestamp: u64,
+}
+
+#[derive(Debug, Serialize)]
 pub struct StateResponse {
     pub system_status: String,
     pub peers_count: usize,
@@ -295,7 +308,7 @@ pub struct StateResponse {
     pub network_mode: String,
     pub mesh_status: String,
     pub recent_events: Vec<StateEvent>,
-    pub recent_chat_messages: Vec<std::collections::HashMap<String, serde_json::Value>>,
+    pub recent_chat_messages: Vec<StateChatMessage>,
     pub recent_ai_insights: Vec<StateAiInsight>,
     pub recent_flow: Vec<StateFlowItem>,
     pub ai_last_insight: String,
@@ -419,6 +432,10 @@ impl AppState {
         } else {
             None
         };
+        let p2p_db_path = std::env::var("NEXO_P2P_DB_PATH")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
 
         Self {
             profile: profile_from_env(),
@@ -451,6 +468,7 @@ impl AppState {
             sha3_shadow_enabled,
             admin_api_enabled,
             admin_api_token,
+            p2p_db_path,
         }
     }
 
@@ -489,6 +507,7 @@ impl AppState {
             sha3_shadow_enabled: false,
             admin_api_enabled: false,
             admin_api_token: None,
+            p2p_db_path: None,
         }
     }
 
@@ -524,6 +543,7 @@ impl AppState {
             sha3_shadow_enabled: false,
             admin_api_enabled: false,
             admin_api_token: None,
+            p2p_db_path: None,
         }
     }
 }
@@ -1411,7 +1431,9 @@ async fn api_state_handler(State(state): State<AppState>) -> impl IntoResponse {
     let records = state.audit_store.recent(200).unwrap_or_default();
     let recent_events = build_state_events(&records);
     let recent_ai_insights = build_state_ai_insights(&records);
-    let recent_flow = build_state_flow(&recent_events, &recent_ai_insights);
+    let recent_chat_messages =
+        load_recent_chat_messages(state.p2p_db_path.as_deref(), DEFAULT_STATE_CHAT_LIMIT);
+    let recent_flow = build_state_flow(&recent_events, &recent_chat_messages, &recent_ai_insights);
 
     let (latest_hash, latest_type, latest_timestamp, latest_origin, latest_channel) =
         state_event_header(&recent_events);
@@ -1437,7 +1459,7 @@ async fn api_state_handler(State(state): State<AppState>) -> impl IntoResponse {
             network_mode,
             mesh_status,
             recent_events,
-            recent_chat_messages: Vec::new(),
+            recent_chat_messages,
             recent_ai_insights,
             recent_flow,
             ai_last_insight,
@@ -1571,7 +1593,11 @@ fn build_state_ai_insights(records: &[AuditRecord]) -> Vec<StateAiInsight> {
     insights.into_iter().take(3).collect()
 }
 
-fn build_state_flow(events: &[StateEvent], ai_insights: &[StateAiInsight]) -> Vec<StateFlowItem> {
+fn build_state_flow(
+    events: &[StateEvent],
+    chat_messages: &[StateChatMessage],
+    ai_insights: &[StateAiInsight],
+) -> Vec<StateFlowItem> {
     let mut candidates: Vec<(u64, u8, usize, StateFlowItem)> = Vec::new();
 
     for (index, event) in events.iter().enumerate() {
@@ -1606,6 +1632,22 @@ fn build_state_flow(events: &[StateEvent], ai_insights: &[StateAiInsight]) -> Ve
         ));
     }
 
+    for (index, message) in chat_messages.iter().enumerate() {
+        candidates.push((
+            message.timestamp,
+            2,
+            index,
+            StateFlowItem {
+                kind: "chat".to_string(),
+                origin: message.origin.clone(),
+                summary: message.text.clone(),
+                timestamp: message.timestamp,
+                hash: Some(message.hash.clone()),
+                channel: message.channel.clone(),
+            },
+        ));
+    }
+
     candidates.sort_by(|a, b| {
         b.0.cmp(&a.0)
             .then_with(|| a.1.cmp(&b.1))
@@ -1617,6 +1659,41 @@ fn build_state_flow(events: &[StateEvent], ai_insights: &[StateAiInsight]) -> Ve
         .map(|(_, _, _, item)| item)
         .take(5)
         .collect()
+}
+
+#[cfg(feature = "network")]
+fn load_recent_chat_messages(p2p_db_path: Option<&str>, limit: usize) -> Vec<StateChatMessage> {
+    let Some(path) = p2p_db_path else {
+        return Vec::new();
+    };
+    let path = path.trim();
+    if path.is_empty() {
+        return Vec::new();
+    }
+
+    let Ok(store) = OfflineStore::open(path) else {
+        return Vec::new();
+    };
+
+    let Ok(messages) = store.last_messages(limit) else {
+        return Vec::new();
+    };
+
+    messages
+        .into_iter()
+        .map(|row| StateChatMessage {
+            hash: row.event_hash,
+            origin: row.sender_id,
+            channel: row.channel,
+            text: String::from_utf8_lossy(&row.content).into_owned(),
+            timestamp: row.timestamp_utc_ms,
+        })
+        .collect()
+}
+
+#[cfg(not(feature = "network"))]
+fn load_recent_chat_messages(_p2p_db_path: Option<&str>, _limit: usize) -> Vec<StateChatMessage> {
+    Vec::new()
 }
 
 fn unique_peer_count(records: &[AuditRecord]) -> usize {
@@ -2649,6 +2726,9 @@ mod tests {
     use std::collections::HashMap;
     use tower::util::ServiceExt;
 
+    #[cfg(feature = "network")]
+    use crate::offline_store::StoreInsertStatus;
+
     use super::*;
 
     fn test_state() -> AppState {
@@ -2823,6 +2903,63 @@ mod tests {
         assert_eq!(
             state_json["ai_last_insight"],
             "No anomaly patterns observed in this window."
+        );
+        assert!(state_json["recent_chat_messages"].is_array());
+    }
+
+    #[cfg(feature = "network")]
+    #[tokio::test]
+    async fn api_state_handler_exposes_recent_chat_messages_from_db() {
+        let db_path = std::env::temp_dir().join(format!("nexo_state_chat_{}.db", Uuid::new_v4()));
+        let db_path_str = db_path.to_str().expect("db path");
+
+        let store = OfflineStore::open(db_path_str).expect("open offline store");
+        let payload = b"hello-offline-flow";
+        let msg = crate::message::CanonicalMessage::new_with_nonce(
+            "chat_node_a",
+            now_utc_ms(),
+            1,
+            payload,
+        )
+        .expect("chat message");
+        let status = store
+            .insert_message_with_channel(&msg, "global", now_utc_ms(), 120_000)
+            .expect("insert");
+        assert_eq!(status, StoreInsertStatus::Inserted);
+
+        let mut state = test_state();
+        state.p2p_db_path = Some(db_path_str.to_string());
+        let app = app_with_state(state);
+
+        let state_req = Request::builder()
+            .method("GET")
+            .uri("/api/state")
+            .body(Body::empty())
+            .expect("state request");
+        let state_resp = app.oneshot(state_req).await.expect("state response");
+        assert_eq!(state_resp.status(), StatusCode::OK);
+
+        let state_body = state_resp
+            .into_body()
+            .collect()
+            .await
+            .expect("state body bytes")
+            .to_bytes();
+        let state_json: Value = serde_json::from_slice(&state_body).expect("state json");
+
+        let chat_messages = state_json["recent_chat_messages"]
+            .as_array()
+            .expect("chat messages");
+        assert_eq!(chat_messages.len(), 1);
+        assert_eq!(chat_messages[0]["origin"], "chat_node_a");
+        assert_eq!(chat_messages[0]["channel"], "global");
+        assert_eq!(chat_messages[0]["text"], "hello-offline-flow");
+
+        assert!(state_json["recent_flow"].is_array());
+        assert_eq!(state_json["recent_flow"][0]["kind"], "chat");
+        assert_eq!(
+            state_json["recent_flow"][0]["hash"],
+            state_json["recent_chat_messages"][0]["hash"]
         );
     }
 
