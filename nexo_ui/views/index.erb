@@ -65,8 +65,8 @@
                 latest_change: <%= @health[:latest_change_kind] %> / <%= @health[:latest_change_summary] %><br />
                 change_source: <%= @health[:latest_change_source].to_s.empty? ? 'n/a' : @health[:latest_change_source].to_s.tr('_', ' ') %><br />
                 last_operator: <%= @health[:last_operator_action_kind].to_s.empty? ? 'none observed' : "#{@health[:last_operator_action_kind]} / #{@health[:last_operator_action_summary]}" %><br />
-                julia_reading: <%= @health[:julia_observation_flow_intensity].to_s.empty? ? 'not available' : "#{@health[:julia_observation_flow_intensity]} / #{@health[:julia_observation_summary]}" %><br />
-                julia_regime: <%= @health[:julia_observation_regime_hint].to_s.empty? ? 'n/a' : @health[:julia_observation_regime_hint].to_s.tr('_', ' ') %><br />
+                julia observation: <%= @health[:julia_observation_flow_intensity].to_s.empty? ? 'not available' : "#{@health[:julia_observation_flow_intensity]} / #{@health[:julia_observation_summary]}" %><br />
+                julia regime: <%= @health[:julia_observation_regime_hint].to_s.empty? ? 'n/a' : @health[:julia_observation_regime_hint].to_s.tr('_', ' ') %><br />
                 latest_origin: <%= @health[:latest_change_origin] %><br />
                 operator_origin: <%= @health[:last_operator_action_origin].to_s.empty? ? 'n/a' : @health[:last_operator_action_origin] %><br />
                 operator_at: <%= @health[:last_operator_action_timestamp].to_i.zero? ? 'n/a' : @health[:last_operator_action_timestamp] %><br />

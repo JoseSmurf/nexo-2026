@@ -11,6 +11,8 @@ target
 
 # Local runtime audit/log artifacts
 logs/
+observations/
+state.db
 
 # Local staging artifacts (TLS certs and secrets)
 staging/certs/*

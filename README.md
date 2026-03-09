@@ -311,6 +311,8 @@ These fields let the UI reflect the core truth directly instead of inferring cap
 - Observation artifacts can be persisted as historical windows and compared over time for simple regime hints.
 - The Sinatra UI can read the latest Julia artifact if present and render a compact observation line in the existing Integrity surface.
 - Example: `julia --project=./julia julia/observe_state.jl http://127.0.0.1:3000/api/state`
+- Continuous loop: `julia --project=./julia julia/observe_loop.jl http://127.0.0.1:3000/api/state ./observations`
+- Role split remains explicit: Rust decides, Julia observes, Ruby presents.
 
 ## UI modes
 

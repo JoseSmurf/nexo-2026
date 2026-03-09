@@ -252,6 +252,7 @@ module CoreAdapter
     return explicit unless explicit.empty?
 
     dir = ENV['NEXO_JULIA_OBSERVATION_DIR'].to_s
+    dir = File.join(Dir.pwd, 'observations') if dir.empty?
     return '' if dir.empty? || !Dir.exist?(dir)
 
     candidates = Dir.children(dir).select { |name| name.end_with?('.json') }.sort

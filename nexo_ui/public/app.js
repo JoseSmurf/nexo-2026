@@ -1130,8 +1130,8 @@
       latest_change: ${latestChangeKind} / ${latestChangeSummary}<br />
       change_source: ${latestChangeSource}<br />
       last_operator: ${lastOperatorLabel}<br />
-      julia_reading: ${juliaReading}<br />
-      julia_regime: ${juliaObservationRegimeHint}<br />
+      julia observation: ${juliaReading}<br />
+      julia regime: ${juliaObservationRegimeHint}<br />
       latest_origin: ${latestChangeOrigin}<br />
       operator_origin: ${lastOperatorActionOrigin || 'n/a'}<br />
       operator_at: ${lastOperatorActionKind ? lastOperatorActionTimestamp : 'n/a'}<br />
