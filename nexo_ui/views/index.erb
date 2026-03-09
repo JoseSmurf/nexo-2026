@@ -37,6 +37,9 @@
       <section class="chat-controls" aria-label="global chat controls">
         <input id="chat-message-input" type="text" maxlength="32" placeholder="Type a global chat message (max 32 bytes)" />
         <button id="send-chat-message" type="button">Send</button>
+        <span class="muted chat-send-mode chat-send-mode-<%= @chat_send_mode %>" id="chat-send-mode">
+          send mode: <%= @chat_send_mode == 'core' ? 'core-backed' : 'demo fallback' %>
+        </span>
       </section>
 
       <section class="dragon-grid" aria-label="System cards">

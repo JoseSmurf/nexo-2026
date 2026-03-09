@@ -95,8 +95,48 @@ module CoreAdapter
     [build_fallback_state, 'fallback_simulated', 'fallback', status || sqlite_status || 'fallback_no_data_source']
   end
 
+  def send_chat_message(text:, origin:, channel: 'global')
+    url = ENV['NEXO_CORE_CHAT_SEND_URL'] || core_endpoint_url('/api/chat/send')
+    return [nil, 'core_chat_url_empty'] if url.to_s.strip.empty?
+
+    uri = URI.parse(url)
+    return [nil, 'core_chat_url_invalid'] unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
+
+    request = Net::HTTP::Post.new(uri)
+    request['Content-Type'] = 'application/json'
+    request.body = JSON.generate(
+      {
+        text: text,
+        origin: origin,
+        channel: channel,
+      },
+    )
+
+    response = Net::HTTP.start(
+      uri.host,
+      uri.port,
+      use_ssl: uri.scheme == 'https',
+      read_timeout: 1,
+      open_timeout: 1,
+    ) do |http|
+      http.request(request)
+    end
+
+    return [nil, "core_chat_http_#{response.code}"] unless response.is_a?(Net::HTTPSuccess)
+
+    body = response.body.to_s
+    return [nil, 'core_chat_http_empty'] if body.empty?
+
+    parsed = JSON.parse(body)
+    return [nil, 'core_chat_not_object'] unless parsed.is_a?(Hash)
+
+    [parsed, 'ok']
+  rescue StandardError => e
+    [nil, "core_chat_request_error: #{e.class.name}"]
+  end
+
   def read_core_state
-    url = ENV['NEXO_CORE_STATE_URL'] || 'http://127.0.0.1:3000/api/state'
+    url = ENV['NEXO_CORE_STATE_URL'] || core_endpoint_url('/api/state')
     return [nil, 'core_url_empty'] if url.to_s.strip.empty?
 
     uri = URI.parse(url)
@@ -193,6 +233,16 @@ module CoreAdapter
 
   def sqlite_path
     ENV['NEXO_UI_SQLITE_PATH'] || File.join(Dir.pwd, 'state.db')
+  end
+
+  def core_endpoint_url(path)
+    uri = URI.parse(ENV['NEXO_CORE_STATE_URL'] || 'http://127.0.0.1:3000/api/state')
+    uri.path = path
+    uri.query = nil
+    uri.fragment = nil
+    uri.to_s
+  rescue URI::InvalidURIError
+    ''
   end
 
   def normalize(payload, source: :fallback)

@@ -25,6 +25,8 @@ use uuid::Uuid;
 
 use crate::audit_store::{AuditRecord, AuditStore};
 #[cfg(feature = "network")]
+use crate::message::CanonicalMessage;
+#[cfg(feature = "network")]
 use crate::offline_store::OfflineStore;
 use crate::profile::{profile_from_env, RuleProfile};
 use crate::telemetry::{Metrics, MetricsSnapshot};
@@ -58,6 +60,7 @@ const DEFAULT_HIGH_THRESHOLD_CENTS: u64 = 5_000_000;
 const DEFAULT_SHAKE_BITS: u16 = 512;
 const DEFAULT_STATE_CHAT_LIMIT: usize = 5;
 const ADAPTIVE_RISK_BPS_THRESHOLD: u16 = 8_000;
+const MAX_CHAT_MESSAGE_BYTES: usize = 32;
 
 const HEADER_SIGNATURE: &str = "x-signature";
 const HEADER_REQUEST_ID: &str = "x-request-id";
@@ -300,6 +303,20 @@ pub struct StateChatMessage {
     pub timestamp: u64,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ChatSendRequest {
+    pub origin: Option<String>,
+    pub channel: Option<String>,
+    pub text: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChatSendResponse {
+    pub status: String,
+    pub message: StateChatMessage,
+    pub send_mode: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct StateResponse {
     pub system_status: String,
@@ -327,6 +344,12 @@ enum AuthError {
     Unauthorized(&'static str),
     RequestTimeout(&'static str),
     Conflict(&'static str),
+    ServiceUnavailable(&'static str),
+}
+
+#[derive(Debug)]
+enum ChatSendError {
+    BadRequest(&'static str),
     ServiceUnavailable(&'static str),
 }
 
@@ -1424,6 +1447,7 @@ pub fn app_with_state(state: AppState) -> Router {
         .route("/audit/recent", get(audit_recent_handler))
         .route("/security/status", get(security_status_handler))
         .route("/api/state", get(api_state_handler))
+        .route("/api/chat/send", post(api_chat_send_handler))
         .with_state(state)
 }
 
@@ -1474,6 +1498,77 @@ async fn api_state_handler(State(state): State<AppState>) -> impl IntoResponse {
         }),
     )
         .into_response()
+}
+
+async fn api_chat_send_handler(
+    State(state): State<AppState>,
+    Json(req): Json<ChatSendRequest>,
+) -> impl IntoResponse {
+    let request_id = Uuid::new_v4().to_string();
+    let origin = req.origin.unwrap_or_else(|| "ui_dashboard".to_string());
+    let channel = req.channel.unwrap_or_else(|| "global".to_string());
+    let text = req.text;
+
+    if origin.trim().is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            &state,
+            &request_id,
+            "origin must not be empty",
+        );
+    }
+    if channel != "global" {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            &state,
+            &request_id,
+            "channel must be global",
+        );
+    }
+    if text.trim().is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            &state,
+            &request_id,
+            "text must not be empty",
+        );
+    }
+    if text.len() > MAX_CHAT_MESSAGE_BYTES {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            &state,
+            &request_id,
+            "text must be <= 32 bytes",
+        );
+    }
+
+    let now_ms = now_utc_ms();
+    let message = match store_chat_message(
+        state.p2p_db_path.as_deref(),
+        &origin,
+        &channel,
+        &text,
+        now_ms,
+    ) {
+        Ok(message) => message,
+        Err(ChatSendError::BadRequest(msg)) => {
+            return error_response(StatusCode::BAD_REQUEST, &state, &request_id, msg);
+        }
+        Err(ChatSendError::ServiceUnavailable(msg)) => {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, &state, &request_id, msg);
+        }
+    };
+
+    signed_json_response(
+        StatusCode::OK,
+        &state,
+        &request_id,
+        &ChatSendResponse {
+            status: "inserted".to_string(),
+            message,
+            send_mode: "core".to_string(),
+        },
+    )
 }
 
 fn build_state_events(records: &[AuditRecord]) -> Vec<StateEvent> {
@@ -1694,6 +1789,59 @@ fn load_recent_chat_messages(p2p_db_path: Option<&str>, limit: usize) -> Vec<Sta
 #[cfg(not(feature = "network"))]
 fn load_recent_chat_messages(_p2p_db_path: Option<&str>, _limit: usize) -> Vec<StateChatMessage> {
     Vec::new()
+}
+
+#[cfg(feature = "network")]
+fn store_chat_message(
+    p2p_db_path: Option<&str>,
+    origin: &str,
+    channel: &str,
+    text: &str,
+    now_ms: u64,
+) -> Result<StateChatMessage, ChatSendError> {
+    let Some(path) = p2p_db_path else {
+        return Err(ChatSendError::ServiceUnavailable("p2p chat unavailable"));
+    };
+    let path = path.trim();
+    if path.is_empty() {
+        return Err(ChatSendError::ServiceUnavailable("p2p chat unavailable"));
+    }
+
+    let store = OfflineStore::open(path)
+        .map_err(|_| ChatSendError::ServiceUnavailable("p2p chat store unavailable"))?;
+    let nonce = store
+        .next_nonce(origin)
+        .map_err(|_| ChatSendError::ServiceUnavailable("p2p chat nonce unavailable"))?;
+    let msg = CanonicalMessage::new_with_nonce(origin.to_string(), now_ms, nonce, text.as_bytes())
+        .map_err(ChatSendError::BadRequest)?;
+    store
+        .insert_message_with_channel(&msg, channel, now_ms, 120_000)
+        .map_err(|_| ChatSendError::ServiceUnavailable("failed to persist chat message"))?;
+
+    Ok(StateChatMessage {
+        hash: crate::message::event_hash(&msg),
+        origin: msg.sender_id,
+        channel: channel.to_string(),
+        text: String::from_utf8_lossy(&msg.content).into_owned(),
+        timestamp: msg.timestamp_utc_ms,
+    })
+}
+
+#[cfg(not(feature = "network"))]
+fn store_chat_message(
+    _p2p_db_path: Option<&str>,
+    _origin: &str,
+    _channel: &str,
+    text: &str,
+    _now_ms: u64,
+) -> Result<StateChatMessage, ChatSendError> {
+    if text.trim().is_empty() {
+        return Err(ChatSendError::BadRequest("text must not be empty"));
+    }
+    if text.len() > MAX_CHAT_MESSAGE_BYTES {
+        return Err(ChatSendError::BadRequest("text must be <= 32 bytes"));
+    }
+    Err(ChatSendError::ServiceUnavailable("p2p chat unavailable"))
 }
 
 fn unique_peer_count(records: &[AuditRecord]) -> usize {
@@ -2961,6 +3109,92 @@ mod tests {
             state_json["recent_flow"][0]["hash"],
             state_json["recent_chat_messages"][0]["hash"]
         );
+    }
+
+    #[cfg(feature = "network")]
+    #[tokio::test]
+    async fn api_chat_send_handler_persists_message_to_db() {
+        let db_path = std::env::temp_dir().join(format!("nexo_ui_chat_{}.db", Uuid::new_v4()));
+        let db_path_str = db_path.to_str().expect("db path");
+
+        let mut state = test_state();
+        state.p2p_db_path = Some(db_path_str.to_string());
+        let app = app_with_state(state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/chat/send")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "origin": "ui_dashboard",
+                    "channel": "global",
+                    "text": "hello-ui-core"
+                })
+                .to_string(),
+            ))
+            .expect("request");
+        let resp = app.clone().oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("chat send body")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("chat send json");
+        assert_eq!(json["status"], "inserted");
+        assert_eq!(json["send_mode"], "core");
+        assert_eq!(json["message"]["origin"], "ui_dashboard");
+        assert_eq!(json["message"]["channel"], "global");
+        assert_eq!(json["message"]["text"], "hello-ui-core");
+
+        let state_req = Request::builder()
+            .method("GET")
+            .uri("/api/state")
+            .body(Body::empty())
+            .expect("state request");
+        let state_resp = app.oneshot(state_req).await.expect("state response");
+        assert_eq!(state_resp.status(), StatusCode::OK);
+
+        let state_body = state_resp
+            .into_body()
+            .collect()
+            .await
+            .expect("state body bytes")
+            .to_bytes();
+        let state_json: Value = serde_json::from_slice(&state_body).expect("state json");
+        assert_eq!(
+            state_json["recent_chat_messages"][0]["origin"],
+            "ui_dashboard"
+        );
+        assert_eq!(
+            state_json["recent_chat_messages"][0]["text"],
+            "hello-ui-core"
+        );
+        assert_eq!(state_json["recent_flow"][0]["kind"], "chat");
+    }
+
+    #[tokio::test]
+    async fn api_chat_send_handler_rejects_long_message() {
+        let app = app_with_state(test_state());
+        let long_text = "x".repeat(33);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/chat/send")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "origin": "ui_dashboard",
+                    "channel": "global",
+                    "text": long_text
+                })
+                .to_string(),
+            ))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

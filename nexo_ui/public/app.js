@@ -39,6 +39,7 @@
   const networkCauseHintNode = document.getElementById('network-cause-hint');
   const chatInputNode = document.getElementById('chat-message-input');
   const chatSendBtnNode = document.getElementById('send-chat-message');
+  const chatSendModeNode = document.getElementById('chat-send-mode');
   const chatCardNode = document.getElementById('card-globalchat');
   const liveFlowCardNode = document.getElementById('card-liveflow');
   const chatSourceNode = document.getElementById('chat-source-indicator');
@@ -699,6 +700,8 @@
   const sourceNode = document.getElementById('data-source');
   const sourceTypeClassCore = 'chat-source-indicator-core';
   const sourceTypeClassFallback = 'chat-source-indicator-fallback';
+  const chatSendModeClassCore = 'chat-send-mode-core';
+  const chatSendModeClassDemo = 'chat-send-mode-demo';
   const healthCardNode = cardNodes.healthCard;
   const healthBannerNode = document.getElementById('health-banner');
   const healthPolicyNode = document.getElementById('health-policy-state');
@@ -774,6 +777,27 @@
     }
 
     cardNodes[key].textContent = value;
+  }
+
+  function applyChatSendMode(mode) {
+    if (!chatSendModeNode) {
+      return;
+    }
+
+    const normalized = mode === 'core' ? 'core' : mode === 'demo' ? 'demo' : mode;
+    const label = normalized === 'core'
+      ? 'core-backed'
+      : normalized === 'demo'
+        ? 'demo fallback'
+        : normalized.replace(/_/g, ' ');
+
+    chatSendModeNode.textContent = `send mode: ${label}`;
+    chatSendModeNode.classList.remove(chatSendModeClassCore, chatSendModeClassDemo);
+    if (normalized === 'core') {
+      chatSendModeNode.classList.add(chatSendModeClassCore);
+    } else if (normalized === 'demo') {
+      chatSendModeNode.classList.add(chatSendModeClassDemo);
+    }
   }
 
   function applyState(data) {
@@ -876,6 +900,10 @@
 
     if (sourceNode && data.data_source) {
       sourceNode.textContent = `source: ${data.data_source}`;
+    }
+
+    if (data && data.chat_send_mode) {
+      applyChatSendMode(String(data.chat_send_mode));
     }
 
     if (chatSourceNode) {
@@ -1033,9 +1061,26 @@
       return;
     }
 
-    simulate('chat_message', { text }).then(() => {
-      chatInputNode.value = '';
-    });
+    fetch('/api/chat/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload || !payload.state) {
+          if (payload && payload.chat_send_mode) {
+            applyChatSendMode(String(payload.chat_send_mode));
+          }
+          return;
+        }
+        applyState(payload);
+        fetchHealth();
+        chatInputNode.value = '';
+      })
+      .catch(() => {
+        applyChatSendMode('core_unavailable');
+      });
   }
 
   document.getElementById('refresh-btn').addEventListener('click', () => {

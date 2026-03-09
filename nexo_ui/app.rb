@@ -50,7 +50,7 @@ helpers do
     end
   end
 
-  def to_payload(state, source, network_cause: nil, source_type: nil, adapter_status: nil)
+  def to_payload(state, source, network_cause: nil, source_type: nil, adapter_status: nil, chat_send_mode: nil)
     payload = {
       state: state,
       seed: motion_seed_from_state(state, CARD_DEFS.length),
@@ -60,6 +60,7 @@ helpers do
     }
     payload[:source_type] = source_type if source_type
     payload[:adapter_status] = adapter_status if adapter_status
+    payload[:chat_send_mode] = chat_send_mode if chat_send_mode
     payload
   end
 
@@ -160,6 +161,28 @@ helpers do
     list = Array(state[:recent_chat_messages]).map(&:dup)
     list.unshift(chat_message)
     state[:recent_chat_messages] = list.first(5)
+  end
+
+  def preferred_chat_send_mode(source_type)
+    source_type == 'core' ? 'core' : 'demo'
+  end
+
+  def apply_demo_chat_message_send(state, text, origin, channel)
+    update_recent_chat_messages(
+      state,
+      new_chat_message_payload(text, origin, channel),
+    )
+    update_recent_events(
+      state,
+      new_event_payload(
+        'chat_message',
+        origin,
+        channel,
+        "chat-msg-#{state[:event_counter]}-#{text}",
+      ),
+    )
+    state[:system_status] = 'chat_message_sent'
+    state[:recent_flow] = build_live_flow(state)
   end
 
   def flow_candidates_from_event(event, index)
@@ -325,25 +348,12 @@ post '/api/simulate' do
       halt 400, { error: 'chat_message_too_long', max_bytes: 32 }.to_json
     end
 
-    update_recent_chat_messages(
+    apply_demo_chat_message_send(
       state,
-      new_chat_message_payload(
-        text,
-        data['origin'] || 'ui_simulator_chat',
-        data['channel'] || 'global',
-      ),
+      text,
+      data['origin'] || 'ui_simulator_chat',
+      data['channel'] || 'global',
     )
-    update_recent_events(
-      state,
-      new_event_payload(
-        'chat_message',
-        data['origin'] || 'ui_simulator_chat',
-        data['channel'] || 'global',
-        "chat-msg-#{state[:event_counter]}-#{text}",
-      ),
-    )
-    state[:system_status] = 'chat_message_sent'
-    state[:recent_flow] = build_live_flow(state)
   else
     halt 400, { error: 'unknown action' }.to_json
   end
@@ -356,12 +366,70 @@ post '/api/simulate' do
     source_type: 'demo',
     adapter_status: 'manual_demo_override',
     network_cause: network_cause,
+    chat_send_mode: 'demo',
+  ).to_json
+end
+
+post '/api/chat/send' do
+  content_type :json
+
+  begin
+    data = JSON.parse(request.body.read.to_s)
+  rescue JSON::ParserError
+    halt 400, { error: 'invalid_json', chat_send_mode: 'invalid' }.to_json
+  end
+
+  text = data['text'].to_s
+  origin = data['origin'].to_s.strip
+  channel = data['channel'].to_s.strip
+
+  halt 400, { error: 'chat_message_too_long', max_bytes: 32, chat_send_mode: 'invalid' }.to_json if text.bytesize > 32
+  halt 400, { error: 'chat_message_empty', chat_send_mode: 'invalid' }.to_json if text.strip.empty?
+
+  origin = 'ui_dashboard' if origin.empty?
+  channel = 'global' if channel.empty?
+  halt 400, { error: 'chat_channel_invalid', chat_send_mode: 'invalid' }.to_json unless channel == 'global'
+
+  _current_state, _source, source_type, _adapter_status = current_status_state
+
+  if source_type == 'core'
+    result, send_status = CoreAdapter.send_chat_message(text: text, origin: origin, channel: channel)
+    if result
+      state, source, fresh_source_type, fresh_adapter_status = current_status_state
+      return to_payload(
+        state,
+        source,
+        source_type: fresh_source_type,
+        adapter_status: fresh_adapter_status,
+        chat_send_mode: 'core',
+      ).to_json
+    end
+
+    halt 503, {
+      error: 'core_chat_send_unavailable',
+      adapter_status: send_status,
+      chat_send_mode: 'core_unavailable',
+    }.to_json
+  end
+
+  settings.ui_mode = :demo
+  state = settings.state
+  state[:event_counter] ||= 0
+  state[:event_counter] += 1
+  apply_demo_chat_message_send(state, text, origin, channel)
+  to_payload(
+    state.reject { |k, _v| k == :event_counter },
+    'fallback_simulated',
+    source_type: 'demo',
+    adapter_status: 'manual_demo_override',
+    chat_send_mode: 'demo',
   ).to_json
 end
 
 get '/' do
   settings.ui_mode = :live
   @state, @data_source, @source_type, @adapter_status = current_status_state
+  @chat_send_mode = preferred_chat_send_mode(@source_type)
   @cards = CARD_DEFS
   @seed = motion_seed_from_state(@state, @cards.length)
 
@@ -375,7 +443,13 @@ get '/api/status' do
   content_type :json
   settings.ui_mode = :live
   state, source, source_type, adapter_status = current_status_state
-  to_payload(state, source, source_type: source_type, adapter_status: adapter_status).to_json
+  to_payload(
+    state,
+    source,
+    source_type: source_type,
+    adapter_status: adapter_status,
+    chat_send_mode: preferred_chat_send_mode(source_type),
+  ).to_json
 end
 
 get '/api/health' do

@@ -147,6 +147,7 @@ button:hover {
 .chat-controls {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 18px;
 }
@@ -163,6 +164,18 @@ button:hover {
 
 .chat-controls input::placeholder {
   color: #84a5d8;
+}
+
+.chat-send-mode {
+  font-size: 0.8rem;
+}
+
+.chat-send-mode-core {
+  color: #9ff9dc;
+}
+
+.chat-send-mode-demo {
+  color: #ffcf78;
 }
 
 .simulate-button {
