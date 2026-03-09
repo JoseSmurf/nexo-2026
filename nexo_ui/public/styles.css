@@ -135,6 +135,11 @@ button:hover {
   background: rgba(22, 39, 58, 0.95);
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
 .muted {
   color: #8699b4;
   font-size: 0.85rem;
@@ -176,6 +181,32 @@ button:hover {
 
 .chat-send-mode-demo {
   color: #ffcf78;
+}
+
+.chat-send-mode-offline {
+  color: #ffb4b4;
+}
+
+.chat-byte-counter,
+.chat-help-text,
+.chat-send-status,
+.surface-mode-label,
+.empty-state {
+  font-size: 0.78rem;
+}
+
+.chat-byte-counter-invalid,
+.chat-send-status-error {
+  color: #ffb4b4;
+}
+
+.chat-send-status-success {
+  color: #9ff9dc;
+}
+
+.chat-help-text,
+.empty-state {
+  color: #92a6c4;
 }
 
 .simulate-button {

@@ -40,6 +40,8 @@
   const chatInputNode = document.getElementById('chat-message-input');
   const chatSendBtnNode = document.getElementById('send-chat-message');
   const chatSendModeNode = document.getElementById('chat-send-mode');
+  const chatByteCounterNode = document.getElementById('chat-byte-counter');
+  const chatSendStatusNode = document.getElementById('chat-send-status');
   const chatCardNode = document.getElementById('card-globalchat');
   const liveFlowCardNode = document.getElementById('card-liveflow');
   const chatSourceNode = document.getElementById('chat-source-indicator');
@@ -327,10 +329,58 @@
     return messages;
   }
 
-  function formatChatMessages(state) {
+  function describeSurfaceMode(sourceType, adapterStatus = '') {
+    if (sourceType === 'demo' || adapterStatus === 'manual_demo_override') {
+      return 'demo mode';
+    }
+    if (sourceType === 'core') {
+      return 'connected to core';
+    }
+    if (sourceType === 'sqlite' || sourceType === 'file') {
+      return 'offline local state';
+    }
+    if (sourceType === 'fallback') {
+      return 'offline mode';
+    }
+    return 'state unavailable';
+  }
+
+  function describeChatSource(sourceType) {
+    if (sourceType === 'core') {
+      return 'connected to core';
+    }
+    if (sourceType === 'sqlite' || sourceType === 'file') {
+      return 'offline local state';
+    }
+    if (sourceType === 'fallback' || sourceType === 'demo') {
+      return 'demo or fallback';
+    }
+    return 'state unavailable';
+  }
+
+  function describeChatEmptyState(data) {
+    const sourceType = String(data && data.source_type ? data.source_type : 'unknown');
+    if (sourceType === 'core') {
+      return 'No chat messages from the core yet.';
+    }
+    if (sourceType === 'sqlite' || sourceType === 'file') {
+      return 'Offline local state is read-only.';
+    }
+    return 'No chat messages available in this mode.';
+  }
+
+  function describeFlowEmptyState(data) {
+    const sourceType = String(data && data.source_type ? data.source_type : 'unknown');
+    if (sourceType === 'core') {
+      return 'No live flow from the core yet.';
+    }
+    return 'No live flow available in this mode.';
+  }
+
+  function formatChatMessages(state, data) {
     const messages = sanitizeChatMessages(state);
     if (messages.length === 0) {
-      return 'no messages yet';
+      return `<span class="empty-state">${escapeHtml(describeChatEmptyState(data))}</span>`;
     }
 
     return messages.map((message, index) => {
@@ -364,10 +414,10 @@
     return 'event';
   }
 
-  function formatLiveFlow(state, shouldPulseLatestRow = false) {
+  function formatLiveFlow(state, data, shouldPulseLatestRow = false) {
     const flowItems = sanitizeLiveFlow(state);
     if (flowItems.length === 0) {
-      return 'no live flow';
+      return `<span class="empty-state">${escapeHtml(describeFlowEmptyState(data))}</span>`;
     }
 
     return flowItems.map((item, index) => {
@@ -702,6 +752,9 @@
   const sourceTypeClassFallback = 'chat-source-indicator-fallback';
   const chatSendModeClassCore = 'chat-send-mode-core';
   const chatSendModeClassDemo = 'chat-send-mode-demo';
+  const chatSendModeClassOffline = 'chat-send-mode-offline';
+  const chatSendStatusClassError = 'chat-send-status-error';
+  const chatSendStatusClassSuccess = 'chat-send-status-success';
   const healthCardNode = cardNodes.healthCard;
   const healthBannerNode = document.getElementById('health-banner');
   const healthPolicyNode = document.getElementById('health-policy-state');
@@ -779,25 +832,80 @@
     cardNodes[key].textContent = value;
   }
 
+  function describeChatSendMode(mode) {
+    switch (mode) {
+      case 'core':
+        return 'send to core';
+      case 'offline':
+        return 'offline read-only';
+      case 'demo':
+        return 'demo fallback';
+      case 'core_unavailable':
+        return 'core send unavailable';
+      case 'forbidden':
+        return 'local only';
+      case 'invalid':
+        return 'invalid input';
+      default:
+        return String(mode || 'send state unknown').replace(/_/g, ' ');
+    }
+  }
+
+  function setChatSendStatus(text, tone = '') {
+    if (!chatSendStatusNode) {
+      return;
+    }
+
+    chatSendStatusNode.textContent = text;
+    chatSendStatusNode.classList.remove(chatSendStatusClassError, chatSendStatusClassSuccess);
+    if (tone === 'error') {
+      chatSendStatusNode.classList.add(chatSendStatusClassError);
+    } else if (tone === 'success') {
+      chatSendStatusNode.classList.add(chatSendStatusClassSuccess);
+    }
+  }
+
+  function updateChatComposerState(chatSendMode = null) {
+    const text = chatInputNode ? chatInputNode.value : '';
+    const size = bytesize(text);
+    const hasText = text && text.trim() !== '';
+    const normalizedMode = chatSendMode ? String(chatSendMode) : null;
+    const readOnly = normalizedMode === 'offline';
+
+    if (chatByteCounterNode) {
+      chatByteCounterNode.textContent = `${size} / 32 bytes`;
+      chatByteCounterNode.classList.toggle('chat-byte-counter-invalid', size > 32);
+    }
+
+    if (chatSendBtnNode) {
+      chatSendBtnNode.disabled = !hasText || size > 32 || readOnly;
+      chatSendBtnNode.setAttribute('aria-disabled', chatSendBtnNode.disabled ? 'true' : 'false');
+      chatSendBtnNode.title = readOnly ? 'Offline local state is read-only.' : 'Send message';
+    }
+  }
+
   function applyChatSendMode(mode) {
     if (!chatSendModeNode) {
       return;
     }
 
-    const normalized = mode === 'core' ? 'core' : mode === 'demo' ? 'demo' : mode;
-    const label = normalized === 'core'
-      ? 'core-backed'
-      : normalized === 'demo'
-        ? 'demo fallback'
-        : normalized.replace(/_/g, ' ');
+    const normalized = String(mode || 'unknown');
+    const label = describeChatSendMode(normalized);
 
     chatSendModeNode.textContent = `send mode: ${label}`;
-    chatSendModeNode.classList.remove(chatSendModeClassCore, chatSendModeClassDemo);
+    chatSendModeNode.classList.remove(
+      chatSendModeClassCore,
+      chatSendModeClassDemo,
+      chatSendModeClassOffline,
+    );
     if (normalized === 'core') {
       chatSendModeNode.classList.add(chatSendModeClassCore);
     } else if (normalized === 'demo') {
       chatSendModeNode.classList.add(chatSendModeClassDemo);
+    } else if (normalized === 'offline') {
+      chatSendModeNode.classList.add(chatSendModeClassOffline);
     }
+    updateChatComposerState(normalized);
   }
 
   function applyState(data) {
@@ -829,7 +937,7 @@
       if (hasLiveFlowPulse) {
         triggerLiveFlowPulse();
       }
-      cardNodes.recent_flow.innerHTML = formatLiveFlow(state, hasLiveFlowPulse);
+      cardNodes.recent_flow.innerHTML = formatLiveFlow(state, data, hasLiveFlowPulse);
     }
 
     const hasAiPulse = shouldPulseForAiInsight(state);
@@ -844,7 +952,7 @@
 
     const hasChatPulse = shouldPulseForChat(state);
     if (cardNodes.recent_chat_messages) {
-      cardNodes.recent_chat_messages.innerHTML = formatChatMessages(state);
+      cardNodes.recent_chat_messages.innerHTML = formatChatMessages(state, data);
       if (hasChatPulse.changed) {
         triggerChatPulse();
         const chatHighlight = resolveChatOriginForPeerDot(hasChatPulse.origin, state.peers_count);
@@ -898,8 +1006,8 @@
       });
     }
 
-    if (sourceNode && data.data_source) {
-      sourceNode.textContent = `source: ${data.data_source}`;
+    if (sourceNode) {
+      sourceNode.textContent = `mode: ${describeSurfaceMode(data.source_type, data.adapter_status)}`;
     }
 
     if (data && data.chat_send_mode) {
@@ -909,11 +1017,7 @@
     if (chatSourceNode) {
       const sourceType = String(data && data.source_type ? data.source_type : 'unknown');
       const sourceIsCore = sourceType === 'core' || sourceType === 'file' || sourceType === 'sqlite';
-      const label = sourceIsCore
-        ? 'core-backed'
-        : sourceType === 'fallback' || sourceType === 'demo'
-          ? 'fallback/demo'
-          : sourceType;
+      const label = describeChatSource(sourceType);
 
       chatSourceNode.textContent = `messages source: ${label}`;
       chatSourceNode.classList.remove(sourceTypeClassCore, sourceTypeClassFallback);
@@ -960,7 +1064,7 @@
       healthBannerNode.classList.add(`health-state-${uiStatus}`);
 
       if (healthPolicyNode) {
-        healthPolicyNode.textContent = uiStatus;
+        healthPolicyNode.textContent = describeSurfaceMode(sourceType, adapterStatus);
       }
 
       if (healthSourceNode) {
@@ -989,11 +1093,14 @@
   async function fetchStatus() {
     try {
       const response = await fetch('/api/status');
-      if (!response.ok) return;
+      if (!response.ok) {
+        setChatSendStatus('Dashboard unavailable. Last view may be stale.', 'error');
+        return;
+      }
       const payload = await response.json();
       applyState(payload);
     } catch (_err) {
-      // fail-closed on UI side: preserve old state silently
+      setChatSendStatus('Dashboard unavailable. Last view may be stale.', 'error');
     }
   }
 
@@ -1054,12 +1161,16 @@
 
     const text = chatInputNode.value;
     if (!text || text.trim() === '') {
+      setChatSendStatus('Enter a message before sending.', 'error');
       return;
     }
 
     if (bytesize(text) > 32) {
+      setChatSendStatus('Message is over the 32-byte limit.', 'error');
       return;
     }
+
+    setChatSendStatus('Sending message...');
 
     fetch('/api/chat/send', {
       method: 'POST',
@@ -1072,14 +1183,33 @@
           if (payload && payload.chat_send_mode) {
             applyChatSendMode(String(payload.chat_send_mode));
           }
+          if (payload && payload.error === 'offline_read_only') {
+            setChatSendStatus('Offline local state is read-only.', 'error');
+          } else if (payload && payload.error === 'local_only_route') {
+            setChatSendStatus('Chat send is available only from this local machine.', 'error');
+          } else if (payload && payload.error === 'core_chat_send_unavailable') {
+            setChatSendStatus('Core send unavailable. No message was sent.', 'error');
+          } else if (payload && payload.error === 'chat_message_too_long') {
+            setChatSendStatus('Message is over the 32-byte limit.', 'error');
+          } else if (payload && payload.error === 'chat_message_empty') {
+            setChatSendStatus('Enter a message before sending.', 'error');
+          } else {
+            setChatSendStatus('Chat send failed. No message was sent.', 'error');
+          }
           return;
         }
         applyState(payload);
         fetchHealth();
         chatInputNode.value = '';
+        updateChatComposerState(payload.chat_send_mode || 'core');
+        setChatSendStatus(
+          payload.chat_send_mode === 'demo' ? 'Demo message added.' : 'Message sent to core.',
+          'success',
+        );
       })
       .catch(() => {
         applyChatSendMode('core_unavailable');
+        setChatSendStatus('Chat send failed. Dashboard is unavailable.', 'error');
       });
   }
 
@@ -1094,6 +1224,7 @@
     chatSendBtnNode.addEventListener('click', sendChatMessage);
   }
   if (chatInputNode) {
+    chatInputNode.addEventListener('input', () => updateChatComposerState());
     chatInputNode.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
         event.preventDefault();
@@ -1108,4 +1239,5 @@
 
   fetchStatus();
   fetchHealth();
+  updateChatComposerState();
 })();

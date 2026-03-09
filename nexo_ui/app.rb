@@ -1,6 +1,7 @@
 require 'sinatra'
 require 'json'
 require 'digest'
+require 'ipaddr'
 require 'time'
 require_relative 'core_adapter'
 
@@ -68,20 +69,58 @@ helpers do
     CoreAdapter.build_state
   end
 
-  def health_payload(state, source, source_type, adapter_status)
-    ui_status = if settings.ui_mode == :demo || source_type == 'fallback'
-      'degraded'
+  def local_request?
+    ip = request.ip.to_s.strip
+    return true if ip == '127.0.0.1' || ip == '::1' || ip == 'localhost'
+
+    IPAddr.new(ip).loopback?
+  rescue IPAddr::InvalidAddressError
+    false
+  end
+
+  def surface_mode_label(source_type, adapter_status = nil)
+    return 'demo mode' if source_type == 'demo' || adapter_status == 'manual_demo_override'
+    return 'connected to core' if source_type == 'core'
+    return 'offline local state' if source_type == 'sqlite' || source_type == 'file'
+    return 'offline mode' if source_type == 'fallback'
+
+    'state unavailable'
+  end
+
+  def chat_send_mode_label(mode)
+    case mode
+    when 'core'
+      'send to core'
+    when 'offline'
+      'offline read-only'
+    when 'demo'
+      'demo fallback'
+    when 'core_unavailable'
+      'core send unavailable'
     else
-      'healthy'
+      'send state unknown'
     end
+  end
+
+  def health_payload(state, source, source_type, adapter_status)
+    ui_status =
+      if settings.ui_mode == :demo || source_type == 'demo' || adapter_status == 'manual_demo_override'
+        'demo'
+      elsif source_type == 'fallback' || source_type == 'sqlite' || source_type == 'file'
+        'degraded'
+      else
+        'healthy'
+      end
 
     integrity_message =
       if ui_status == 'unavailable'
         'health source unreachable'
-      elsif source_type == 'demo' || adapter_status == 'manual_demo_override'
+      elsif ui_status == 'demo'
         'manual demo override active'
+      elsif source_type == 'sqlite' || source_type == 'file'
+        'reading offline local state'
       elsif ui_status == 'degraded' && source_type == 'fallback'
-        'running from fallback source'
+        'core unavailable, showing fallback state'
       else
         'reading real source'
       end
@@ -164,7 +203,10 @@ helpers do
   end
 
   def preferred_chat_send_mode(source_type)
-    source_type == 'core' ? 'core' : 'demo'
+    return 'core' if source_type == 'core'
+    return 'offline' if source_type == 'sqlite' || source_type == 'file'
+
+    'demo'
   end
 
   def apply_demo_chat_message_send(state, text, origin, channel)
@@ -373,6 +415,8 @@ end
 post '/api/chat/send' do
   content_type :json
 
+  halt 403, { error: 'local_only_route', chat_send_mode: 'forbidden' }.to_json unless local_request?
+
   begin
     data = JSON.parse(request.body.read.to_s)
   rescue JSON::ParserError
@@ -380,15 +424,11 @@ post '/api/chat/send' do
   end
 
   text = data['text'].to_s
-  origin = data['origin'].to_s.strip
-  channel = data['channel'].to_s.strip
+  origin = 'ui_dashboard'
+  channel = 'global'
 
   halt 400, { error: 'chat_message_too_long', max_bytes: 32, chat_send_mode: 'invalid' }.to_json if text.bytesize > 32
   halt 400, { error: 'chat_message_empty', chat_send_mode: 'invalid' }.to_json if text.strip.empty?
-
-  origin = 'ui_dashboard' if origin.empty?
-  channel = 'global' if channel.empty?
-  halt 400, { error: 'chat_channel_invalid', chat_send_mode: 'invalid' }.to_json unless channel == 'global'
 
   _current_state, _source, source_type, _adapter_status = current_status_state
 
@@ -412,6 +452,14 @@ post '/api/chat/send' do
     }.to_json
   end
 
+  if source_type == 'sqlite' || source_type == 'file'
+    halt 503, {
+      error: 'offline_read_only',
+      adapter_status: 'local_state_read_only',
+      chat_send_mode: 'offline',
+    }.to_json
+  end
+
   settings.ui_mode = :demo
   state = settings.state
   state[:event_counter] ||= 0
@@ -430,6 +478,8 @@ get '/' do
   settings.ui_mode = :live
   @state, @data_source, @source_type, @adapter_status = current_status_state
   @chat_send_mode = preferred_chat_send_mode(@source_type)
+  @surface_mode_label = surface_mode_label(@source_type, @adapter_status)
+  @chat_send_mode_label = chat_send_mode_label(@chat_send_mode)
   @cards = CARD_DEFS
   @seed = motion_seed_from_state(@state, @cards.length)
 

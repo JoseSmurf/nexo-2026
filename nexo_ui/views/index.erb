@@ -17,11 +17,11 @@
       <section class="controls" aria-label="dashboard controls">
         <button id="refresh-btn" type="button">Refresh now</button>
         <span class="muted">Auto polling every 3s</span>
-        <span class="muted" id="data-source">source: <%= @data_source %></span>
+        <span class="muted surface-mode-label" id="data-source">mode: <%= @surface_mode_label %></span>
         <span class="health-banner health-state-<%= @health[:ui_status] %>" id="health-banner">
           <span class="health-dot" id="health-dot"></span>
-          <span class="health-policy">Health policy:</span>
-          <strong id="health-policy-state"><%= @health[:ui_status] %></strong>
+          <span class="health-policy">Health:</span>
+          <strong id="health-policy-state"><%= @surface_mode_label %></strong>
           <span class="muted" id="health-policy-source">Source: <%= @health[:source_type] %></span>
         </span>
       </section>
@@ -35,11 +35,14 @@
       </section>
 
       <section class="chat-controls" aria-label="global chat controls">
-        <input id="chat-message-input" type="text" maxlength="32" placeholder="Type a global chat message (max 32 bytes)" />
+        <input id="chat-message-input" type="text" maxlength="32" placeholder="Type a global chat message" aria-describedby="chat-help-text chat-byte-counter chat-send-status" />
         <button id="send-chat-message" type="button">Send</button>
         <span class="muted chat-send-mode chat-send-mode-<%= @chat_send_mode %>" id="chat-send-mode">
-          send mode: <%= @chat_send_mode == 'core' ? 'core-backed' : 'demo fallback' %>
+          send mode: <%= @chat_send_mode_label %>
         </span>
+        <span class="muted chat-byte-counter" id="chat-byte-counter">0 / 32 bytes</span>
+        <span class="muted chat-help-text" id="chat-help-text">Global chat accepts up to 32 bytes.</span>
+        <span class="muted chat-send-status" id="chat-send-status" role="status" aria-live="polite">Ready.</span>
       </section>
 
       <section class="dragon-grid" aria-label="System cards">
@@ -81,7 +84,7 @@
               <div class="value flow-lines" id="value-recent_flow">
                 <% flow_items = Array(@state[:recent_flow] || []).take(5) %>
                 <% if flow_items.empty? %>
-                  no live flow
+                  <span class="empty-state"><%= @source_type == 'core' ? 'No live flow from the core yet.' : 'No live flow available in this mode.' %></span>
                 <% else %>
                   <% flow_items.each_with_index do |item, index| %>
                     <div class="flow-item flow-item-<%= item[:kind] || 'event' %> <%= index.zero? ? 'latest' : '' %>">
@@ -98,7 +101,7 @@
               <div class="value chat-lines" id="value-recent_chat_messages">
                 <% messages = Array(@state[:recent_chat_messages] || []).take(5) %>
                 <% if messages.empty? %>
-                  no messages yet
+                  <span class="empty-state"><%= @source_type == 'core' ? 'No chat messages from the core yet.' : (@source_type == 'sqlite' || @source_type == 'file' ? 'Offline local state is read-only.' : 'No chat messages available in this mode.') %></span>
                 <% else %>
                   <% messages.each_with_index do |message, index| %>
                     <div class="chat-row <%= index.zero? ? 'latest' : '' %>">
@@ -113,7 +116,7 @@
                 <% end %>
               </div>
               <p class="value value-sub chat-source-indicator <%= @source_type == 'core' || @source_type == 'file' || @source_type == 'sqlite' ? 'chat-source-indicator-core' : 'chat-source-indicator-fallback' %>" id="chat-source-indicator">
-                messages source: <%= @source_type == 'core' || @source_type == 'file' || @source_type == 'sqlite' ? 'core-backed' : (@source_type == 'fallback' || @source_type == 'demo' ? 'fallback/demo' : @source_type) %>
+                messages source: <%= @source_type == 'core' ? 'connected to core' : (@source_type == 'sqlite' || @source_type == 'file' ? 'offline local state' : 'demo or fallback') %>
               </p>
             <% else %>
               <p class="value <%= card[:mono] ? 'mono' : '' %>" id="value-<%= card[:key] %>">

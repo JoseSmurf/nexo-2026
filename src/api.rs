@@ -1505,18 +1505,11 @@ async fn api_chat_send_handler(
     Json(req): Json<ChatSendRequest>,
 ) -> impl IntoResponse {
     let request_id = Uuid::new_v4().to_string();
-    let origin = req.origin.unwrap_or_else(|| "ui_dashboard".to_string());
     let channel = req.channel.unwrap_or_else(|| "global".to_string());
     let text = req.text;
+    // This route is intended for the local UI surface. Keep origin fixed.
+    let origin = "ui_dashboard".to_string();
 
-    if origin.trim().is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            &state,
-            &request_id,
-            "origin must not be empty",
-        );
-    }
     if channel != "global" {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -3127,7 +3120,7 @@ mod tests {
             .header("content-type", "application/json")
             .body(Body::from(
                 serde_json::json!({
-                    "origin": "ui_dashboard",
+                    "origin": "spoofed_origin",
                     "channel": "global",
                     "text": "hello-ui-core"
                 })
@@ -3174,6 +3167,25 @@ mod tests {
             "hello-ui-core"
         );
         assert_eq!(state_json["recent_flow"][0]["kind"], "chat");
+    }
+
+    #[tokio::test]
+    async fn api_chat_send_handler_rejects_invalid_channel() {
+        let app = app_with_state(test_state());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/chat/send")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "channel": "ai",
+                    "text": "hello-ui-core"
+                })
+                .to_string(),
+            ))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
