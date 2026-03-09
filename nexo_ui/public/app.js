@@ -1214,7 +1214,7 @@
           if (payload && payload.error === 'offline_read_only') {
             setChatSendStatus('Offline local state is read-only.', 'error');
           } else if (payload && payload.error === 'local_only_route') {
-            setChatSendStatus('Chat send is available only from this local machine.', 'error');
+            setChatSendStatus('Chat send is available only from the local dashboard machine.', 'error');
           } else if (payload && payload.error === 'core_chat_send_unavailable') {
             setChatSendStatus('Core send unavailable. No message was sent.', 'error');
           } else if (payload && payload.error === 'chat_message_too_long') {

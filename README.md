@@ -283,6 +283,40 @@ cd tools/zig && zig build test
 - Admin gate (default off): `/audit/recent`, `/security/status`, `/metrics` require `NEXO_ADMIN_API_ENABLED=true` and valid `Authorization: Bearer <token>`.
 - Redis guard operations have short timeout and fail-closed behavior.
 
+### Chat mutation surface
+
+- `POST /api/chat/send` is intended for the local dashboard UI only.
+- The Rust endpoint is loopback-only at the API boundary.
+- The Sinatra UI route is also loopback-only before it forwards to the core.
+- The core only enables chat mutation when its P2P/network storage path is available.
+- Remote clients cannot use this endpoint as a general chat API.
+- The UI does not guess send capability; it reads the core signal from `/api/state`.
+
+### Chat capability fields
+
+`/api/state` exposes the chat mutation capability explicitly:
+
+- `chat_send_available`: whether the core currently allows chat mutation.
+- `chat_send_mode`: operational mode for chat send, e.g. `core` or `core_unavailable`.
+- `chat_send_reason`: stable reason string when send is blocked or restricted.
+
+These fields let the UI reflect the core truth directly instead of inferring capability from surrounding state.
+
+## UI modes
+
+- `connected to core`
+  - The dashboard is reading live state from Rust.
+  - Chat send can succeed only if the core also reports chat capability as available.
+- `offline local state`
+  - The dashboard is reading local file/SQLite state without a writable core path.
+  - Chat send is read-only in this mode.
+- `offline mode`
+  - The dashboard could not reach a real source and is showing fallback state.
+  - This is not a writable core-backed mode.
+- `demo mode`
+  - Manual simulation is active in the UI layer.
+  - Actions update demo state only and do not mutate the core.
+
 ## Audit and hashing
 
 ### Basic
