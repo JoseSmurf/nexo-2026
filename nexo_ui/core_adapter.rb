@@ -333,6 +333,7 @@ module CoreAdapter
       chat_send_available: chat_send_available,
       chat_send_mode: chat_send_mode,
       chat_send_reason: chat_send_reason,
+      latest_change_source: payload['latest_change_source'] || payload[:latest_change_source],
     }
 
     apply_derived_observability!(state, source: source)
@@ -350,6 +351,19 @@ module CoreAdapter
     state[:latest_change_channel] ||= (
       latest[:channel] || latest['channel'] || 'system'
     ).to_s
+    if state[:latest_change_source].to_s.empty?
+      state[:latest_change_source] =
+        if state[:latest_change_kind] == 'chat' && state[:latest_change_origin] == 'ui_dashboard'
+          'operator_action'
+        elsif state[:latest_change_kind] == 'event' &&
+              ['approved decision', 'flagged for review', 'blocked decision'].include?(state[:latest_change_summary])
+          'core_decision'
+        elsif state[:latest_change_kind] == 'startup'
+          ''
+        else
+          'passive_observation'
+        end
+    end
 
     last_operator = Array(state[:recent_flow]).find do |item|
       (item[:kind] || item['kind']).to_s == 'chat' &&

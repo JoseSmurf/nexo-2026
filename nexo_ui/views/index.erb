@@ -63,6 +63,7 @@
                 integrity: <%= @health[:integrity_message] %><br />
                 write_status: <%= @health[:write_status] %><br />
                 latest_change: <%= @health[:latest_change_kind] %> / <%= @health[:latest_change_summary] %><br />
+                change_source: <%= @health[:latest_change_source].to_s.empty? ? 'n/a' : @health[:latest_change_source].to_s.tr('_', ' ') %><br />
                 last_operator: <%= @health[:last_operator_action_kind].to_s.empty? ? 'none observed' : "#{@health[:last_operator_action_kind]} / #{@health[:last_operator_action_summary]}" %><br />
                 latest_origin: <%= @health[:latest_change_origin] %><br />
                 operator_origin: <%= @health[:last_operator_action_origin].to_s.empty? ? 'n/a' : @health[:last_operator_action_origin] %><br />

@@ -334,6 +334,7 @@ pub struct StateResponse {
     pub latest_change_origin: String,
     pub latest_change_timestamp: u64,
     pub latest_change_channel: String,
+    pub latest_change_source: String,
     pub last_operator_action_kind: String,
     pub last_operator_action_summary: String,
     pub last_operator_action_origin: String,
@@ -1553,6 +1554,27 @@ fn latest_change_header(flow: &[StateFlowItem]) -> (String, String, String, u64,
     )
 }
 
+fn latest_change_source(flow: &[StateFlowItem]) -> String {
+    let Some(item) = flow.first() else {
+        return String::new();
+    };
+
+    if item.kind == "chat" && item.origin == "ui_dashboard" {
+        return "operator_action".to_string();
+    }
+
+    if item.kind == "event"
+        && matches!(
+            item.summary.as_str(),
+            "approved decision" | "flagged for review" | "blocked decision"
+        )
+    {
+        return "core_decision".to_string();
+    }
+
+    "passive_observation".to_string()
+}
+
 fn last_operator_action_header(flow: &[StateFlowItem]) -> (String, String, String, u64, String) {
     if let Some(item) = flow
         .iter()
@@ -1591,6 +1613,7 @@ async fn api_state_handler(State(state): State<AppState>) -> impl IntoResponse {
         latest_change_timestamp,
         latest_change_channel,
     ) = latest_change_header(&recent_flow);
+    let latest_change_source = latest_change_source(&recent_flow);
     let (
         last_operator_action_kind,
         last_operator_action_summary,
@@ -1631,6 +1654,7 @@ async fn api_state_handler(State(state): State<AppState>) -> impl IntoResponse {
             latest_change_origin,
             latest_change_timestamp,
             latest_change_channel,
+            latest_change_source,
             last_operator_action_kind,
             last_operator_action_summary,
             last_operator_action_origin,
@@ -3263,6 +3287,7 @@ mod tests {
         assert_eq!(state_json["write_status"], "read_only");
         assert_eq!(state_json["latest_change_kind"], "event");
         assert_eq!(state_json["latest_change_summary"], "approved decision");
+        assert_eq!(state_json["latest_change_source"], "core_decision");
         assert_eq!(
             state_json["latest_change_origin"],
             state_json["recent_flow"][0]["origin"]
@@ -3334,6 +3359,7 @@ mod tests {
         assert_eq!(state_json["write_status"], "writable");
         assert_eq!(state_json["latest_change_kind"], "chat");
         assert_eq!(state_json["latest_change_summary"], "hello-offline-flow");
+        assert_eq!(state_json["latest_change_source"], "passive_observation");
         assert_eq!(state_json["last_operator_action_kind"], "");
         assert_eq!(state_json["last_operator_action_summary"], "");
     }
@@ -3396,6 +3422,7 @@ mod tests {
             "hello-ui-core"
         );
         assert_eq!(state_json["recent_flow"][0]["kind"], "chat");
+        assert_eq!(state_json["latest_change_source"], "operator_action");
         assert_eq!(state_json["last_operator_action_kind"], "chat");
         assert_eq!(state_json["last_operator_action_summary"], "hello-ui-core");
         assert_eq!(state_json["last_operator_action_origin"], "ui_dashboard");

@@ -148,6 +148,7 @@ helpers do
       latest_change_origin: state[:latest_change_origin],
       latest_change_timestamp: state[:latest_change_timestamp],
       latest_change_channel: state[:latest_change_channel],
+      latest_change_source: state[:latest_change_source],
       last_operator_action_kind: state[:last_operator_action_kind],
       last_operator_action_summary: state[:last_operator_action_summary],
       last_operator_action_origin: state[:last_operator_action_origin],
