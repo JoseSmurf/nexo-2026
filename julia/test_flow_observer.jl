@@ -134,6 +134,72 @@ end
         end
     end
 
+    @testset "writes timestamped observation history" begin
+        state = sample_state(
+            flow_items = [
+                Dict("kind" => "event", "origin" => "core_engine", "summary" => "approved decision"),
+            ],
+            latest_change_source = "core_decision",
+            timestamp = 1_704_067_200_123,
+        )
+
+        dir = mktempdir()
+        try
+            path, artifact = write_timestamped_observation(state, dir)
+            @test endswith(path, "2024-01-01T00-00-00.123Z.json")
+            @test isfile(path)
+            @test artifact.dominant_source == "core_decision"
+
+            history = load_observation_history(dir)
+            @test length(history) == 1
+            @test history[1].timestamp == 1_704_067_200_123
+            @test latest_observation(dir).timestamp == 1_704_067_200_123
+            @test previous_observation(dir) === nothing
+        finally
+            rm(dir; recursive=true, force=true)
+        end
+    end
+
+    @testset "compares historical windows deterministically" begin
+        previous = JSON3.read("""
+        {"timestamp":1000,"flow_counts":{"event":1,"chat":2,"ai":0},"source_mix":{"operator_action":0.5,"core_decision":0.5,"passive_observation":0.0},"dominant_source":"operator_action","dominant_kind":"chat","flow_intensity":"normal","summary":"operator-driven activity dominates the current window"}
+        """)
+        current = JSON3.read("""
+        {"timestamp":2000,"flow_counts":{"event":2,"chat":1,"ai":1},"source_mix":{"operator_action":0.25,"core_decision":0.5,"passive_observation":0.25},"dominant_source":"core_decision","dominant_kind":"event","flow_intensity":"elevated","summary":"core decisions are elevated in the current window"}
+        """)
+
+        count_delta = compare_flow_counts(current, previous)
+        mix_delta = compare_source_mix(current, previous)
+        @test count_delta == (
+            event_delta = 1,
+            chat_delta = -1,
+            ai_delta = 1,
+            dominant_source_changed = true,
+            intensity_changed = true,
+        )
+        @test mix_delta == (
+            operator_action_delta = -0.25,
+            core_decision_delta = 0.0,
+            passive_observation_delta = 0.25,
+            dominant_source_changed = true,
+            intensity_changed = true,
+        )
+        @test detect_regime_change(current, previous) == "source_mix_shift"
+    end
+
+    @testset "detects activity increase and decrease" begin
+        low = JSON3.read("""
+        {"timestamp":1000,"flow_counts":{"event":0,"chat":1,"ai":0},"source_mix":{"operator_action":1.0,"core_decision":0.0,"passive_observation":0.0},"dominant_source":"operator_action","dominant_kind":"chat","flow_intensity":"low","summary":"operator-driven activity dominates the current window"}
+        """)
+        high = JSON3.read("""
+        {"timestamp":2000,"flow_counts":{"event":1,"chat":2,"ai":1},"source_mix":{"operator_action":0.5,"core_decision":0.25,"passive_observation":0.25},"dominant_source":"operator_action","dominant_kind":"chat","flow_intensity":"elevated","summary":"operator-driven activity is elevated in the current window"}
+        """)
+
+        @test detect_regime_change(high, low) == "activity_increasing"
+        @test detect_regime_change(low, high) == "activity_decreasing"
+        @test detect_regime_change(low, nothing) == "stable"
+    end
+
     @testset "empty flow stays explicit" begin
         state = sample_state(flow_items = Any[], latest_change_source = "", write_status = "read_only")
         obs = observe_state(state)

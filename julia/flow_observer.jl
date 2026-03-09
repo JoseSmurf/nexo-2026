@@ -1,5 +1,6 @@
 using JSON3
 using HTTP
+using Dates
 
 const STATE_API_URL = get(ENV, "NEXO_STATE_API_URL", "http://127.0.0.1:3000/api/state")
 const FLOW_KIND_KEYS = ("event", "chat", "ai")
@@ -198,12 +199,141 @@ function observation_artifact(payload)
     )
 end
 
+function observation_filename(timestamp_ms::Int)::String
+    dt = Dates.unix2datetime(timestamp_ms / 1000)
+    return Dates.format(dt, dateformat"yyyy-mm-ddTHH-MM-SS.sss") * "Z.json"
+end
+
 function write_observation_artifact(payload, path::AbstractString)
     artifact = observation_artifact(payload)
     open(path, "w") do io
         write(io, JSON3.write(artifact))
     end
     return artifact
+end
+
+function write_timestamped_observation(payload, dir::AbstractString)
+    artifact = observation_artifact(payload)
+    mkpath(dir)
+    path = joinpath(dir, observation_filename(artifact.timestamp))
+    open(path, "w") do io
+        write(io, JSON3.write(artifact))
+    end
+    return path, artifact
+end
+
+function load_observation_history(dir::AbstractString)
+    isdir(dir) || return Any[]
+    files = sort(filter(name -> endswith(name, ".json"), readdir(dir)))
+    return [JSON3.read(read(joinpath(dir, file), String)) for file in files]
+end
+
+function latest_observation(dir::AbstractString)
+    history = load_observation_history(dir)
+    return isempty(history) ? nothing : history[end]
+end
+
+function previous_observation(dir::AbstractString)
+    history = load_observation_history(dir)
+    return length(history) < 2 ? nothing : history[end - 1]
+end
+
+function _artifact_int(artifact, field::Symbol)::Int
+    hasproperty(artifact, field) || return 0
+    return _as_int(getproperty(artifact, field), 0)
+end
+
+function _artifact_string(artifact, field::Symbol)::String
+    hasproperty(artifact, field) || return ""
+    return _as_string(getproperty(artifact, field))
+end
+
+function _artifact_subvalue(artifact, field::Symbol, subfield::Symbol, default)
+    hasproperty(artifact, field) || return default
+    node = getproperty(artifact, field)
+    if hasproperty(node, subfield)
+        value = getproperty(node, subfield)
+        if default isa Int
+            return _as_int(value, default)
+        end
+        if default isa AbstractFloat
+            value isa AbstractFloat && return Float64(value)
+            parsed = tryparse(Float64, string(value))
+            return parsed === nothing ? default : parsed
+        end
+        return _as_string(value, default)
+    end
+    if node isa AbstractDict
+        return get(node, String(subfield), get(node, subfield, default))
+    end
+    return default
+end
+
+function _artifact_subfloat(artifact, field::Symbol, subfield::Symbol)::Float64
+    value = _artifact_subvalue(artifact, field, subfield, 0.0)
+    value isa AbstractFloat && return round(Float64(value); digits=4)
+    parsed = tryparse(Float64, string(value))
+    return parsed === nothing ? 0.0 : round(parsed; digits=4)
+end
+
+function compare_flow_counts(current, previous)
+    previous === nothing && return (
+        event_delta = _artifact_subvalue(current, :flow_counts, :event, 0),
+        chat_delta = _artifact_subvalue(current, :flow_counts, :chat, 0),
+        ai_delta = _artifact_subvalue(current, :flow_counts, :ai, 0),
+        dominant_source_changed = false,
+        intensity_changed = false,
+    )
+
+    return (
+        event_delta = _artifact_subvalue(current, :flow_counts, :event, 0) - _artifact_subvalue(previous, :flow_counts, :event, 0),
+        chat_delta = _artifact_subvalue(current, :flow_counts, :chat, 0) - _artifact_subvalue(previous, :flow_counts, :chat, 0),
+        ai_delta = _artifact_subvalue(current, :flow_counts, :ai, 0) - _artifact_subvalue(previous, :flow_counts, :ai, 0),
+        dominant_source_changed = _artifact_string(current, :dominant_source) != _artifact_string(previous, :dominant_source),
+        intensity_changed = _artifact_string(current, :flow_intensity) != _artifact_string(previous, :flow_intensity),
+    )
+end
+
+function compare_source_mix(current, previous)
+    previous === nothing && return (
+        operator_action_delta = _artifact_subfloat(current, :source_mix, :operator_action),
+        core_decision_delta = _artifact_subfloat(current, :source_mix, :core_decision),
+        passive_observation_delta = _artifact_subfloat(current, :source_mix, :passive_observation),
+        dominant_source_changed = false,
+        intensity_changed = false,
+    )
+
+    return (
+        operator_action_delta = round(_artifact_subfloat(current, :source_mix, :operator_action) - _artifact_subfloat(previous, :source_mix, :operator_action); digits=4),
+        core_decision_delta = round(_artifact_subfloat(current, :source_mix, :core_decision) - _artifact_subfloat(previous, :source_mix, :core_decision); digits=4),
+        passive_observation_delta = round(_artifact_subfloat(current, :source_mix, :passive_observation) - _artifact_subfloat(previous, :source_mix, :passive_observation); digits=4),
+        dominant_source_changed = _artifact_string(current, :dominant_source) != _artifact_string(previous, :dominant_source),
+        intensity_changed = _artifact_string(current, :flow_intensity) != _artifact_string(previous, :flow_intensity),
+    )
+end
+
+function detect_regime_change(current, previous)::String
+    previous === nothing && return "stable"
+
+    current_total = _artifact_subvalue(current, :flow_counts, :event, 0) +
+        _artifact_subvalue(current, :flow_counts, :chat, 0) +
+        _artifact_subvalue(current, :flow_counts, :ai, 0)
+    previous_total = _artifact_subvalue(previous, :flow_counts, :event, 0) +
+        _artifact_subvalue(previous, :flow_counts, :chat, 0) +
+        _artifact_subvalue(previous, :flow_counts, :ai, 0)
+
+    if _artifact_string(current, :dominant_source) != _artifact_string(previous, :dominant_source)
+        return "source_mix_shift"
+    end
+
+    if current_total > previous_total
+        return "activity_increasing"
+    end
+    if current_total < previous_total
+        return "activity_decreasing"
+    end
+
+    return "stable"
 end
 
 function fetch_state_payload(; state_url::String=STATE_API_URL, timeout_seconds::Int=2)
@@ -224,7 +354,11 @@ function main()
     payload = fetch_state_payload(; state_url=state_url)
     artifact = observation_artifact(payload)
     if !isempty(output_path)
-        write_observation_artifact(payload, output_path)
+        if endswith(lowercase(output_path), ".json")
+            write_observation_artifact(payload, output_path)
+        else
+            write_timestamped_observation(payload, output_path)
+        end
     end
     println(JSON3.write(artifact))
 end
