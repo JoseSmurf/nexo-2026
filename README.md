@@ -302,6 +302,12 @@ cd tools/zig && zig build test
 
 These fields let the UI reflect the core truth directly instead of inferring capability from surrounding state.
 
+### Julia observability layer
+
+- Julia now also serves as a deterministic numerical observer over `/api/state`.
+- The observer reads live Rust state, measures recent flow mix and intensity, and produces compact explainable summaries.
+- Julia does not replace Rust decisions and does not participate in the write path.
+
 ## UI modes
 
 - `connected to core`
@@ -507,7 +513,7 @@ Use `.env.example` provider sections as the canonical reference for required var
   - BLAKE3 + SHAKE256 (audit hash, with deterministic hybrid mode in INCIDENT)
   - Axum + Tokio (HTTP)
   - serde/serde_json (contracts)
-  - Julia bridge (precision PLCA scoring)
+  - Julia bridge (precision PLCA scoring + flow observability)
   - Zig offline verifier (forensic audit hash check)
 
 ## License
