@@ -1495,11 +1495,17 @@ fn state_event_header(events: &[StateEvent]) -> (Option<String>, String, u64, St
         );
     }
 
-    (None, "startup".to_string(), 0, "core_engine".to_string(), "system".to_string())
+    (
+        None,
+        "startup".to_string(),
+        0,
+        "core_engine".to_string(),
+        "system".to_string(),
+    )
 }
 
 fn build_state_ai_insights(records: &[AuditRecord]) -> Vec<StateAiInsight> {
-    let mut amounts: Vec<f64> = records
+    let amounts: Vec<f64> = records
         .iter()
         .map(|record| record.amount_cents as f64)
         .collect();
@@ -1512,7 +1518,10 @@ fn build_state_ai_insights(records: &[AuditRecord]) -> Vec<StateAiInsight> {
         return vec![StateAiInsight {
             kind: "observation".to_string(),
             summary: "No anomaly patterns observed in this window.".to_string(),
-            timestamp: records.first().map(|r| r.timestamp_utc_ms).unwrap_or_else(now_utc_ms),
+            timestamp: records
+                .first()
+                .map(|r| r.timestamp_utc_ms)
+                .unwrap_or_else(now_utc_ms),
             origin: event_origin(&records[0]),
             level: "info".to_string(),
         }];
@@ -1520,7 +1529,11 @@ fn build_state_ai_insights(records: &[AuditRecord]) -> Vec<StateAiInsight> {
 
     let total: f64 = amounts.iter().sum();
     let mean = total / amounts.len() as f64;
-    let variance: f64 = amounts.iter().map(|value| (value - mean).powi(2)).sum::<f64>() / amounts.len() as f64;
+    let variance: f64 = amounts
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>()
+        / amounts.len() as f64;
     let std_dev = variance.sqrt();
     let threshold = mean + 3.0 * std_dev;
 
@@ -1604,10 +1617,6 @@ fn build_state_flow(events: &[StateEvent], ai_insights: &[StateAiInsight]) -> Ve
         .map(|(_, _, _, item)| item)
         .take(5)
         .collect()
-}
-
-fn state_ai_summary(prefix: &str, amount_cents: u64) -> String {
-    format!("{prefix}: amount={amount_cents}")
 }
 
 fn unique_peer_count(records: &[AuditRecord]) -> usize {
@@ -2762,7 +2771,11 @@ mod tests {
             "a4f3a8f6-6f5b-4fd0-b0aa-6e7c2c8f8f4a",
             now,
         );
-        let eval_resp = app.clone().oneshot(evaluate_req).await.expect("evaluate response");
+        let eval_resp = app
+            .clone()
+            .oneshot(evaluate_req)
+            .await
+            .expect("evaluate response");
         assert_eq!(eval_resp.status(), StatusCode::OK);
 
         let state_req = Request::builder()
@@ -2786,7 +2799,10 @@ mod tests {
         assert!(state_json["recent_events"].is_array());
         assert!(state_json["recent_flow"].is_array());
         assert!(state_json["recent_ai_insights"].is_array());
-        assert_eq!(state_json["recent_events"][0]["type"], "system_event:approved");
+        assert_eq!(
+            state_json["recent_events"][0]["type"],
+            "system_event:approved"
+        );
         assert_eq!(
             state_json["ai_last_insight"],
             "No anomaly patterns observed in this window."
