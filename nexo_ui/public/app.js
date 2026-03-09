@@ -851,6 +851,23 @@
     }
   }
 
+  function describeChatSendReason(reason) {
+    switch (reason) {
+      case 'network_feature_disabled':
+        return 'Core chat send is unavailable on this build.';
+      case 'p2p_db_path_missing':
+        return 'Core chat send requires P2P storage.';
+      case 'p2p_store_unavailable':
+        return 'Core chat store is unavailable.';
+      case 'local_state_read_only':
+        return 'Offline local state is read-only.';
+      case 'manual_demo_override':
+        return 'Demo mode will simulate sends.';
+      default:
+        return String(reason || '').replace(/_/g, ' ').trim();
+    }
+  }
+
   function setChatSendStatus(text, tone = '') {
     if (!chatSendStatusNode) {
       return;
@@ -1012,6 +1029,17 @@
 
     if (data && data.chat_send_mode) {
       applyChatSendMode(String(data.chat_send_mode));
+    }
+
+    if (data && data.chat_send_available === false && data.chat_send_reason) {
+      setChatSendStatus(describeChatSendReason(data.chat_send_reason), 'error');
+    } else if (
+      data
+      && data.chat_send_available === true
+      && chatInputNode
+      && !chatInputNode.value.trim()
+    ) {
+      setChatSendStatus('Ready.');
     }
 
     if (chatSourceNode) {

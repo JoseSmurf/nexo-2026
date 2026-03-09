@@ -275,6 +275,19 @@ module CoreAdapter
     else
       normalize_flow(payload['recent_flow'] || payload[:recent_flow], recent_events, recent_ai_insights, recent_chat_messages, use_fallback: use_flow_fallback)
     end
+    chat_send_available = payload['chat_send_available']
+    chat_send_available = payload[:chat_send_available] if chat_send_available.nil?
+    chat_send_mode = payload['chat_send_mode']
+    chat_send_mode = payload[:chat_send_mode] if chat_send_mode.nil?
+    chat_send_reason = payload['chat_send_reason']
+    chat_send_reason = payload[:chat_send_reason] if chat_send_reason.nil?
+
+    if is_core_source
+      chat_send_available = !!chat_send_available
+      chat_send_mode = chat_send_mode.to_s.strip
+      chat_send_mode = chat_send_available ? 'core' : 'core_unavailable' if chat_send_mode.empty?
+      chat_send_reason = chat_send_reason.to_s
+    end
 
     if recent_events.empty? && use_fallback
       recent_events = [payload_to_events(
@@ -316,6 +329,9 @@ module CoreAdapter
       recent_ai_insights: recent_ai_insights,
       recent_chat_messages: recent_chat_messages,
       recent_flow: recent_flow,
+      chat_send_available: chat_send_available,
+      chat_send_mode: chat_send_mode,
+      chat_send_reason: chat_send_reason,
     }
   end
 

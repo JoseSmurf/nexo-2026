@@ -324,6 +324,9 @@ pub struct StateResponse {
     pub relay_status: String,
     pub network_mode: String,
     pub mesh_status: String,
+    pub chat_send_available: bool,
+    pub chat_send_mode: String,
+    pub chat_send_reason: String,
     pub recent_events: Vec<StateEvent>,
     pub recent_chat_messages: Vec<StateChatMessage>,
     pub recent_ai_insights: Vec<StateAiInsight>,
@@ -351,6 +354,14 @@ enum AuthError {
 enum ChatSendError {
     BadRequest(&'static str),
     ServiceUnavailable(&'static str),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ChatSendCapability {
+    available: bool,
+    mode: &'static str,
+    reason: &'static str,
+    error_message: &'static str,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1451,6 +1462,52 @@ pub fn app_with_state(state: AppState) -> Router {
         .with_state(state)
 }
 
+#[cfg(feature = "network")]
+fn chat_send_capability(state: &AppState) -> ChatSendCapability {
+    let Some(path) = state.p2p_db_path.as_deref() else {
+        return ChatSendCapability {
+            available: false,
+            mode: "core_unavailable",
+            reason: "p2p_db_path_missing",
+            error_message: "chat send unavailable: p2p_db_path_missing",
+        };
+    };
+    let path = path.trim();
+    if path.is_empty() {
+        return ChatSendCapability {
+            available: false,
+            mode: "core_unavailable",
+            reason: "p2p_db_path_missing",
+            error_message: "chat send unavailable: p2p_db_path_missing",
+        };
+    }
+    if OfflineStore::open(path).is_err() {
+        return ChatSendCapability {
+            available: false,
+            mode: "core_unavailable",
+            reason: "p2p_store_unavailable",
+            error_message: "chat send unavailable: p2p_store_unavailable",
+        };
+    }
+
+    ChatSendCapability {
+        available: true,
+        mode: "core",
+        reason: "",
+        error_message: "",
+    }
+}
+
+#[cfg(not(feature = "network"))]
+fn chat_send_capability(_state: &AppState) -> ChatSendCapability {
+    ChatSendCapability {
+        available: false,
+        mode: "core_unavailable",
+        reason: "network_feature_disabled",
+        error_message: "chat send unavailable: network_feature_disabled",
+    }
+}
+
 async fn api_state_handler(State(state): State<AppState>) -> impl IntoResponse {
     let records = state.audit_store.recent(200).unwrap_or_default();
     let recent_events = build_state_events(&records);
@@ -1458,6 +1515,7 @@ async fn api_state_handler(State(state): State<AppState>) -> impl IntoResponse {
     let recent_chat_messages =
         load_recent_chat_messages(state.p2p_db_path.as_deref(), DEFAULT_STATE_CHAT_LIMIT);
     let recent_flow = build_state_flow(&recent_events, &recent_chat_messages, &recent_ai_insights);
+    let chat_send = chat_send_capability(&state);
 
     let (latest_hash, latest_type, latest_timestamp, latest_origin, latest_channel) =
         state_event_header(&recent_events);
@@ -1482,6 +1540,9 @@ async fn api_state_handler(State(state): State<AppState>) -> impl IntoResponse {
             relay_status,
             network_mode,
             mesh_status,
+            chat_send_available: chat_send.available,
+            chat_send_mode: chat_send.mode.to_string(),
+            chat_send_reason: chat_send.reason.to_string(),
             recent_events,
             recent_chat_messages,
             recent_ai_insights,
@@ -1532,6 +1593,15 @@ async fn api_chat_send_handler(
             &state,
             &request_id,
             "text must be <= 32 bytes",
+        );
+    }
+    let capability = chat_send_capability(&state);
+    if !capability.available {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &state,
+            &request_id,
+            capability.error_message,
         );
     }
 
@@ -2932,6 +3002,16 @@ mod tests {
         req.body(Body::empty()).expect("request")
     }
 
+    #[cfg(feature = "network")]
+    fn expected_chat_send_unavailable_reason() -> &'static str {
+        "p2p_db_path_missing"
+    }
+
+    #[cfg(not(feature = "network"))]
+    fn expected_chat_send_unavailable_reason() -> &'static str {
+        "network_feature_disabled"
+    }
+
     #[tokio::test]
     async fn evaluate_contract_returns_expected_fields() {
         let app = app_with_state(test_state());
@@ -3046,6 +3126,12 @@ mod tests {
             "No anomaly patterns observed in this window."
         );
         assert!(state_json["recent_chat_messages"].is_array());
+        assert_eq!(state_json["chat_send_available"], false);
+        assert_eq!(state_json["chat_send_mode"], "core_unavailable");
+        assert_eq!(
+            state_json["chat_send_reason"],
+            expected_chat_send_unavailable_reason()
+        );
     }
 
     #[cfg(feature = "network")]
@@ -3102,6 +3188,9 @@ mod tests {
             state_json["recent_flow"][0]["hash"],
             state_json["recent_chat_messages"][0]["hash"]
         );
+        assert_eq!(state_json["chat_send_available"], true);
+        assert_eq!(state_json["chat_send_mode"], "core");
+        assert_eq!(state_json["chat_send_reason"], "");
     }
 
     #[cfg(feature = "network")]
@@ -3186,6 +3275,40 @@ mod tests {
             .expect("request");
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn api_chat_send_handler_rejects_when_capability_is_unavailable() {
+        let app = app_with_state(test_state());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/chat/send")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "channel": "global",
+                    "text": "hello-ui-core"
+                })
+                .to_string(),
+            ))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("response body")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(
+            json["error"],
+            format!(
+                "chat send unavailable: {}",
+                expected_chat_send_unavailable_reason()
+            )
+        );
     }
 
     #[tokio::test]

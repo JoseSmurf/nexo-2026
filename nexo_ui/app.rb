@@ -51,7 +51,16 @@ helpers do
     end
   end
 
-  def to_payload(state, source, network_cause: nil, source_type: nil, adapter_status: nil, chat_send_mode: nil)
+  def to_payload(
+    state,
+    source,
+    network_cause: nil,
+    source_type: nil,
+    adapter_status: nil,
+    chat_send_mode: nil,
+    chat_send_available: nil,
+    chat_send_reason: nil
+  )
     payload = {
       state: state,
       seed: motion_seed_from_state(state, CARD_DEFS.length),
@@ -62,6 +71,8 @@ helpers do
     payload[:source_type] = source_type if source_type
     payload[:adapter_status] = adapter_status if adapter_status
     payload[:chat_send_mode] = chat_send_mode if chat_send_mode
+    payload[:chat_send_available] = chat_send_available unless chat_send_available.nil?
+    payload[:chat_send_reason] = chat_send_reason unless chat_send_reason.nil?
     payload
   end
 
@@ -202,11 +213,39 @@ helpers do
     state[:recent_chat_messages] = list.first(5)
   end
 
-  def preferred_chat_send_mode(source_type)
-    return 'core' if source_type == 'core'
-    return 'offline' if source_type == 'sqlite' || source_type == 'file'
+  def preferred_chat_send_state(state, source_type)
+    if source_type == 'core'
+      available = !!state[:chat_send_available]
+      mode = state[:chat_send_mode].to_s.strip
+      mode = available ? 'core' : 'core_unavailable' if mode.empty?
+      return {
+        available: available,
+        mode: mode,
+        reason: state[:chat_send_reason].to_s,
+      }
+    end
 
-    'demo'
+    if source_type == 'sqlite' || source_type == 'file'
+      return {
+        available: false,
+        mode: 'offline',
+        reason: 'local_state_read_only',
+      }
+    end
+
+    if settings.ui_mode == :demo || source_type == 'demo'
+      return {
+        available: true,
+        mode: 'demo',
+        reason: 'manual_demo_override',
+      }
+    end
+
+    {
+      available: true,
+      mode: 'demo',
+      reason: 'fallback_simulated',
+    }
   end
 
   def apply_demo_chat_message_send(state, text, origin, channel)
@@ -409,6 +448,8 @@ post '/api/simulate' do
     adapter_status: 'manual_demo_override',
     network_cause: network_cause,
     chat_send_mode: 'demo',
+    chat_send_available: true,
+    chat_send_reason: 'manual_demo_override',
   ).to_json
 end
 
@@ -436,12 +477,15 @@ post '/api/chat/send' do
     result, send_status = CoreAdapter.send_chat_message(text: text, origin: origin, channel: channel)
     if result
       state, source, fresh_source_type, fresh_adapter_status = current_status_state
+      chat_send = preferred_chat_send_state(state, fresh_source_type)
       return to_payload(
         state,
         source,
         source_type: fresh_source_type,
         adapter_status: fresh_adapter_status,
-        chat_send_mode: 'core',
+        chat_send_mode: chat_send[:mode],
+        chat_send_available: chat_send[:available],
+        chat_send_reason: chat_send[:reason],
       ).to_json
     end
 
@@ -449,6 +493,8 @@ post '/api/chat/send' do
       error: 'core_chat_send_unavailable',
       adapter_status: send_status,
       chat_send_mode: 'core_unavailable',
+      chat_send_available: false,
+      chat_send_reason: send_status,
     }.to_json
   end
 
@@ -457,6 +503,8 @@ post '/api/chat/send' do
       error: 'offline_read_only',
       adapter_status: 'local_state_read_only',
       chat_send_mode: 'offline',
+      chat_send_available: false,
+      chat_send_reason: 'local_state_read_only',
     }.to_json
   end
 
@@ -471,13 +519,16 @@ post '/api/chat/send' do
     source_type: 'demo',
     adapter_status: 'manual_demo_override',
     chat_send_mode: 'demo',
+    chat_send_available: true,
+    chat_send_reason: 'manual_demo_override',
   ).to_json
 end
 
 get '/' do
   settings.ui_mode = :live
   @state, @data_source, @source_type, @adapter_status = current_status_state
-  @chat_send_mode = preferred_chat_send_mode(@source_type)
+  @chat_send = preferred_chat_send_state(@state, @source_type)
+  @chat_send_mode = @chat_send[:mode]
   @surface_mode_label = surface_mode_label(@source_type, @adapter_status)
   @chat_send_mode_label = chat_send_mode_label(@chat_send_mode)
   @cards = CARD_DEFS
@@ -493,12 +544,15 @@ get '/api/status' do
   content_type :json
   settings.ui_mode = :live
   state, source, source_type, adapter_status = current_status_state
+  chat_send = preferred_chat_send_state(state, source_type)
   to_payload(
     state,
     source,
     source_type: source_type,
     adapter_status: adapter_status,
-    chat_send_mode: preferred_chat_send_mode(source_type),
+    chat_send_mode: chat_send[:mode],
+    chat_send_available: chat_send[:available],
+    chat_send_reason: chat_send[:reason],
   ).to_json
 end
 
