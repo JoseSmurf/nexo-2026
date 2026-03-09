@@ -1,4 +1,6 @@
 require 'json'
+require 'net/http'
+require 'uri'
 require 'time'
 
 module CoreAdapter
@@ -81,6 +83,9 @@ module CoreAdapter
   ].freeze
 
   def build_state
+    from_core, status = read_core_state
+    return [from_core, 'real', 'core', status] if from_core
+
     from_json, status = read_json_state
     return [from_json, 'real', 'file', status] if from_json
 
@@ -88,6 +93,46 @@ module CoreAdapter
     return [from_sqlite, 'real', 'sqlite', sqlite_status] if from_sqlite
 
     [build_fallback_state, 'fallback_simulated', 'fallback', status || sqlite_status || 'fallback_no_data_source']
+  end
+
+  def read_core_state
+    url = ENV['NEXO_CORE_STATE_URL'] || 'http://127.0.0.1:3000/api/state'
+    return [nil, 'core_url_empty'] if url.to_s.strip.empty?
+
+    uri = URI.parse(url)
+    return [nil, 'core_url_invalid'] unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
+
+    response = Net::HTTP.start(
+      uri.host,
+      uri.port,
+      use_ssl: uri.scheme == 'https',
+      read_timeout: 1,
+      open_timeout: 1,
+    ) do |http|
+      request = Net::HTTP::Get.new(uri)
+      http.request(request)
+    end
+
+    return [nil, "core_http_#{response.code}"] unless response.is_a?(Net::HTTPSuccess)
+
+    body = response.body.to_s
+    return [nil, 'core_http_empty'] if body.empty?
+
+    parsed = JSON.parse(body)
+    return [nil, 'core_not_object'] unless parsed.is_a?(Hash)
+
+    normalized = normalize(parsed)
+    return [nil, 'core_invalid_normalized'] unless normalized
+
+    payload = parsed['state'] if parsed.key?('state')
+    if payload.is_a?(Hash)
+      fallback_normalized = normalize(payload)
+      return [fallback_normalized, 'ok'] if fallback_normalized
+    end
+
+    [normalized, 'ok']
+  rescue StandardError => e
+    [nil, "core_request_error: #{e.class.name}"]
   end
 
   def build_fallback_state

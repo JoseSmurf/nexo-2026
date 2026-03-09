@@ -258,6 +258,57 @@ pub struct SecurityStatusResponse {
     pub distributed_guard_mode: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct StateEvent {
+    pub hash: String,
+    #[serde(rename = "type")]
+    pub r#type: String,
+    pub timestamp: u64,
+    pub origin: String,
+    pub channel: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StateAiInsight {
+    pub kind: String,
+    pub summary: String,
+    pub timestamp: u64,
+    pub origin: String,
+    pub level: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StateFlowItem {
+    pub kind: String,
+    pub origin: String,
+    pub summary: String,
+    pub timestamp: u64,
+    pub hash: Option<String>,
+    pub channel: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StateResponse {
+    pub system_status: String,
+    pub peers_count: usize,
+    pub relay_status: String,
+    pub network_mode: String,
+    pub mesh_status: String,
+    pub recent_events: Vec<StateEvent>,
+    pub recent_chat_messages: Vec<std::collections::HashMap<String, serde_json::Value>>,
+    pub recent_ai_insights: Vec<StateAiInsight>,
+    pub recent_flow: Vec<StateFlowItem>,
+    pub ai_last_insight: String,
+    pub recent_event_hash: Option<String>,
+    pub last_sync: u64,
+    pub last_event_hash: Option<String>,
+    pub event_type: String,
+    pub event_timestamp: u64,
+    pub event_origin: String,
+    pub event_channel: String,
+    pub timestamp: u64,
+}
+
 #[derive(Debug)]
 enum AuthError {
     Unauthorized(&'static str),
@@ -1352,7 +1403,226 @@ pub fn app_with_state(state: AppState) -> Router {
         .route("/metrics", get(metrics_handler))
         .route("/audit/recent", get(audit_recent_handler))
         .route("/security/status", get(security_status_handler))
+        .route("/api/state", get(api_state_handler))
         .with_state(state)
+}
+
+async fn api_state_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let records = state.audit_store.recent(200).unwrap_or_default();
+    let recent_events = build_state_events(&records);
+    let recent_ai_insights = build_state_ai_insights(&records);
+    let recent_flow = build_state_flow(&recent_events, &recent_ai_insights);
+
+    let (latest_hash, latest_type, latest_timestamp, latest_origin, latest_channel) =
+        state_event_header(&recent_events);
+    let ai_last_insight = recent_ai_insights
+        .first()
+        .map(|insight| insight.summary.clone())
+        .unwrap_or_else(|| "No anomaly patterns observed in this window.".to_string());
+
+    let relay_status = std::env::var("NEXO_RELAY_STATUS").unwrap_or_else(|_| "offline".to_string());
+    let network_mode = std::env::var("NEXO_NETWORK_MODE")
+        .unwrap_or_else(|_| "hybrid".to_string())
+        .to_lowercase();
+    let mesh_status = std::env::var("NEXO_MESH_STATUS")
+        .unwrap_or_else(|_| "stable".to_string())
+        .to_lowercase();
+
+    (
+        StatusCode::OK,
+        Json(StateResponse {
+            system_status: "operational".to_string(),
+            peers_count: unique_peer_count(&records),
+            relay_status,
+            network_mode,
+            mesh_status,
+            recent_events,
+            recent_chat_messages: Vec::new(),
+            recent_ai_insights,
+            recent_flow,
+            ai_last_insight,
+            recent_event_hash: latest_hash.clone(),
+            last_sync: now_utc_ms(),
+            last_event_hash: latest_hash,
+            event_type: latest_type,
+            event_timestamp: latest_timestamp,
+            event_origin: latest_origin,
+            event_channel: latest_channel,
+            timestamp: now_utc_ms(),
+        }),
+    )
+        .into_response()
+}
+
+fn build_state_events(records: &[AuditRecord]) -> Vec<StateEvent> {
+    records
+        .iter()
+        .map(|record| {
+            let event_type = match &record.final_decision {
+                FinalDecision::Approved => "system_event:approved".to_string(),
+                FinalDecision::Flagged => "system_event:flagged".to_string(),
+                FinalDecision::Blocked => "system_event:blocked".to_string(),
+            };
+
+            StateEvent {
+                hash: record.audit_hash.clone(),
+                r#type: event_type,
+                timestamp: record.timestamp_utc_ms,
+                origin: event_origin(record),
+                channel: "system".to_string(),
+            }
+        })
+        .collect()
+}
+
+fn event_origin(record: &AuditRecord) -> String {
+    let user_id = record.user_id.trim();
+    if user_id.is_empty() {
+        return "core_engine".to_string();
+    }
+    format!("user:{user_id}")
+}
+
+fn state_event_header(events: &[StateEvent]) -> (Option<String>, String, u64, String, String) {
+    let latest = events.first();
+    if let Some(event) = latest {
+        return (
+            Some(event.hash.clone()),
+            event.r#type.clone(),
+            event.timestamp,
+            event.origin.clone(),
+            event.channel.clone(),
+        );
+    }
+
+    (None, "startup".to_string(), 0, "core_engine".to_string(), "system".to_string())
+}
+
+fn build_state_ai_insights(records: &[AuditRecord]) -> Vec<StateAiInsight> {
+    let mut amounts: Vec<f64> = records
+        .iter()
+        .map(|record| record.amount_cents as f64)
+        .collect();
+
+    if records.is_empty() {
+        return Vec::new();
+    }
+
+    if amounts.len() == 1 {
+        return vec![StateAiInsight {
+            kind: "observation".to_string(),
+            summary: "No anomaly patterns observed in this window.".to_string(),
+            timestamp: records.first().map(|r| r.timestamp_utc_ms).unwrap_or_else(now_utc_ms),
+            origin: event_origin(&records[0]),
+            level: "info".to_string(),
+        }];
+    }
+
+    let total: f64 = amounts.iter().sum();
+    let mean = total / amounts.len() as f64;
+    let variance: f64 = amounts.iter().map(|value| (value - mean).powi(2)).sum::<f64>() / amounts.len() as f64;
+    let std_dev = variance.sqrt();
+    let threshold = mean + 3.0 * std_dev;
+
+    let mut insights: Vec<StateAiInsight> = Vec::new();
+    for record in records.iter() {
+        if (record.amount_cents as f64) > threshold {
+            insights.push(StateAiInsight {
+                kind: "anomaly".to_string(),
+                summary: format!(
+                    "amount={} exceeds mean+3σ ({:.2})",
+                    record.amount_cents, threshold
+                ),
+                timestamp: record.timestamp_utc_ms,
+                origin: event_origin(record),
+                level: "high".to_string(),
+            });
+        }
+    }
+
+    insights.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+    if insights.is_empty() {
+        return vec![StateAiInsight {
+            kind: "observation".to_string(),
+            summary: "No anomaly patterns observed in this window.".to_string(),
+            timestamp: records
+                .first()
+                .map(|record| record.timestamp_utc_ms)
+                .unwrap_or_else(now_utc_ms),
+            origin: event_origin(&records[0]),
+            level: "info".to_string(),
+        }];
+    }
+
+    insights.into_iter().take(3).collect()
+}
+
+fn build_state_flow(events: &[StateEvent], ai_insights: &[StateAiInsight]) -> Vec<StateFlowItem> {
+    let mut candidates: Vec<(u64, u8, usize, StateFlowItem)> = Vec::new();
+
+    for (index, event) in events.iter().enumerate() {
+        candidates.push((
+            event.timestamp,
+            0,
+            index,
+            StateFlowItem {
+                kind: "event".to_string(),
+                origin: event.origin.clone(),
+                summary: event.r#type.clone(),
+                timestamp: event.timestamp,
+                hash: Some(event.hash.clone()),
+                channel: event.channel.clone(),
+            },
+        ));
+    }
+
+    for (index, insight) in ai_insights.iter().enumerate() {
+        candidates.push((
+            insight.timestamp,
+            1,
+            index,
+            StateFlowItem {
+                kind: "ai".to_string(),
+                origin: insight.origin.clone(),
+                summary: insight.summary.clone(),
+                timestamp: insight.timestamp,
+                hash: None,
+                channel: "ai".to_string(),
+            },
+        ));
+    }
+
+    candidates.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+
+    candidates
+        .into_iter()
+        .map(|(_, _, _, item)| item)
+        .take(5)
+        .collect()
+}
+
+fn state_ai_summary(prefix: &str, amount_cents: u64) -> String {
+    format!("{prefix}: amount={amount_cents}")
+}
+
+fn unique_peer_count(records: &[AuditRecord]) -> usize {
+    records
+        .iter()
+        .filter_map(|record| {
+            let user = record.user_id.trim();
+            if user.is_empty() {
+                None
+            } else {
+                Some(user.to_string())
+            }
+        })
+        .collect::<HashSet<_>>()
+        .len()
 }
 
 async fn rate_limit_middleware(
@@ -2467,6 +2737,60 @@ mod tests {
         let json: Value = serde_json::from_slice(&body).expect("json");
         assert_eq!(json["request_id"], "564a7218-13e5-46c9-84f6-bf4c53ff533f");
         assert_eq!(json["auth_key_id"], "active");
+    }
+
+    #[tokio::test]
+    async fn api_state_handler_returns_expected_state_payload() {
+        let app = app_with_state(test_state());
+        let now = now_utc_ms();
+        let req_body = serde_json::json!({
+            "user_id": "state_user",
+            "amount_cents": 50_000,
+            "is_pep": false,
+            "has_active_kyc": true,
+            "timestamp_utc_ms": now,
+            "risk_bps": 1_000,
+            "ui_hash_valid": true,
+            "request_id": "a4f3a8f6-6f5b-4fd0-b0aa-6e7c2c8f8f4a",
+            "calc_version": "plca_v1"
+        });
+
+        let evaluate_req = signed_request(
+            req_body,
+            "test_active_secret",
+            "active",
+            "a4f3a8f6-6f5b-4fd0-b0aa-6e7c2c8f8f4a",
+            now,
+        );
+        let eval_resp = app.clone().oneshot(evaluate_req).await.expect("evaluate response");
+        assert_eq!(eval_resp.status(), StatusCode::OK);
+
+        let state_req = Request::builder()
+            .method("GET")
+            .uri("/api/state")
+            .body(Body::empty())
+            .expect("state request");
+        let state_resp = app.oneshot(state_req).await.expect("state response");
+        assert_eq!(state_resp.status(), StatusCode::OK);
+
+        let state_body = state_resp
+            .into_body()
+            .collect()
+            .await
+            .expect("state body bytes")
+            .to_bytes();
+        let state_json: Value = serde_json::from_slice(&state_body).expect("state json");
+
+        assert_eq!(state_json["system_status"], "operational");
+        assert_eq!(state_json["peers_count"], 1);
+        assert!(state_json["recent_events"].is_array());
+        assert!(state_json["recent_flow"].is_array());
+        assert!(state_json["recent_ai_insights"].is_array());
+        assert_eq!(state_json["recent_events"][0]["type"], "system_event:approved");
+        assert_eq!(
+            state_json["ai_last_insight"],
+            "No anomaly patterns observed in this window."
+        );
     }
 
     #[tokio::test]

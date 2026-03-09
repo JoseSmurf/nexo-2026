@@ -18,11 +18,13 @@ http://127.0.0.1:4567
 ## Current behavior
 
 - Real-ish status source with fallback:
-  - Reads JSON state from `NEXO_UI_STATE_PATH` (or `state.json`).
+  - Primary source: Rust endpoint `/api/state` from `NEXO_CORE_STATE_URL` (default `http://127.0.0.1:3000/api/state`).
+  - Fallback to JSON state from `NEXO_UI_STATE_PATH` (or `state.json`).
   - If unavailable, tries simple SQLite read from `state.db` (`nexo_state` table).
   - If unavailable, falls back to deterministic simulated state.
 - `/api/status` includes `data_source`:
-  - `"real"` when state was loaded from JSON/SQLite.
+  - `"real"` when state is sourced from core/file/sqlite.
+  - `source_type` indicates: `core` | `file` | `sqlite` | `fallback`.
   - `"fallback_simulated"` when no real state source is available.
 
 - `/api/status` returns `state`, `seed`, `last_updated`, and `data_source`.
@@ -51,7 +53,7 @@ http://127.0.0.1:4567
 - `/api/health` returns:
   - `ui_status`
   - `data_source`
-  - `source_type` (`file` | `sqlite` | `fallback` | `demo`)
+  - `source_type` (`core` | `file` | `sqlite` | `fallback` | `demo`)
   - `adapter_status`
   - `last_updated`
   - `seed`
