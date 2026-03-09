@@ -185,6 +185,7 @@ module CoreAdapter
       state[:recent_ai_insights],
       state[:recent_chat_messages],
     )
+    apply_derived_observability!(state, source: :fallback)
     state
   end
 
@@ -311,7 +312,7 @@ module CoreAdapter
       channel: 'system',
     }
 
-    {
+    state = {
       system_status: status,
       peers_count: peers.to_i,
       relay_status: relay,
@@ -333,6 +334,34 @@ module CoreAdapter
       chat_send_mode: chat_send_mode,
       chat_send_reason: chat_send_reason,
     }
+
+    apply_derived_observability!(state, source: source)
+    state
+  end
+
+  def apply_derived_observability!(state, source:)
+    latest = Array(state[:recent_flow]).first || Array(state[:recent_events]).first || {}
+    state[:latest_change_kind] ||= (latest[:kind] || latest['kind'] || 'startup').to_s
+    state[:latest_change_summary] ||= (
+      latest[:summary] || latest['summary'] || latest[:type] || latest['type'] || 'No recent changes observed.'
+    ).to_s
+    state[:latest_change_origin] ||= (latest[:origin] || latest['origin'] || 'core_engine').to_s
+    state[:latest_change_timestamp] ||= latest[:timestamp] || latest['timestamp'] || 0
+    state[:latest_change_channel] ||= (
+      latest[:channel] || latest['channel'] || 'system'
+    ).to_s
+
+    if state[:write_status].to_s.empty?
+      state[:write_status] =
+        case source
+        when :core
+          state[:chat_send_available] ? 'writable' : 'read_only'
+        when :file, :sqlite
+          'read_only'
+        else
+          'unavailable'
+        end
+    end
   end
 
   def normalize_flow_core(flow_items)
@@ -392,10 +421,11 @@ module CoreAdapter
     candidates = []
 
     Array(events).each_with_index do |event, index|
+      event_type = event[:type] || event['type'] || 'event'
       candidates << {
         kind: 'event',
         origin: event[:origin] || event['origin'] || 'unknown',
-        summary: event[:type] || event['type'] || 'event',
+        summary: human_event_summary(event_type),
         timestamp: event[:timestamp] || event['timestamp'] || 'n/a',
         hash: event[:hash] || event['hash'],
         channel: event[:channel] || event['channel'] || '',
@@ -443,6 +473,19 @@ module CoreAdapter
         hash: item[:hash],
         channel: item[:channel],
       }
+    end
+  end
+
+  def human_event_summary(event_type)
+    case event_type.to_s
+    when 'system_event:approved'
+      'approved decision'
+    when 'system_event:flagged'
+      'flagged for review'
+    when 'system_event:blocked'
+      'blocked decision'
+    else
+      event_type.to_s
     end
   end
 

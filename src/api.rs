@@ -328,6 +328,12 @@ pub struct StateResponse {
     pub chat_send_available: bool,
     pub chat_send_mode: String,
     pub chat_send_reason: String,
+    pub write_status: String,
+    pub latest_change_kind: String,
+    pub latest_change_summary: String,
+    pub latest_change_origin: String,
+    pub latest_change_timestamp: u64,
+    pub latest_change_channel: String,
     pub recent_events: Vec<StateEvent>,
     pub recent_chat_messages: Vec<StateChatMessage>,
     pub recent_ai_insights: Vec<StateAiInsight>,
@@ -1514,6 +1520,34 @@ fn is_loopback_connect_info(connect_info: &ConnectInfo<SocketAddr>) -> bool {
     addr.ip().is_loopback()
 }
 
+fn write_status_from_chat_send(chat_send: ChatSendCapability) -> &'static str {
+    if chat_send.available {
+        "writable"
+    } else {
+        "read_only"
+    }
+}
+
+fn latest_change_header(flow: &[StateFlowItem]) -> (String, String, String, u64, String) {
+    if let Some(item) = flow.first() {
+        return (
+            item.kind.clone(),
+            item.summary.clone(),
+            item.origin.clone(),
+            item.timestamp,
+            item.channel.clone(),
+        );
+    }
+
+    (
+        "startup".to_string(),
+        "No recent changes observed.".to_string(),
+        "core_engine".to_string(),
+        0,
+        "system".to_string(),
+    )
+}
+
 async fn api_state_handler(State(state): State<AppState>) -> impl IntoResponse {
     let records = state.audit_store.recent(200).unwrap_or_default();
     let recent_events = build_state_events(&records);
@@ -1522,6 +1556,13 @@ async fn api_state_handler(State(state): State<AppState>) -> impl IntoResponse {
         load_recent_chat_messages(state.p2p_db_path.as_deref(), DEFAULT_STATE_CHAT_LIMIT);
     let recent_flow = build_state_flow(&recent_events, &recent_chat_messages, &recent_ai_insights);
     let chat_send = chat_send_capability(&state);
+    let (
+        latest_change_kind,
+        latest_change_summary,
+        latest_change_origin,
+        latest_change_timestamp,
+        latest_change_channel,
+    ) = latest_change_header(&recent_flow);
 
     let (latest_hash, latest_type, latest_timestamp, latest_origin, latest_channel) =
         state_event_header(&recent_events);
@@ -1549,6 +1590,12 @@ async fn api_state_handler(State(state): State<AppState>) -> impl IntoResponse {
             chat_send_available: chat_send.available,
             chat_send_mode: chat_send.mode.to_string(),
             chat_send_reason: chat_send.reason.to_string(),
+            write_status: write_status_from_chat_send(chat_send).to_string(),
+            latest_change_kind,
+            latest_change_summary,
+            latest_change_origin,
+            latest_change_timestamp,
+            latest_change_channel,
             recent_events,
             recent_chat_messages,
             recent_ai_insights,
@@ -1782,7 +1829,7 @@ fn build_state_flow(
             StateFlowItem {
                 kind: "event".to_string(),
                 origin: event.origin.clone(),
-                summary: event.r#type.clone(),
+                summary: describe_state_event_type(&event.r#type),
                 timestamp: event.timestamp,
                 hash: Some(event.hash.clone()),
                 channel: event.channel.clone(),
@@ -1833,6 +1880,15 @@ fn build_state_flow(
         .map(|(_, _, _, item)| item)
         .take(5)
         .collect()
+}
+
+fn describe_state_event_type(event_type: &str) -> String {
+    match event_type {
+        "system_event:approved" => "approved decision".to_string(),
+        "system_event:flagged" => "flagged for review".to_string(),
+        "system_event:blocked" => "blocked decision".to_string(),
+        other => other.to_string(),
+    }
 }
 
 #[cfg(feature = "network")]
@@ -3164,6 +3220,13 @@ mod tests {
             state_json["chat_send_reason"],
             expected_chat_send_unavailable_reason()
         );
+        assert_eq!(state_json["write_status"], "read_only");
+        assert_eq!(state_json["latest_change_kind"], "event");
+        assert_eq!(state_json["latest_change_summary"], "approved decision");
+        assert_eq!(
+            state_json["latest_change_origin"],
+            state_json["recent_flow"][0]["origin"]
+        );
     }
 
     #[cfg(feature = "network")]
@@ -3223,6 +3286,9 @@ mod tests {
         assert_eq!(state_json["chat_send_available"], true);
         assert_eq!(state_json["chat_send_mode"], "core");
         assert_eq!(state_json["chat_send_reason"], "");
+        assert_eq!(state_json["write_status"], "writable");
+        assert_eq!(state_json["latest_change_kind"], "chat");
+        assert_eq!(state_json["latest_change_summary"], "hello-offline-flow");
     }
 
     #[cfg(feature = "network")]

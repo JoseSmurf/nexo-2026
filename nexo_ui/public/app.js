@@ -287,9 +287,17 @@
       if (index === 0 && shouldPulseLatestRow) {
         rowClass += ' pulse';
       }
+      const type = String(event.type || 'n/a');
+      const typeLabel = type === 'system_event:approved'
+        ? 'approved decision'
+        : type === 'system_event:flagged'
+          ? 'flagged for review'
+          : type === 'system_event:blocked'
+            ? 'blocked decision'
+            : type;
       return `<div class="${rowClass}">
         #${index + 1} ${escapeHtml(event.timestamp || 'n/a')} | ${escapeHtml(event.origin || 'n/a')} | ${escapeHtml(event.channel || 'n/a')}
-        type=${escapeHtml(event.type || 'n/a')}
+        type=${escapeHtml(typeLabel)}
         hash=${escapeHtml(event.hash || 'n/a')}
       </div>`;
     }).join('');
@@ -868,6 +876,19 @@
     }
   }
 
+  function summarizeLatestChange(state) {
+    const kind = String(state.latest_change_kind || 'startup');
+    const summary = String(state.latest_change_summary || 'No recent changes observed.');
+    const origin = String(state.latest_change_origin || 'core_engine');
+    const timestamp = String(state.latest_change_timestamp || '0');
+    return {
+      kind,
+      summary,
+      origin,
+      timestamp,
+    };
+  }
+
   function setChatSendStatus(text, tone = '') {
     if (!chatSendStatusNode) {
       return;
@@ -944,7 +965,8 @@
       const hasEventPulse = shouldPulseForEvents(state);
       if (hasEventPulse) {
         triggerEventPulse();
-        setCardCause('events', 'latest event changed');
+        const latest = summarizeLatestChange(state);
+        setCardCause('events', `${latest.kind}: ${latest.summary}`);
       }
       cardNodes.events.innerHTML = formatEvents(state, hasEventPulse);
     }
@@ -960,7 +982,8 @@
     const hasAiPulse = shouldPulseForAiInsight(state);
     if (hasAiPulse) {
       triggerAiPulse();
-      setCardCause('ai', 'new insight detected');
+      const latest = summarizeLatestChange(state);
+      setCardCause('ai', `${latest.kind}: ${latest.summary}`);
     }
 
     if (cardNodes.ai_recent_insights) {
@@ -1077,13 +1100,20 @@
     const adapterStatus = data && data.adapter_status ? data.adapter_status : 'unreachable';
     const lastUpdated = data && data.last_updated ? data.last_updated : 'n/a';
     const integrityMessage = data && data.integrity_message ? data.integrity_message : 'health source unreachable';
+    const writeStatus = data && data.write_status ? data.write_status : 'unknown';
+    const latestChangeKind = data && data.latest_change_kind ? data.latest_change_kind : 'startup';
+    const latestChangeSummary = data && data.latest_change_summary ? data.latest_change_summary : 'No recent changes observed.';
+    const latestChangeOrigin = data && data.latest_change_origin ? data.latest_change_origin : 'core_engine';
+    const latestChangeTimestamp = data && data.latest_change_timestamp ? data.latest_change_timestamp : '0';
 
     cardNodes.health.innerHTML = `
       source: ${dataSource}<br />
-      adapter_status: ${adapterStatus}<br />
-      source_type: ${sourceType}<br />
-      ui_status: ${uiStatus}<br />
-      integrity_message: ${integrityMessage}<br />
+      adapter: ${adapterStatus}<br />
+      integrity: ${integrityMessage}<br />
+      write_status: ${writeStatus}<br />
+      latest_change: ${latestChangeKind} / ${latestChangeSummary}<br />
+      latest_origin: ${latestChangeOrigin}<br />
+      latest_at: ${latestChangeTimestamp}<br />
       last_updated: ${lastUpdated}
     `;
 

@@ -142,6 +142,12 @@ helpers do
       source_type: source_type,
       adapter_status: adapter_status,
       integrity_message: integrity_message,
+      write_status: state[:write_status],
+      latest_change_kind: state[:latest_change_kind],
+      latest_change_summary: state[:latest_change_summary],
+      latest_change_origin: state[:latest_change_origin],
+      latest_change_timestamp: state[:latest_change_timestamp],
+      latest_change_channel: state[:latest_change_channel],
       last_updated: Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC'),
       seed: motion_seed_from_state(state),
     }
