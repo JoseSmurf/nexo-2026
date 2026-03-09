@@ -1110,9 +1110,17 @@
     const lastOperatorActionSummary = data && data.last_operator_action_summary ? data.last_operator_action_summary : '';
     const lastOperatorActionOrigin = data && data.last_operator_action_origin ? data.last_operator_action_origin : '';
     const lastOperatorActionTimestamp = data && data.last_operator_action_timestamp ? data.last_operator_action_timestamp : '0';
+    const juliaObservationSummary = data && data.julia_observation_summary ? data.julia_observation_summary : '';
+    const juliaObservationFlowIntensity = data && data.julia_observation_flow_intensity ? data.julia_observation_flow_intensity : '';
+    const juliaObservationRegimeHint = data && data.julia_observation_regime_hint
+      ? String(data.julia_observation_regime_hint).replaceAll('_', ' ')
+      : 'n/a';
     const lastOperatorLabel = lastOperatorActionKind
       ? `${lastOperatorActionKind} / ${lastOperatorActionSummary}`
       : 'none observed';
+    const juliaReading = juliaObservationFlowIntensity
+      ? `${juliaObservationFlowIntensity} / ${juliaObservationSummary}`
+      : 'not available';
 
     cardNodes.health.innerHTML = `
       source: ${dataSource}<br />
@@ -1122,6 +1130,8 @@
       latest_change: ${latestChangeKind} / ${latestChangeSummary}<br />
       change_source: ${latestChangeSource}<br />
       last_operator: ${lastOperatorLabel}<br />
+      julia_reading: ${juliaReading}<br />
+      julia_regime: ${juliaObservationRegimeHint}<br />
       latest_origin: ${latestChangeOrigin}<br />
       operator_origin: ${lastOperatorActionOrigin || 'n/a'}<br />
       operator_at: ${lastOperatorActionKind ? lastOperatorActionTimestamp : 'n/a'}<br />

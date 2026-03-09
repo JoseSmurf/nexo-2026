@@ -199,6 +199,27 @@ function observation_artifact(payload)
     )
 end
 
+function artifact_with_regime_hint(artifact, previous)
+    return (
+        timestamp = _artifact_int(artifact, :timestamp),
+        flow_counts = (
+            event = _artifact_subvalue(artifact, :flow_counts, :event, 0),
+            chat = _artifact_subvalue(artifact, :flow_counts, :chat, 0),
+            ai = _artifact_subvalue(artifact, :flow_counts, :ai, 0),
+        ),
+        source_mix = (
+            operator_action = _artifact_subfloat(artifact, :source_mix, :operator_action),
+            core_decision = _artifact_subfloat(artifact, :source_mix, :core_decision),
+            passive_observation = _artifact_subfloat(artifact, :source_mix, :passive_observation),
+        ),
+        dominant_source = _artifact_string(artifact, :dominant_source),
+        dominant_kind = _artifact_string(artifact, :dominant_kind),
+        flow_intensity = _artifact_string(artifact, :flow_intensity),
+        summary = _artifact_string(artifact, :summary),
+        regime_hint = detect_regime_change(artifact, previous),
+    )
+end
+
 function observation_filename(timestamp_ms::Int)::String
     dt = Dates.unix2datetime(timestamp_ms / 1000)
     return Dates.format(dt, dateformat"yyyy-mm-ddTHH-MM-SS.sss") * "Z.json"
@@ -215,11 +236,13 @@ end
 function write_timestamped_observation(payload, dir::AbstractString)
     artifact = observation_artifact(payload)
     mkpath(dir)
+    previous = latest_observation(dir)
+    artifact_with_hint = artifact_with_regime_hint(artifact, previous)
     path = joinpath(dir, observation_filename(artifact.timestamp))
     open(path, "w") do io
-        write(io, JSON3.write(artifact))
+        write(io, JSON3.write(artifact_with_hint))
     end
-    return path, artifact
+    return path, artifact_with_hint
 end
 
 function load_observation_history(dir::AbstractString)

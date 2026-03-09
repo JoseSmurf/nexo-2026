@@ -154,6 +154,9 @@ helpers do
       last_operator_action_origin: state[:last_operator_action_origin],
       last_operator_action_timestamp: state[:last_operator_action_timestamp],
       last_operator_action_channel: state[:last_operator_action_channel],
+      julia_observation_summary: state[:julia_observation_summary],
+      julia_observation_flow_intensity: state[:julia_observation_flow_intensity],
+      julia_observation_regime_hint: state[:julia_observation_regime_hint],
       last_updated: Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC'),
       seed: motion_seed_from_state(state),
     }

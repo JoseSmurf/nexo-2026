@@ -84,15 +84,26 @@ module CoreAdapter
 
   def build_state
     from_core, status = read_core_state
-    return [from_core, 'real', 'core', status] if from_core
+    if from_core
+      attach_julia_observation!(from_core)
+      return [from_core, 'real', 'core', status]
+    end
 
     from_json, status = read_json_state
-    return [from_json, 'real', 'file', status] if from_json
+    if from_json
+      attach_julia_observation!(from_json)
+      return [from_json, 'real', 'file', status]
+    end
 
     from_sqlite, sqlite_status = read_sqlite_state
-    return [from_sqlite, 'real', 'sqlite', sqlite_status] if from_sqlite
+    if from_sqlite
+      attach_julia_observation!(from_sqlite)
+      return [from_sqlite, 'real', 'sqlite', sqlite_status]
+    end
 
-    [build_fallback_state, 'fallback_simulated', 'fallback', status || sqlite_status || 'fallback_no_data_source']
+    fallback = build_fallback_state
+    attach_julia_observation!(fallback)
+    [fallback, 'fallback_simulated', 'fallback', status || sqlite_status || 'fallback_no_data_source']
   end
 
   def send_chat_message(text:, origin:, channel: 'global')
@@ -234,6 +245,51 @@ module CoreAdapter
 
   def sqlite_path
     ENV['NEXO_UI_SQLITE_PATH'] || File.join(Dir.pwd, 'state.db')
+  end
+
+  def julia_observation_path
+    explicit = ENV['NEXO_JULIA_OBSERVATION_PATH'].to_s
+    return explicit unless explicit.empty?
+
+    dir = ENV['NEXO_JULIA_OBSERVATION_DIR'].to_s
+    return '' if dir.empty? || !Dir.exist?(dir)
+
+    candidates = Dir.children(dir).select { |name| name.end_with?('.json') }.sort
+    return '' if candidates.empty?
+
+    File.join(dir, candidates.last)
+  rescue SystemCallError
+    ''
+  end
+
+  def read_julia_observation
+    path = julia_observation_path
+    return nil if path.empty? || !File.file?(path)
+
+    parsed = JSON.parse(File.read(path))
+    return nil unless parsed.is_a?(Hash)
+
+    summary = parsed['summary'].to_s.strip
+    intensity = parsed['flow_intensity'].to_s.strip
+    regime_hint = parsed['regime_hint'].to_s.strip
+
+    return nil if summary.empty? && intensity.empty? && regime_hint.empty?
+
+    {
+      summary: summary,
+      flow_intensity: intensity,
+      regime_hint: regime_hint,
+    }
+  rescue StandardError
+    nil
+  end
+
+  def attach_julia_observation!(state)
+    observation = read_julia_observation
+    state[:julia_observation_summary] = observation && !observation[:summary].empty? ? observation[:summary] : nil
+    state[:julia_observation_flow_intensity] = observation && !observation[:flow_intensity].empty? ? observation[:flow_intensity] : nil
+    state[:julia_observation_regime_hint] = observation && !observation[:regime_hint].empty? ? observation[:regime_hint] : nil
+    state
   end
 
   def core_endpoint_url(path)
