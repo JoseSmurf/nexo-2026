@@ -2,6 +2,8 @@ using JSON3
 using HTTP
 
 const STATE_API_URL = get(ENV, "NEXO_STATE_API_URL", "http://127.0.0.1:3000/api/state")
+const FLOW_KIND_KEYS = ("event", "chat", "ai")
+const FLOW_SOURCE_KEYS = ("operator_action", "core_decision", "passive_observation")
 
 function _as_string(value, default::String="")
     value === nothing && return default
@@ -56,7 +58,7 @@ function classify_flow_source(item)::String
 end
 
 function count_flow_kinds(flow_items)::Dict{String, Int}
-    counts = Dict("event" => 0, "chat" => 0, "ai" => 0)
+    counts = Dict(key => 0 for key in FLOW_KIND_KEYS)
     for item in flow_items
         kind = _flow_kind(item)
         haskey(counts, kind) || continue
@@ -66,11 +68,7 @@ function count_flow_kinds(flow_items)::Dict{String, Int}
 end
 
 function count_flow_sources(flow_items)::Dict{String, Int}
-    counts = Dict(
-        "operator_action" => 0,
-        "core_decision" => 0,
-        "passive_observation" => 0,
-    )
+    counts = Dict(key => 0 for key in FLOW_SOURCE_KEYS)
     for item in flow_items
         counts[classify_flow_source(item)] += 1
     end
@@ -80,14 +78,13 @@ end
 function movement_mix_ratios(source_counts::Dict{String, Int})::Dict{String, Float64}
     total = sum(values(source_counts))
     if total == 0
-        return Dict(
-            "operator_action" => 0.0,
-            "core_decision" => 0.0,
-            "passive_observation" => 0.0,
-        )
+        return Dict(key => 0.0 for key in FLOW_SOURCE_KEYS)
     end
 
-    return Dict(key => value / total for (key, value) in source_counts)
+    return Dict(
+        key => round(get(source_counts, key, 0) / total; digits=4)
+        for key in FLOW_SOURCE_KEYS
+    )
 end
 
 function classify_flow_intensity(total_items::Int)::String
@@ -167,6 +164,48 @@ function observe_state(payload)
     )
 end
 
+function observation_timestamp(payload)::Int
+    if hasproperty(payload, :timestamp)
+        return _as_int(payload.timestamp, 0)
+    end
+    if hasproperty(payload, :latest_change_timestamp)
+        return _as_int(payload.latest_change_timestamp, 0)
+    end
+    return 0
+end
+
+function observation_artifact(payload)
+    observation = observe_state(payload)
+    kind_counts = observation.kind_counts
+    source_ratios = observation.source_ratios
+
+    return (
+        timestamp = observation_timestamp(payload),
+        flow_counts = (
+            event = get(kind_counts, "event", 0),
+            chat = get(kind_counts, "chat", 0),
+            ai = get(kind_counts, "ai", 0),
+        ),
+        source_mix = (
+            operator_action = get(source_ratios, "operator_action", 0.0),
+            core_decision = get(source_ratios, "core_decision", 0.0),
+            passive_observation = get(source_ratios, "passive_observation", 0.0),
+        ),
+        dominant_source = observation.dominant_source,
+        dominant_kind = observation.dominant_kind,
+        flow_intensity = observation.intensity,
+        summary = observation.summary,
+    )
+end
+
+function write_observation_artifact(payload, path::AbstractString)
+    artifact = observation_artifact(payload)
+    open(path, "w") do io
+        write(io, JSON3.write(artifact))
+    end
+    return artifact
+end
+
 function fetch_state_payload(; state_url::String=STATE_API_URL, timeout_seconds::Int=2)
     resp = HTTP.request(
         "GET",
@@ -180,9 +219,14 @@ function fetch_state_payload(; state_url::String=STATE_API_URL, timeout_seconds:
 end
 
 function main()
-    payload = fetch_state_payload()
-    observation = observe_state(payload)
-    println(JSON3.write(observation))
+    state_url = length(ARGS) >= 1 ? ARGS[1] : STATE_API_URL
+    output_path = length(ARGS) >= 2 ? ARGS[2] : ""
+    payload = fetch_state_payload(; state_url=state_url)
+    artifact = observation_artifact(payload)
+    if !isempty(output_path)
+        write_observation_artifact(payload, output_path)
+    end
+    println(JSON3.write(artifact))
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__

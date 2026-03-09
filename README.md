@@ -307,6 +307,8 @@ These fields let the UI reflect the core truth directly instead of inferring cap
 - Julia now also serves as a deterministic numerical observer over `/api/state`.
 - The observer reads live Rust state, measures recent flow mix and intensity, and produces compact explainable summaries.
 - Julia does not replace Rust decisions and does not participate in the write path.
+- The observer can also emit a compact JSON artifact for UI consumers, analysis pipelines, and future distributed node observers.
+- Example: `julia --project=./julia julia/observe_state.jl http://127.0.0.1:3000/api/state`
 
 ## UI modes
 
