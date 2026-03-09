@@ -148,6 +148,11 @@ helpers do
       latest_change_origin: state[:latest_change_origin],
       latest_change_timestamp: state[:latest_change_timestamp],
       latest_change_channel: state[:latest_change_channel],
+      last_operator_action_kind: state[:last_operator_action_kind],
+      last_operator_action_summary: state[:last_operator_action_summary],
+      last_operator_action_origin: state[:last_operator_action_origin],
+      last_operator_action_timestamp: state[:last_operator_action_timestamp],
+      last_operator_action_channel: state[:last_operator_action_channel],
       last_updated: Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC'),
       seed: motion_seed_from_state(state),
     }

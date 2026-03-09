@@ -334,6 +334,11 @@ pub struct StateResponse {
     pub latest_change_origin: String,
     pub latest_change_timestamp: u64,
     pub latest_change_channel: String,
+    pub last_operator_action_kind: String,
+    pub last_operator_action_summary: String,
+    pub last_operator_action_origin: String,
+    pub last_operator_action_timestamp: u64,
+    pub last_operator_action_channel: String,
     pub recent_events: Vec<StateEvent>,
     pub recent_chat_messages: Vec<StateChatMessage>,
     pub recent_ai_insights: Vec<StateAiInsight>,
@@ -1548,6 +1553,29 @@ fn latest_change_header(flow: &[StateFlowItem]) -> (String, String, String, u64,
     )
 }
 
+fn last_operator_action_header(flow: &[StateFlowItem]) -> (String, String, String, u64, String) {
+    if let Some(item) = flow
+        .iter()
+        .find(|item| item.kind == "chat" && item.origin == "ui_dashboard")
+    {
+        return (
+            item.kind.clone(),
+            item.summary.clone(),
+            item.origin.clone(),
+            item.timestamp,
+            item.channel.clone(),
+        );
+    }
+
+    (
+        String::new(),
+        String::new(),
+        String::new(),
+        0,
+        String::new(),
+    )
+}
+
 async fn api_state_handler(State(state): State<AppState>) -> impl IntoResponse {
     let records = state.audit_store.recent(200).unwrap_or_default();
     let recent_events = build_state_events(&records);
@@ -1563,6 +1591,13 @@ async fn api_state_handler(State(state): State<AppState>) -> impl IntoResponse {
         latest_change_timestamp,
         latest_change_channel,
     ) = latest_change_header(&recent_flow);
+    let (
+        last_operator_action_kind,
+        last_operator_action_summary,
+        last_operator_action_origin,
+        last_operator_action_timestamp,
+        last_operator_action_channel,
+    ) = last_operator_action_header(&recent_flow);
 
     let (latest_hash, latest_type, latest_timestamp, latest_origin, latest_channel) =
         state_event_header(&recent_events);
@@ -1596,6 +1631,11 @@ async fn api_state_handler(State(state): State<AppState>) -> impl IntoResponse {
             latest_change_origin,
             latest_change_timestamp,
             latest_change_channel,
+            last_operator_action_kind,
+            last_operator_action_summary,
+            last_operator_action_origin,
+            last_operator_action_timestamp,
+            last_operator_action_channel,
             recent_events,
             recent_chat_messages,
             recent_ai_insights,
@@ -3227,6 +3267,11 @@ mod tests {
             state_json["latest_change_origin"],
             state_json["recent_flow"][0]["origin"]
         );
+        assert_eq!(state_json["last_operator_action_kind"], "");
+        assert_eq!(state_json["last_operator_action_summary"], "");
+        assert_eq!(state_json["last_operator_action_origin"], "");
+        assert_eq!(state_json["last_operator_action_timestamp"], 0);
+        assert_eq!(state_json["last_operator_action_channel"], "");
     }
 
     #[cfg(feature = "network")]
@@ -3289,6 +3334,8 @@ mod tests {
         assert_eq!(state_json["write_status"], "writable");
         assert_eq!(state_json["latest_change_kind"], "chat");
         assert_eq!(state_json["latest_change_summary"], "hello-offline-flow");
+        assert_eq!(state_json["last_operator_action_kind"], "");
+        assert_eq!(state_json["last_operator_action_summary"], "");
     }
 
     #[cfg(feature = "network")]
@@ -3349,6 +3396,16 @@ mod tests {
             "hello-ui-core"
         );
         assert_eq!(state_json["recent_flow"][0]["kind"], "chat");
+        assert_eq!(state_json["last_operator_action_kind"], "chat");
+        assert_eq!(state_json["last_operator_action_summary"], "hello-ui-core");
+        assert_eq!(state_json["last_operator_action_origin"], "ui_dashboard");
+        assert_eq!(state_json["last_operator_action_channel"], "global");
+        assert!(
+            state_json["last_operator_action_timestamp"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0
+        );
     }
 
     #[tokio::test]

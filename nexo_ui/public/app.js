@@ -1105,6 +1105,13 @@
     const latestChangeSummary = data && data.latest_change_summary ? data.latest_change_summary : 'No recent changes observed.';
     const latestChangeOrigin = data && data.latest_change_origin ? data.latest_change_origin : 'core_engine';
     const latestChangeTimestamp = data && data.latest_change_timestamp ? data.latest_change_timestamp : '0';
+    const lastOperatorActionKind = data && data.last_operator_action_kind ? data.last_operator_action_kind : '';
+    const lastOperatorActionSummary = data && data.last_operator_action_summary ? data.last_operator_action_summary : '';
+    const lastOperatorActionOrigin = data && data.last_operator_action_origin ? data.last_operator_action_origin : '';
+    const lastOperatorActionTimestamp = data && data.last_operator_action_timestamp ? data.last_operator_action_timestamp : '0';
+    const lastOperatorLabel = lastOperatorActionKind
+      ? `${lastOperatorActionKind} / ${lastOperatorActionSummary}`
+      : 'none observed';
 
     cardNodes.health.innerHTML = `
       source: ${dataSource}<br />
@@ -1112,7 +1119,10 @@
       integrity: ${integrityMessage}<br />
       write_status: ${writeStatus}<br />
       latest_change: ${latestChangeKind} / ${latestChangeSummary}<br />
+      last_operator: ${lastOperatorLabel}<br />
       latest_origin: ${latestChangeOrigin}<br />
+      operator_origin: ${lastOperatorActionOrigin || 'n/a'}<br />
+      operator_at: ${lastOperatorActionKind ? lastOperatorActionTimestamp : 'n/a'}<br />
       latest_at: ${latestChangeTimestamp}<br />
       last_updated: ${lastUpdated}
     `;

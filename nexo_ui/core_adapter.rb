@@ -351,6 +351,22 @@ module CoreAdapter
       latest[:channel] || latest['channel'] || 'system'
     ).to_s
 
+    last_operator = Array(state[:recent_flow]).find do |item|
+      (item[:kind] || item['kind']).to_s == 'chat' &&
+        (item[:origin] || item['origin']).to_s == 'ui_dashboard'
+    end || {}
+    state[:last_operator_action_kind] ||= (last_operator[:kind] || last_operator['kind'] || '').to_s
+    state[:last_operator_action_summary] ||= (
+      last_operator[:summary] || last_operator['summary'] || ''
+    ).to_s
+    state[:last_operator_action_origin] ||= (
+      last_operator[:origin] || last_operator['origin'] || ''
+    ).to_s
+    state[:last_operator_action_timestamp] ||= last_operator[:timestamp] || last_operator['timestamp'] || 0
+    state[:last_operator_action_channel] ||= (
+      last_operator[:channel] || last_operator['channel'] || ''
+    ).to_s
+
     if state[:write_status].to_s.empty?
       state[:write_status] =
         case source
