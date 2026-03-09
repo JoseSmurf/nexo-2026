@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -9,7 +10,7 @@ use std::time::Instant;
 use aws_config::BehaviorVersion;
 use axum::{
     body::{to_bytes, Body, Bytes},
-    extract::{Query, State},
+    extract::{ConnectInfo, Query, State},
     http::{HeaderMap, HeaderName, HeaderValue, Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -1508,6 +1509,11 @@ fn chat_send_capability(_state: &AppState) -> ChatSendCapability {
     }
 }
 
+fn is_loopback_connect_info(connect_info: &ConnectInfo<SocketAddr>) -> bool {
+    let ConnectInfo(addr) = connect_info;
+    addr.ip().is_loopback()
+}
+
 async fn api_state_handler(State(state): State<AppState>) -> impl IntoResponse {
     let records = state.audit_store.recent(200).unwrap_or_default();
     let recent_events = build_state_events(&records);
@@ -1563,6 +1569,7 @@ async fn api_state_handler(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn api_chat_send_handler(
     State(state): State<AppState>,
+    connect_info: ConnectInfo<SocketAddr>,
     Json(req): Json<ChatSendRequest>,
 ) -> impl IntoResponse {
     let request_id = Uuid::new_v4().to_string();
@@ -1570,6 +1577,15 @@ async fn api_chat_send_handler(
     let text = req.text;
     // This route is intended for the local UI surface. Keep origin fixed.
     let origin = "ui_dashboard".to_string();
+
+    if !is_loopback_connect_info(&connect_info) {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            &state,
+            &request_id,
+            "chat send unavailable: local_only",
+        );
+    }
 
     if channel != "global" {
         return error_response(
@@ -3002,6 +3018,22 @@ mod tests {
         req.body(Body::empty()).expect("request")
     }
 
+    fn chat_send_request(
+        payload: serde_json::Value,
+        remote_addr: Option<SocketAddr>,
+    ) -> Request<Body> {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/chat/send")
+            .header("content-type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .expect("request");
+        if let Some(addr) = remote_addr {
+            req.extensions_mut().insert(ConnectInfo(addr));
+        }
+        req
+    }
+
     #[cfg(feature = "network")]
     fn expected_chat_send_unavailable_reason() -> &'static str {
         "p2p_db_path_missing"
@@ -3203,19 +3235,14 @@ mod tests {
         state.p2p_db_path = Some(db_path_str.to_string());
         let app = app_with_state(state);
 
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/chat/send")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::json!({
-                    "origin": "spoofed_origin",
-                    "channel": "global",
-                    "text": "hello-ui-core"
-                })
-                .to_string(),
-            ))
-            .expect("request");
+        let req = chat_send_request(
+            serde_json::json!({
+                "origin": "spoofed_origin",
+                "channel": "global",
+                "text": "hello-ui-core"
+            }),
+            Some("127.0.0.1:41000".parse().expect("loopback")),
+        );
         let resp = app.clone().oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::OK);
 
@@ -3261,18 +3288,13 @@ mod tests {
     #[tokio::test]
     async fn api_chat_send_handler_rejects_invalid_channel() {
         let app = app_with_state(test_state());
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/chat/send")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::json!({
-                    "channel": "ai",
-                    "text": "hello-ui-core"
-                })
-                .to_string(),
-            ))
-            .expect("request");
+        let req = chat_send_request(
+            serde_json::json!({
+                "channel": "ai",
+                "text": "hello-ui-core"
+            }),
+            Some("127.0.0.1:41001".parse().expect("loopback")),
+        );
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
@@ -3280,18 +3302,13 @@ mod tests {
     #[tokio::test]
     async fn api_chat_send_handler_rejects_when_capability_is_unavailable() {
         let app = app_with_state(test_state());
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/chat/send")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::json!({
-                    "channel": "global",
-                    "text": "hello-ui-core"
-                })
-                .to_string(),
-            ))
-            .expect("request");
+        let req = chat_send_request(
+            serde_json::json!({
+                "channel": "global",
+                "text": "hello-ui-core"
+            }),
+            Some("127.0.0.1:41002".parse().expect("loopback")),
+        );
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 
@@ -3312,22 +3329,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_chat_send_handler_rejects_non_loopback_request() {
+        let app = app_with_state(test_state());
+        let req = chat_send_request(
+            serde_json::json!({
+                "channel": "global",
+                "text": "hello-ui-core"
+            }),
+            Some("10.0.0.5:41003".parse().expect("remote")),
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("response body")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(json["error"], "chat send unavailable: local_only");
+    }
+
+    #[tokio::test]
     async fn api_chat_send_handler_rejects_long_message() {
         let app = app_with_state(test_state());
         let long_text = "x".repeat(33);
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/chat/send")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::json!({
-                    "origin": "ui_dashboard",
-                    "channel": "global",
-                    "text": long_text
-                })
-                .to_string(),
-            ))
-            .expect("request");
+        let req = chat_send_request(
+            serde_json::json!({
+                "origin": "ui_dashboard",
+                "channel": "global",
+                "text": long_text
+            }),
+            Some("127.0.0.1:41004".parse().expect("loopback")),
+        );
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }

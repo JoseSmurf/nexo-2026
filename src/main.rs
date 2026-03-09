@@ -7,9 +7,13 @@ async fn main() {
         .expect("failed to bind 0.0.0.0:3000");
 
     println!("HTTP server running on http://0.0.0.0:3000");
-    axum::serve(listener, syntax_engine::api::app_with_state(state))
-        .await
-        .expect("server error");
+    axum::serve(
+        listener,
+        syntax_engine::api::app_with_state(state)
+            .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .expect("server error");
 }
 
 fn init_tracing() {
