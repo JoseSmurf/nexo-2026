@@ -41,6 +41,7 @@
   const chatSendBtnNode = document.getElementById('send-chat-message');
   const chatCardNode = document.getElementById('card-globalchat');
   const liveFlowCardNode = document.getElementById('card-liveflow');
+  const chatSourceNode = document.getElementById('chat-source-indicator');
   const causes = {
     events: document.getElementById('cause-events'),
     ai: document.getElementById('cause-ai'),
@@ -333,7 +334,7 @@
 
     return messages.map((message, index) => {
       const rowClass = index === 0 ? 'chat-row latest' : 'chat-row';
-      const origin = escapeHtml(message.origin || message.from || 'unknown');
+      const origin = escapeHtml(message.origin || 'unknown');
       const channel = escapeHtml(message.channel || 'global');
       const timestamp = escapeHtml(message.timestamp || 'n/a');
       return `<div class="${rowClass}">
@@ -696,6 +697,8 @@
   }
 
   const sourceNode = document.getElementById('data-source');
+  const sourceTypeClassCore = 'chat-source-indicator-core';
+  const sourceTypeClassFallback = 'chat-source-indicator-fallback';
   const healthCardNode = cardNodes.healthCard;
   const healthBannerNode = document.getElementById('health-banner');
   const healthPolicyNode = document.getElementById('health-policy-state');
@@ -873,6 +876,20 @@
 
     if (sourceNode && data.data_source) {
       sourceNode.textContent = `source: ${data.data_source}`;
+    }
+
+    if (chatSourceNode) {
+      const sourceType = String(data && data.source_type ? data.source_type : 'unknown');
+      const sourceIsCore = sourceType === 'core' || sourceType === 'file' || sourceType === 'sqlite';
+      const label = sourceIsCore
+        ? 'core-backed'
+        : sourceType === 'fallback' || sourceType === 'demo'
+          ? 'fallback/demo'
+          : sourceType;
+
+      chatSourceNode.textContent = `messages source: ${label}`;
+      chatSourceNode.classList.remove(sourceTypeClassCore, sourceTypeClassFallback);
+      chatSourceNode.classList.add(sourceIsCore ? sourceTypeClassCore : sourceTypeClassFallback);
     }
 
     if (data.last_updated) {

@@ -373,6 +373,20 @@ button:hover {
   color: #88a7c6;
 }
 
+.chat-source-indicator {
+  margin-top: 6px;
+  color: #8ea3bf;
+  font-size: 0.74rem;
+}
+
+.chat-source-indicator-core {
+  color: #9ff9dc;
+}
+
+.chat-source-indicator-fallback {
+  color: #ffcf78;
+}
+
 .flow-lines {
   white-space: normal;
   line-height: 1.25;

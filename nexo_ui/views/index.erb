@@ -91,7 +91,7 @@
                   <% end %>
                 <% end %>
               </div>
-            <% elsif card[:key] == :recent_chat_messages %>
+              <% elsif card[:key] == :recent_chat_messages %>
               <div class="value chat-lines" id="value-recent_chat_messages">
                 <% messages = Array(@state[:recent_chat_messages] || []).take(5) %>
                 <% if messages.empty? %>
@@ -109,6 +109,9 @@
                   <% end %>
                 <% end %>
               </div>
+              <p class="value value-sub chat-source-indicator <%= @source_type == 'core' || @source_type == 'file' || @source_type == 'sqlite' ? 'chat-source-indicator-core' : 'chat-source-indicator-fallback' %>" id="chat-source-indicator">
+                messages source: <%= @source_type == 'core' || @source_type == 'file' || @source_type == 'sqlite' ? 'core-backed' : (@source_type == 'fallback' || @source_type == 'demo' ? 'fallback/demo' : @source_type) %>
+              </p>
             <% else %>
               <p class="value <%= card[:mono] ? 'mono' : '' %>" id="value-<%= card[:key] %>">
                 <%= card[:label] ? "#{card[:label]}: #{ @state[card[:key]] }" : @state[card[:key]] %>

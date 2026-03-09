@@ -221,12 +221,12 @@ module CoreAdapter
     chat_payload = payload[:chat_messages] if chat_payload.nil?
     recent_chat_messages = chat_payload.nil? ? (use_chat_fallback ? fallback_chat_messages : []) : normalize_chat_messages(chat_payload)
     recent_flow = if is_core_source
-      build_recent_flow(recent_events, recent_ai_insights, recent_chat_messages)
+      normalize_flow_core(payload['recent_flow'] || payload[:recent_flow])
     else
       normalize_flow(payload['recent_flow'] || payload[:recent_flow], recent_events, recent_ai_insights, recent_chat_messages, use_fallback: use_flow_fallback)
     end
 
-    if recent_events.empty?
+    if recent_events.empty? && use_fallback
       recent_events = [payload_to_events(
         [
           {
@@ -240,7 +240,13 @@ module CoreAdapter
       )].flatten
     end
 
-    latest = recent_events.first
+    latest = recent_events.first || {
+      hash: 'n/a',
+      type: 'startup',
+      timestamp: 'n/a',
+      origin: 'core_engine',
+      channel: 'system',
+    }
 
     {
       system_status: status,
@@ -261,6 +267,26 @@ module CoreAdapter
       recent_chat_messages: recent_chat_messages,
       recent_flow: recent_flow,
     }
+  end
+
+  def normalize_flow_core(flow_items)
+    return [] unless flow_items.is_a?(Array)
+
+    normalized = []
+    flow_items.each do |item|
+      next unless item.is_a?(Hash)
+
+      normalized << {
+        kind: normalize_flow_kind(item['kind'] || item[:kind]),
+        origin: item['origin'] || item[:origin] || 'unknown',
+        summary: item['summary'] || item[:summary] || item['text'] || item[:text] || '',
+        timestamp: normalize_flow_timestamp(item['timestamp'] || item[:timestamp]),
+        hash: item['hash'] || item[:hash],
+        channel: item['channel'] || item[:channel] || '',
+      }
+    end
+
+    normalized.first(5)
   end
 
   def normalize_flow(flow_items, events, ai_insights, chat_messages, use_fallback: true)
@@ -289,7 +315,7 @@ module CoreAdapter
     return build_recent_flow(events, ai_insights, chat_messages) if normalized.empty? && use_fallback
 
     normalized.sort_by! do |item|
-      ts = flow_item_timestamp(item['timestamp'] || item[:timestamp])
+      ts = flow_item_timestamp(item[:timestamp])
       kind_order = item[:kind] == 'event' ? 0 : item[:kind] == 'ai' ? 1 : 2
       [-ts, kind_order]
     end
@@ -496,6 +522,21 @@ module CoreAdapter
 
   def payload_to_events(events)
     normalize_events(events).map(&:dup)
+  end
+
+  def normalize_flow_kind(value)
+    kind = (value || 'event').to_s
+    return kind if %w[event chat ai].include?(kind)
+
+    'event'
+  end
+
+  def normalize_flow_timestamp(value)
+    return value if value.is_a?(Integer) || value.is_a?(Float)
+    str = value.to_s
+    return 'n/a' if str.empty?
+
+    str
   end
 
   def fallback_recent_events
