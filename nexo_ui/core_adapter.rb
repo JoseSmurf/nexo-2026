@@ -121,12 +121,12 @@ module CoreAdapter
     parsed = JSON.parse(body)
     return [nil, 'core_not_object'] unless parsed.is_a?(Hash)
 
-    normalized = normalize(parsed)
+    normalized = normalize(parsed, source: :core)
     return [nil, 'core_invalid_normalized'] unless normalized
 
     payload = parsed['state'] if parsed.key?('state')
     if payload.is_a?(Hash)
-      fallback_normalized = normalize(payload)
+      fallback_normalized = normalize(payload, source: :core)
       return [fallback_normalized, 'ok'] if fallback_normalized
     end
 
@@ -159,7 +159,7 @@ module CoreAdapter
     parsed = JSON.parse(raw)
     return [nil, 'json_not_object'] unless parsed.is_a?(Hash)
 
-    normalized = normalize(parsed)
+    normalized = normalize(parsed, source: :file)
     return [nil, 'json_invalid_normalized'] unless normalized
 
     [normalized, 'ok']
@@ -181,7 +181,7 @@ module CoreAdapter
     parsed = JSON.parse(row['payload'])
     return [nil, 'sqlite_invalid_payload'] unless parsed.is_a?(Hash)
 
-    normalized = normalize(parsed)
+    normalized = normalize(parsed, source: :sqlite)
     return [nil, 'sqlite_invalid_normalized'] unless normalized
 
     [normalized, 'ok']
@@ -195,7 +195,12 @@ module CoreAdapter
     ENV['NEXO_UI_SQLITE_PATH'] || File.join(Dir.pwd, 'state.db')
   end
 
-  def normalize(payload)
+  def normalize(payload, source: :fallback)
+    is_core_source = (source == :core)
+    use_fallback = !is_core_source
+    use_chat_fallback = use_fallback
+    use_flow_fallback = use_fallback
+
     status = payload['system_status'] || payload['systemStatus'] || payload[:system_status] || 'unknown'
     peers = payload['peers_count'] || payload['peersCount'] || payload[:peers_count] || 0
     relay = payload['relay_status'] || payload['relayStatus'] || payload[:relay_status] || 'unknown'
@@ -205,17 +210,24 @@ module CoreAdapter
     hash = payload['recent_event_hash'] || payload['recentEventHash'] || payload[:recent_event_hash] || '000000000000'
     sync = payload['last_sync'] || payload['lastSync'] || payload[:last_sync] || 'n/a'
     events = payload['recent_events'] || payload[:recent_events]
-    recent_events = normalize_events(events)
-    recent_ai_insights = normalize_ai_insights(payload['recent_ai_insights'] || payload[:recent_ai_insights] || payload['ai_recent_insights'] || payload[:ai_recent_insights])
+    recent_events = normalize_events(events, allow_fallback: use_fallback)
+    recent_ai_insights = normalize_ai_insights(
+      payload['recent_ai_insights'] || payload[:recent_ai_insights] || payload['ai_recent_insights'] || payload[:ai_recent_insights],
+      allow_fallback: use_fallback,
+    )
     chat_payload = payload['recent_chat_messages']
     chat_payload = payload[:recent_chat_messages] if chat_payload.nil?
     chat_payload = payload['chat_messages'] if chat_payload.nil?
     chat_payload = payload[:chat_messages] if chat_payload.nil?
-    recent_chat_messages = chat_payload.nil? ? fallback_chat_messages : normalize_chat_messages(chat_payload)
-    recent_flow = normalize_flow(payload['recent_flow'] || payload[:recent_flow], recent_events, recent_ai_insights, recent_chat_messages)
+    recent_chat_messages = chat_payload.nil? ? (use_chat_fallback ? fallback_chat_messages : []) : normalize_chat_messages(chat_payload)
+    recent_flow = if is_core_source
+      build_recent_flow(recent_events, recent_ai_insights, recent_chat_messages)
+    else
+      normalize_flow(payload['recent_flow'] || payload[:recent_flow], recent_events, recent_ai_insights, recent_chat_messages, use_fallback: use_flow_fallback)
+    end
 
     if recent_events.empty?
-      recent_events = payload_to_events(
+      recent_events = [payload_to_events(
         [
           {
             hash: event_hash(payload, hash),
@@ -225,7 +237,7 @@ module CoreAdapter
             channel: payload_event_channel(payload),
           },
         ],
-      )
+      )].flatten
     end
 
     latest = recent_events.first
@@ -251,7 +263,7 @@ module CoreAdapter
     }
   end
 
-  def normalize_flow(flow_items, events, ai_insights, chat_messages)
+  def normalize_flow(flow_items, events, ai_insights, chat_messages, use_fallback: true)
     normalized = []
 
     return build_recent_flow(events, ai_insights, chat_messages) if flow_items.nil?
@@ -274,7 +286,7 @@ module CoreAdapter
     end
 
     normalized = normalized.first(5)
-    return build_recent_flow(events, ai_insights, chat_messages) if normalized.empty?
+    return build_recent_flow(events, ai_insights, chat_messages) if normalized.empty? && use_fallback
 
     normalized.sort_by! do |item|
       ts = flow_item_timestamp(item['timestamp'] || item[:timestamp])
@@ -359,12 +371,12 @@ module CoreAdapter
     end
   end
 
-  def normalize_ai_insights(insights)
+  def normalize_ai_insights(insights, allow_fallback: true)
     normalized = []
 
-    return fallback_ai_insights if insights.nil?
+    return allow_fallback ? fallback_ai_insights : [] if insights.nil?
 
-    return fallback_ai_insights unless insights.is_a?(Array)
+    return allow_fallback ? fallback_ai_insights : [] unless insights.is_a?(Array)
 
     insights.each do |item|
       next unless item.is_a?(Hash)
@@ -378,7 +390,7 @@ module CoreAdapter
     end
 
     normalized = normalized.first(3)
-    return fallback_ai_insights if normalized.empty?
+    return fallback_ai_insights if normalized.empty? && allow_fallback
 
     normalized
   end
@@ -455,13 +467,14 @@ module CoreAdapter
     payload['last_event_hash'] || payload['lastEventHash'] || payload[:last_event_hash] || fallback
   end
 
-  def normalize_events(events)
+  def normalize_events(events, allow_fallback: true)
     normalized = []
 
-    return fallback_recent_events if events.nil?
+    return allow_fallback ? fallback_recent_events : [] if events.nil?
 
     unless events.is_a?(Array)
-      return fallback_recent_events
+      return fallback_recent_events if allow_fallback
+      return []
     end
 
     events.each do |item|
@@ -476,7 +489,7 @@ module CoreAdapter
       }
     end
 
-    return fallback_recent_events if normalized.empty?
+    return fallback_recent_events if normalized.empty? && allow_fallback
 
     normalized.first(5)
   end

@@ -2803,6 +2803,23 @@ mod tests {
             state_json["recent_events"][0]["type"],
             "system_event:approved"
         );
+        assert_eq!(state_json["recent_flow"][0]["kind"], "event");
+        assert_eq!(
+            state_json["recent_flow"][0]["hash"],
+            state_json["recent_events"][0]["hash"]
+        );
+        assert_eq!(
+            state_json["recent_flow"][0]["origin"],
+            state_json["recent_events"][0]["origin"]
+        );
+        assert!(
+            state_json["recent_flow"][0]["timestamp"]
+                .as_u64()
+                .unwrap_or(0)
+                >= state_json["recent_ai_insights"][0]["timestamp"]
+                    .as_u64()
+                    .unwrap_or(0)
+        );
         assert_eq!(
             state_json["ai_last_insight"],
             "No anomaly patterns observed in this window."

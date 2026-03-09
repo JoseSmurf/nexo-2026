@@ -50,14 +50,17 @@ helpers do
     end
   end
 
-  def to_payload(state, source, network_cause: nil)
-    {
+  def to_payload(state, source, network_cause: nil, source_type: nil, adapter_status: nil)
+    payload = {
       state: state,
       seed: motion_seed_from_state(state, CARD_DEFS.length),
       last_updated: Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC'),
       data_source: source,
       network_cause: network_cause,
     }
+    payload[:source_type] = source_type if source_type
+    payload[:adapter_status] = adapter_status if adapter_status
+    payload
   end
 
   def current_status_state
@@ -350,6 +353,8 @@ post '/api/simulate' do
   to_payload(
     state.reject { |k, _v| k == :event_counter },
     'fallback_simulated',
+    source_type: 'demo',
+    adapter_status: 'manual_demo_override',
     network_cause: network_cause,
   ).to_json
 end
@@ -370,7 +375,7 @@ get '/api/status' do
   content_type :json
   settings.ui_mode = :live
   state, source, source_type, adapter_status = current_status_state
-  to_payload(state, source).to_json
+  to_payload(state, source, source_type: source_type, adapter_status: adapter_status).to_json
 end
 
 get '/api/health' do
