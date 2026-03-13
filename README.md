@@ -11,6 +11,7 @@ This project is focused on applied security engineering for deterministic system
 - [Architecture overview](#architecture-overview)
 - [Quick Demo](#quick-demo)
 - [Audit Inspection](#audit-inspection)
+- [Operational Guide](#operational-guide)
 - [Quickstart (60s)](#quickstart-60s)
 - [Quick demo (2 terminals)](#quick-demo-2-terminals)
 - [Relay bridge (global mode)](#relay-bridge-global-mode)
@@ -98,6 +99,13 @@ bash scripts/inspect_audit_artifact.sh
 ```
 
 This reads the latest record from `NEXO_AUDIT_PATH` or `logs/audit_records.jsonl`, prints the main audit fields, writes a single-artifact temporary `.jsonl`, and shows the exact Zig verification command for that artifact.
+
+## Operational Guide
+
+For day-to-day operation of the current verification path, see:
+
+- [`docs/OPERATIONAL_FLOW.md`](docs/OPERATIONAL_FLOW.md)
+- [`docs/SECURITY_OPERATIONS.md`](docs/SECURITY_OPERATIONS.md)
 
 ## Quickstart (60s)
 
