@@ -7,6 +7,116 @@ use serde::Serialize;
 use super::{now_utc_ms, AppState, ChatSendCapability};
 use crate::audit_store::AuditRecord;
 
+pub const STATE_RESPONSE_SCHEMA: &str = "nexo/state";
+pub const STATE_RESPONSE_SCHEMA_VERSION: &str = "1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateFieldProvenance {
+    /// Field is read from Rust engine/audit/P2P sources without transformation.
+    CoreVerbatim,
+    /// Field is derived for presentation and diagnostics.
+    Derived,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct StateFieldContract {
+    pub field: &'static str,
+    pub provenance: StateFieldProvenance,
+    pub note: &'static str,
+}
+
+impl StateFieldContract {
+    pub const fn core(field: &'static str, note: &'static str) -> Self {
+        Self {
+            field,
+            provenance: StateFieldProvenance::CoreVerbatim,
+            note,
+        }
+    }
+
+    pub const fn derived(field: &'static str, note: &'static str) -> Self {
+        Self {
+            field,
+            provenance: StateFieldProvenance::Derived,
+            note,
+        }
+    }
+}
+
+pub const STATE_FIELD_CONTRACT: &[StateFieldContract] = &[
+    StateFieldContract::derived("system_status", "fixed operational status for API surface"),
+    StateFieldContract::derived("peers_count", "derived from unique non-empty audit users"),
+    StateFieldContract::derived("relay_status", "read from runtime environment defaults"),
+    StateFieldContract::derived("network_mode", "read from runtime environment defaults"),
+    StateFieldContract::derived("mesh_status", "read from runtime environment defaults"),
+    StateFieldContract::derived(
+        "chat_send_available",
+        "derived from runtime capability check",
+    ),
+    StateFieldContract::derived("chat_send_mode", "derived from runtime capability check"),
+    StateFieldContract::derived("chat_send_reason", "derived from runtime capability check"),
+    StateFieldContract::derived("write_status", "derived from chat_send capability"),
+    StateFieldContract::derived("latest_change_kind", "computed from ordered recent_flow"),
+    StateFieldContract::derived("latest_change_summary", "computed from ordered recent_flow"),
+    StateFieldContract::derived("latest_change_origin", "computed from ordered recent_flow"),
+    StateFieldContract::derived(
+        "latest_change_timestamp",
+        "computed from ordered recent_flow",
+    ),
+    StateFieldContract::derived("latest_change_channel", "computed from ordered recent_flow"),
+    StateFieldContract::derived(
+        "latest_change_source",
+        "classified from ordered recent_flow",
+    ),
+    StateFieldContract::derived(
+        "last_operator_action_kind",
+        "extracted from ordered recent_flow",
+    ),
+    StateFieldContract::derived(
+        "last_operator_action_summary",
+        "extracted from ordered recent_flow",
+    ),
+    StateFieldContract::derived(
+        "last_operator_action_origin",
+        "extracted from ordered recent_flow",
+    ),
+    StateFieldContract::derived(
+        "last_operator_action_timestamp",
+        "extracted from ordered recent_flow",
+    ),
+    StateFieldContract::derived(
+        "last_operator_action_channel",
+        "extracted from ordered recent_flow",
+    ),
+    StateFieldContract::core("recent_events", "mapped directly from audit records"),
+    StateFieldContract::core(
+        "recent_chat_messages",
+        "mapped directly from p2p message rows",
+    ),
+    StateFieldContract::core(
+        "recent_ai_insights",
+        "mapped from deterministic anomaly detector output",
+    ),
+    StateFieldContract::core(
+        "recent_flow",
+        "assembled from recent_events / insights / messages",
+    ),
+    StateFieldContract::derived("ai_last_insight", "first insight summary fallback-safe"),
+    StateFieldContract::core(
+        "recent_event_hash",
+        "latest recent_events hash when present",
+    ),
+    StateFieldContract::derived("last_sync", "timestamp captured at API request"),
+    StateFieldContract::core("last_event_hash", "latest recent_events hash when present"),
+    StateFieldContract::derived("event_type", "latest event-type mapping"),
+    StateFieldContract::derived("event_timestamp", "latest event timestamp mapping"),
+    StateFieldContract::derived("event_origin", "latest event origin mapping"),
+    StateFieldContract::derived("event_channel", "latest event channel mapping"),
+    StateFieldContract::derived("timestamp", "snapshot timestamp"),
+    StateFieldContract::derived("state_schema", "explicit state contract marker"),
+    StateFieldContract::derived("state_schema_version", "explicit state contract marker"),
+];
+
 #[derive(Debug, Serialize)]
 pub struct StateEvent {
     pub hash: String,
@@ -79,7 +189,13 @@ pub struct StateResponse {
     pub event_timestamp: u64,
     pub event_origin: String,
     pub event_channel: String,
+    pub state_schema: &'static str,
+    pub state_schema_version: &'static str,
     pub timestamp: u64,
+}
+
+pub fn state_field_contract() -> &'static [StateFieldContract] {
+    STATE_FIELD_CONTRACT
 }
 
 pub fn build_state_response(
@@ -90,6 +206,15 @@ pub fn build_state_response(
     chat_send: &ChatSendCapability,
     chat_message_limit: usize,
 ) -> StateResponse {
+    debug_assert!(state_field_contract().iter().all(|field| {
+        !field.field.is_empty()
+            && !field.note.is_empty()
+            && matches!(
+                field.provenance,
+                StateFieldProvenance::CoreVerbatim | StateFieldProvenance::Derived
+            )
+    }));
+
     let recent_events = build_state_events(records);
     let recent_ai_insights = build_state_ai_insights(records);
     let recent_chat_messages =
@@ -159,6 +284,8 @@ pub fn build_state_response(
         event_timestamp: latest_timestamp,
         event_origin: latest_origin,
         event_channel: latest_channel,
+        state_schema: STATE_RESPONSE_SCHEMA,
+        state_schema_version: STATE_RESPONSE_SCHEMA_VERSION,
         timestamp: now_timestamp,
     }
 }
@@ -271,7 +398,7 @@ fn build_state_ai_insights(records: &[AuditRecord]) -> Vec<StateAiInsight> {
             summary: "No anomaly patterns observed in this window.".to_string(),
             timestamp: records
                 .first()
-                .map(|record| record.timestamp_utc_ms)
+                .map(|r| r.timestamp_utc_ms)
                 .unwrap_or_else(now_utc_ms),
             origin: event_origin(&records[0]),
             level: "info".to_string(),
@@ -478,4 +605,190 @@ fn unique_peer_count(records: &[AuditRecord]) -> usize {
         })
         .collect::<HashSet<_>>()
         .len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audit_store::AuditRecord;
+    use crate::{FinalDecision, FinalDecision::*};
+    use serde_json::json;
+    use std::env;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn sample_record(
+        id: &str,
+        decision: FinalDecision,
+        user_id: &str,
+        amount_cents: u64,
+    ) -> AuditRecord {
+        AuditRecord {
+            request_id: format!("{id}-req"),
+            calc_version: Some("plca_v1".to_string()),
+            profile_name: "br_default_v1".to_string(),
+            profile_version: "2026.02".to_string(),
+            timestamp_utc_ms: 1_700_000_000_000 + amount_cents,
+            user_id: user_id.to_string(),
+            amount_cents,
+            risk_bps: 1200,
+            final_decision: decision,
+            trace: json!(["Approved"]),
+            audit_hash: format!("{}abcd", user_id),
+            hash_algo: "blake3".to_string(),
+            sha3_shadow: None,
+            prev_record_hash: None,
+            record_hash: None,
+        }
+    }
+
+    #[test]
+    fn state_response_exposes_contract_marker() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_state_contract_{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos(),
+        ));
+        let mut state = AppState::for_tests(path.clone());
+        state.p2p_db_path = None;
+
+        let records = vec![
+            sample_record("a", Approved, "alice", 10_000),
+            sample_record("b", Flagged, "bob", 20_000),
+            sample_record("c", Blocked, "alice", 30_000),
+        ];
+        let chat_send = ChatSendCapability {
+            available: false,
+            mode: "core_unavailable",
+            reason: "network_feature_disabled",
+            error_message: "",
+        };
+
+        let response = build_state_response(&state, &records, 123, 124, &chat_send, 5);
+
+        assert_eq!(response.state_schema, STATE_RESPONSE_SCHEMA);
+        assert_eq!(response.state_schema_version, STATE_RESPONSE_SCHEMA_VERSION);
+        assert!(!response.recent_events.is_empty());
+        assert_eq!(response.recent_events.len(), records.len());
+        assert!(response.recent_flow.len() <= 5);
+        assert_eq!(
+            response.recent_flow[0].hash,
+            Some(response.recent_events[0].hash.clone())
+        );
+
+        let metadata = state_field_contract();
+        assert_eq!(metadata[0].field, "system_status");
+        assert_eq!(metadata.len(), STATE_FIELD_CONTRACT.len());
+        assert!(metadata
+            .iter()
+            .any(|field| field.field == "state_schema_version"));
+        assert_eq!(
+            metadata
+                .iter()
+                .find(|field| field.field == "state_schema")
+                .expect("state_schema contract")
+                .provenance,
+            StateFieldProvenance::Derived
+        );
+    }
+
+    #[test]
+    fn state_flow_shape_and_order_is_stable() {
+        let event = StateEvent {
+            hash: "event-hash".to_string(),
+            r#type: "system_event:approved".to_string(),
+            timestamp: 2,
+            origin: "core_engine".to_string(),
+            channel: "system".to_string(),
+        };
+        let message = StateChatMessage {
+            hash: "chat-hash".to_string(),
+            origin: "ui_dashboard".to_string(),
+            channel: "global".to_string(),
+            text: "hello".to_string(),
+            timestamp: 1,
+        };
+        let insight = StateAiInsight {
+            kind: "observation".to_string(),
+            summary: "No anomalies".to_string(),
+            timestamp: 0,
+            origin: "core_engine".to_string(),
+            level: "info".to_string(),
+        };
+
+        let flow = build_state_flow(&[event], &[message], &[insight]);
+        assert_eq!(flow.len(), 3);
+        assert_eq!(flow[0].kind, "event");
+        assert_eq!(flow[1].kind, "chat");
+        assert_eq!(flow[2].kind, "ai");
+        assert_eq!(flow[0].timestamp, 2);
+        assert_eq!(flow[0].channel, "system");
+        assert_eq!(flow[1].hash.as_deref(), Some("chat-hash"));
+        assert_eq!(flow[2].hash, None);
+    }
+
+    #[test]
+    fn derived_fields_follow_expected_semantics_without_records() {
+        let previous_network_mode = env::var_os("NEXO_NETWORK_MODE");
+        let previous_mesh_status = env::var_os("NEXO_MESH_STATUS");
+        let previous_relay_status = env::var_os("NEXO_RELAY_STATUS");
+
+        env::remove_var("NEXO_NETWORK_MODE");
+        env::remove_var("NEXO_MESH_STATUS");
+        env::remove_var("NEXO_RELAY_STATUS");
+
+        let path = std::env::temp_dir().join(format!(
+            "nexo_state_contract_empty_{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos(),
+        ));
+        let state = AppState::for_tests(path);
+
+        let chat_send = ChatSendCapability {
+            available: false,
+            mode: "core_unavailable",
+            reason: "network_feature_disabled",
+            error_message: "",
+        };
+        let response = build_state_response(&state, &[], 10, 20, &chat_send, 5);
+
+        assert_eq!(response.state_schema, STATE_RESPONSE_SCHEMA);
+        assert_eq!(response.state_schema_version, STATE_RESPONSE_SCHEMA_VERSION);
+        assert!(response.recent_events.is_empty());
+        assert!(response.recent_flow.is_empty());
+        assert_eq!(response.latest_change_kind, "");
+        assert_eq!(
+            response.latest_change_summary,
+            "No recent changes observed."
+        );
+        assert_eq!(response.latest_change_source, "");
+        assert_eq!(response.last_operator_action_kind, "");
+        assert_eq!(response.last_operator_action_summary, "");
+        assert_eq!(response.network_mode, "hybrid");
+        assert_eq!(response.mesh_status, "stable");
+        assert_eq!(response.relay_status, "offline");
+        assert_eq!(
+            response.ai_last_insight,
+            "No anomaly patterns observed in this window."
+        );
+        assert_eq!(response.event_type, "startup");
+        assert_eq!(response.event_origin, "core_engine");
+        assert_eq!(response.write_status, "read_only");
+
+        match previous_network_mode {
+            Some(v) => env::set_var("NEXO_NETWORK_MODE", v),
+            None => env::remove_var("NEXO_NETWORK_MODE"),
+        }
+        match previous_mesh_status {
+            Some(v) => env::set_var("NEXO_MESH_STATUS", v),
+            None => env::remove_var("NEXO_MESH_STATUS"),
+        }
+        match previous_relay_status {
+            Some(v) => env::set_var("NEXO_RELAY_STATUS", v),
+            None => env::remove_var("NEXO_RELAY_STATUS"),
+        }
+    }
 }
