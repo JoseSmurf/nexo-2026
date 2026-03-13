@@ -100,6 +100,12 @@ bash scripts/inspect_audit_artifact.sh
 
 This reads the latest record from `NEXO_AUDIT_PATH` or `logs/audit_records.jsonl`, prints the main audit fields, writes a single-artifact temporary `.jsonl`, and shows the exact Zig verification command for that artifact.
 
+For a compact runtime signal, `/api/state` also exposes the recent audit-chain status via:
+- `audit_chain_status`
+- `audit_chain_checked_records`
+- `audit_chain_last_record_hash`
+- `audit_chain_error`
+
 ## Operational Guide
 
 For day-to-day operation of the current verification path, see:
@@ -549,10 +555,10 @@ Use `.env.example` provider sections as the canonical reference for required var
   - `GET /audit/recent?limit=50` (admin-gated)
   - `GET /security/status` (admin-gated)
 - Rule profiles include 9 jurisdictions/currencies/regulators.
-- Rust tests: 194
+- Rust tests: 196
 - Julia tests: 126
 - Zig tests: 21
-- Total tests: 341
+- Total tests: 343
 - Tech stack:
   - Rust (core engine + API)
   - BLAKE3 + SHAKE256 (audit hash, with deterministic hybrid mode in INCIDENT)

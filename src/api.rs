@@ -2530,6 +2530,16 @@ mod tests {
             expected_chat_send_unavailable_reason()
         );
         assert_eq!(state_json["write_status"], "read_only");
+        assert_eq!(state_json["audit_chain_status"], "ok");
+        assert_eq!(state_json["audit_chain_checked_records"], 1);
+        assert!(
+            state_json["audit_chain_last_record_hash"]
+                .as_str()
+                .unwrap_or_default()
+                .len()
+                > 10
+        );
+        assert_eq!(state_json["audit_chain_error"], "");
         assert_eq!(state_json["latest_change_kind"], "event");
         assert_eq!(state_json["latest_change_summary"], "approved decision");
         assert_eq!(state_json["latest_change_source"], "core_decision");

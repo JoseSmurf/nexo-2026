@@ -56,6 +56,22 @@ pub const STATE_FIELD_CONTRACT: &[StateFieldContract] = &[
     StateFieldContract::derived("chat_send_mode", "derived from runtime capability check"),
     StateFieldContract::derived("chat_send_reason", "derived from runtime capability check"),
     StateFieldContract::derived("write_status", "derived from chat_send capability"),
+    StateFieldContract::derived(
+        "audit_chain_status",
+        "derived from recent persisted record_hash chain continuity",
+    ),
+    StateFieldContract::derived(
+        "audit_chain_checked_records",
+        "derived from recent persisted record window size",
+    ),
+    StateFieldContract::derived(
+        "audit_chain_last_record_hash",
+        "derived from latest persisted record_hash when present",
+    ),
+    StateFieldContract::derived(
+        "audit_chain_error",
+        "derived from recent persisted record_hash chain validation",
+    ),
     StateFieldContract::derived("latest_change_kind", "computed from ordered recent_flow"),
     StateFieldContract::derived("latest_change_summary", "computed from ordered recent_flow"),
     StateFieldContract::derived("latest_change_origin", "computed from ordered recent_flow"),
@@ -166,6 +182,10 @@ pub struct StateResponse {
     pub chat_send_mode: String,
     pub chat_send_reason: String,
     pub write_status: String,
+    pub audit_chain_status: String,
+    pub audit_chain_checked_records: usize,
+    pub audit_chain_last_record_hash: Option<String>,
+    pub audit_chain_error: String,
     pub latest_change_kind: String,
     pub latest_change_summary: String,
     pub latest_change_origin: String,
@@ -214,6 +234,10 @@ struct StateDerived {
     chat_send_mode: String,
     chat_send_reason: String,
     write_status: String,
+    audit_chain_status: String,
+    audit_chain_checked_records: usize,
+    audit_chain_last_record_hash: Option<String>,
+    audit_chain_error: String,
     latest_change_kind: String,
     latest_change_summary: String,
     latest_change_origin: String,
@@ -248,6 +272,10 @@ impl StateResponse {
             chat_send_mode: derived.chat_send_mode,
             chat_send_reason: derived.chat_send_reason,
             write_status: derived.write_status,
+            audit_chain_status: derived.audit_chain_status,
+            audit_chain_checked_records: derived.audit_chain_checked_records,
+            audit_chain_last_record_hash: derived.audit_chain_last_record_hash,
+            audit_chain_error: derived.audit_chain_error,
             latest_change_kind: derived.latest_change_kind,
             latest_change_summary: derived.latest_change_summary,
             latest_change_origin: derived.latest_change_origin,
@@ -328,12 +356,13 @@ fn build_core_state(
 
 fn build_state_derived(
     _state: &AppState,
-    _records: &[AuditRecord],
+    records: &[AuditRecord],
     now_sync: u64,
     now_timestamp: u64,
     chat_send: &ChatSendCapability,
     core: &StateCoreVerbatim,
 ) -> StateDerived {
+    let audit_chain = audit_chain_summary(records);
     let (
         latest_change_kind,
         latest_change_summary,
@@ -376,6 +405,10 @@ fn build_state_derived(
         chat_send_mode: chat_send.mode.to_string(),
         chat_send_reason: chat_send.reason.to_string(),
         write_status: write_status_from_chat_send(chat_send).to_string(),
+        audit_chain_status: audit_chain.status.to_string(),
+        audit_chain_checked_records: audit_chain.checked_records,
+        audit_chain_last_record_hash: audit_chain.last_record_hash,
+        audit_chain_error: audit_chain.error,
         latest_change_kind,
         latest_change_summary,
         latest_change_origin,
@@ -626,6 +659,82 @@ fn load_recent_chat_messages(_p2p_db_path: Option<&str>, _limit: usize) -> Vec<S
     Vec::new()
 }
 
+struct AuditChainSummary {
+    status: &'static str,
+    checked_records: usize,
+    last_record_hash: Option<String>,
+    error: String,
+}
+
+fn audit_chain_summary(records: &[AuditRecord]) -> AuditChainSummary {
+    let checked_records = records.len();
+    let last_record_hash = records
+        .first()
+        .and_then(|record| record.record_hash.clone());
+
+    if records.is_empty() {
+        return AuditChainSummary {
+            status: "empty",
+            checked_records,
+            last_record_hash,
+            error: String::new(),
+        };
+    }
+
+    for (index, record) in records.iter().enumerate() {
+        if trimmed_hash(record.record_hash.as_deref()).is_none() {
+            return AuditChainSummary {
+                status: "broken",
+                checked_records,
+                last_record_hash,
+                error: format!("missing record_hash at recent index {index}"),
+            };
+        }
+
+        if let Some(older) = records.get(index + 1) {
+            let older_hash = trimmed_hash(older.record_hash.as_deref());
+            if older_hash.is_none() {
+                return AuditChainSummary {
+                    status: "broken",
+                    checked_records,
+                    last_record_hash,
+                    error: format!("missing record_hash at recent index {}", index + 1),
+                };
+            }
+
+            if trimmed_hash(record.prev_record_hash.as_deref()) != older_hash {
+                return AuditChainSummary {
+                    status: "broken",
+                    checked_records,
+                    last_record_hash,
+                    error: format!(
+                        "prev_record_hash mismatch between recent indices {index} and {}",
+                        index + 1
+                    ),
+                };
+            }
+        }
+    }
+
+    AuditChainSummary {
+        status: "ok",
+        checked_records,
+        last_record_hash,
+        error: String::new(),
+    }
+}
+
+fn trimmed_hash(value: Option<&str>) -> Option<&str> {
+    value.and_then(|hash| {
+        let trimmed = hash.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
 fn latest_change_header(flow: &[StateFlowItem]) -> (String, String, String, u64, String) {
     let Some(item) = flow.first() else {
         return (
@@ -778,6 +887,13 @@ mod tests {
         assert!(!response.recent_events.is_empty());
         assert_eq!(response.recent_events.len(), records.len());
         assert!(response.recent_flow.len() <= 5);
+        assert_eq!(response.audit_chain_status, "broken");
+        assert_eq!(response.audit_chain_checked_records, records.len());
+        assert_eq!(response.audit_chain_last_record_hash, None);
+        assert_eq!(
+            response.audit_chain_error,
+            "missing record_hash at recent index 0"
+        );
         assert_eq!(
             response.recent_flow[0].hash,
             Some(response.recent_events[0].hash.clone())
@@ -876,6 +992,10 @@ mod tests {
         assert_eq!(response.network_mode, "hybrid");
         assert_eq!(response.mesh_status, "stable");
         assert_eq!(response.relay_status, "offline");
+        assert_eq!(response.audit_chain_status, "empty");
+        assert_eq!(response.audit_chain_checked_records, 0);
+        assert_eq!(response.audit_chain_last_record_hash, None);
+        assert_eq!(response.audit_chain_error, "");
         assert_eq!(
             response.ai_last_insight,
             "No anomaly patterns observed in this window."
@@ -924,6 +1044,9 @@ mod tests {
 
         assert_eq!(response.recent_events.len(), 2);
         assert_eq!(response.recent_flow.len(), 3);
+        assert_eq!(response.audit_chain_status, "broken");
+        assert_eq!(response.audit_chain_checked_records, 2);
+        assert_eq!(response.audit_chain_last_record_hash, None);
         assert_eq!(
             response.recent_event_hash,
             Some(records[0].audit_hash.clone())
@@ -958,10 +1081,50 @@ mod tests {
             .iter()
             .find(|field| field.field == "latest_change_kind")
             .expect("latest_change_kind field contract");
+        let audit_chain_status = contract
+            .iter()
+            .find(|field| field.field == "audit_chain_status")
+            .expect("audit_chain_status field contract");
 
         assert_eq!(recent_events.provenance, StateFieldProvenance::CoreVerbatim);
         assert_eq!(recent_flow.provenance, StateFieldProvenance::CoreVerbatim);
         assert_eq!(state_schema.provenance, StateFieldProvenance::Derived);
         assert_eq!(latest_change_kind.provenance, StateFieldProvenance::Derived);
+        assert_eq!(audit_chain_status.provenance, StateFieldProvenance::Derived);
+    }
+
+    #[test]
+    fn audit_chain_summary_is_ok_for_linked_recent_records() {
+        let mut older = sample_record("older", Approved, "alice", 10_000);
+        older.record_hash = Some("hash-older".to_string());
+        let mut newer = sample_record("newer", Approved, "alice", 20_000);
+        newer.prev_record_hash = Some("hash-older".to_string());
+        newer.record_hash = Some("hash-newer".to_string());
+
+        let summary = audit_chain_summary(&[newer.clone(), older.clone()]);
+
+        assert_eq!(summary.status, "ok");
+        assert_eq!(summary.checked_records, 2);
+        assert_eq!(summary.last_record_hash, newer.record_hash);
+        assert_eq!(summary.error, "");
+    }
+
+    #[test]
+    fn audit_chain_summary_reports_prev_hash_mismatch() {
+        let mut older = sample_record("older", Approved, "alice", 10_000);
+        older.record_hash = Some("hash-older".to_string());
+        let mut newer = sample_record("newer", Approved, "alice", 20_000);
+        newer.prev_record_hash = Some("hash-wrong".to_string());
+        newer.record_hash = Some("hash-newer".to_string());
+
+        let summary = audit_chain_summary(&[newer.clone(), older]);
+
+        assert_eq!(summary.status, "broken");
+        assert_eq!(summary.checked_records, 2);
+        assert_eq!(summary.last_record_hash, newer.record_hash);
+        assert_eq!(
+            summary.error,
+            "prev_record_hash mismatch between recent indices 0 and 1"
+        );
     }
 }

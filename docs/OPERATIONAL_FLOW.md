@@ -97,6 +97,21 @@ The helper will:
 4. write a single-artifact `.jsonl`
 5. print the exact Zig verification command
 
+For a quick read-only health signal from the running API, inspect `/api/state` and check:
+
+- `audit_chain_status`
+- `audit_chain_checked_records`
+- `audit_chain_last_record_hash`
+- `audit_chain_error`
+
+Operational meaning:
+
+- `ok`: the recent persisted `record_hash` chain window is internally consistent
+- `broken`: the recent persisted chain window has a continuity problem and should be inspected immediately
+- `empty`: no persisted audit records are currently available in the checked window
+
+This signal is intentionally compact. Use `scripts/inspect_audit_artifact.sh` and the Zig verifier for deeper investigation.
+
 ## 5. Verifying past decisions
 
 For a generated or retained artifact:
