@@ -117,7 +117,7 @@ pub const STATE_FIELD_CONTRACT: &[StateFieldContract] = &[
     StateFieldContract::derived("state_schema_version", "explicit state contract marker"),
 ];
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct StateEvent {
     pub hash: String,
     #[serde(rename = "type")]
@@ -194,6 +194,90 @@ pub struct StateResponse {
     pub timestamp: u64,
 }
 
+#[derive(Debug)]
+struct StateCoreVerbatim {
+    recent_events: Vec<StateEvent>,
+    recent_chat_messages: Vec<StateChatMessage>,
+    recent_ai_insights: Vec<StateAiInsight>,
+    recent_flow: Vec<StateFlowItem>,
+    latest_event: Option<StateEvent>,
+    peers_count: usize,
+}
+
+#[derive(Debug)]
+struct StateDerived {
+    system_status: String,
+    relay_status: String,
+    network_mode: String,
+    mesh_status: String,
+    chat_send_available: bool,
+    chat_send_mode: String,
+    chat_send_reason: String,
+    write_status: String,
+    latest_change_kind: String,
+    latest_change_summary: String,
+    latest_change_origin: String,
+    latest_change_timestamp: u64,
+    latest_change_channel: String,
+    latest_change_source: String,
+    last_operator_action_kind: String,
+    last_operator_action_summary: String,
+    last_operator_action_origin: String,
+    last_operator_action_timestamp: u64,
+    last_operator_action_channel: String,
+    ai_last_insight: String,
+    last_sync: u64,
+    event_type: String,
+    event_timestamp: u64,
+    event_origin: String,
+    event_channel: String,
+    state_schema: &'static str,
+    state_schema_version: &'static str,
+    timestamp: u64,
+}
+
+impl StateResponse {
+    fn from_parts(core: StateCoreVerbatim, derived: StateDerived) -> Self {
+        Self {
+            system_status: derived.system_status,
+            peers_count: core.peers_count,
+            relay_status: derived.relay_status,
+            network_mode: derived.network_mode,
+            mesh_status: derived.mesh_status,
+            chat_send_available: derived.chat_send_available,
+            chat_send_mode: derived.chat_send_mode,
+            chat_send_reason: derived.chat_send_reason,
+            write_status: derived.write_status,
+            latest_change_kind: derived.latest_change_kind,
+            latest_change_summary: derived.latest_change_summary,
+            latest_change_origin: derived.latest_change_origin,
+            latest_change_timestamp: derived.latest_change_timestamp,
+            latest_change_channel: derived.latest_change_channel,
+            latest_change_source: derived.latest_change_source,
+            last_operator_action_kind: derived.last_operator_action_kind,
+            last_operator_action_summary: derived.last_operator_action_summary,
+            last_operator_action_origin: derived.last_operator_action_origin,
+            last_operator_action_timestamp: derived.last_operator_action_timestamp,
+            last_operator_action_channel: derived.last_operator_action_channel,
+            recent_events: core.recent_events,
+            recent_chat_messages: core.recent_chat_messages,
+            recent_ai_insights: core.recent_ai_insights,
+            recent_flow: core.recent_flow,
+            ai_last_insight: derived.ai_last_insight,
+            recent_event_hash: core.latest_event.as_ref().map(|event| event.hash.clone()),
+            last_sync: derived.last_sync,
+            last_event_hash: core.latest_event.as_ref().map(|event| event.hash.clone()),
+            event_type: derived.event_type,
+            event_timestamp: derived.event_timestamp,
+            event_origin: derived.event_origin,
+            event_channel: derived.event_channel,
+            state_schema: derived.state_schema,
+            state_schema_version: derived.state_schema_version,
+            timestamp: derived.timestamp,
+        }
+    }
+}
+
 pub fn state_field_contract() -> &'static [StateFieldContract] {
     STATE_FIELD_CONTRACT
 }
@@ -215,30 +299,62 @@ pub fn build_state_response(
             )
     }));
 
+    let core = build_core_state(state, records, chat_message_limit);
+    let derived = build_state_derived(state, records, now_sync, now_timestamp, chat_send, &core);
+    StateResponse::from_parts(core, derived)
+}
+
+fn build_core_state(
+    state: &AppState,
+    records: &[AuditRecord],
+    chat_message_limit: usize,
+) -> StateCoreVerbatim {
     let recent_events = build_state_events(records);
     let recent_ai_insights = build_state_ai_insights(records);
     let recent_chat_messages =
         load_recent_chat_messages(state.p2p_db_path.as_deref(), chat_message_limit);
     let recent_flow = build_state_flow(&recent_events, &recent_chat_messages, &recent_ai_insights);
+    let latest_event = recent_events.first().cloned();
+
+    StateCoreVerbatim {
+        recent_events,
+        recent_chat_messages,
+        recent_ai_insights,
+        recent_flow,
+        latest_event,
+        peers_count: unique_peer_count(records),
+    }
+}
+
+fn build_state_derived(
+    _state: &AppState,
+    _records: &[AuditRecord],
+    now_sync: u64,
+    now_timestamp: u64,
+    chat_send: &ChatSendCapability,
+    core: &StateCoreVerbatim,
+) -> StateDerived {
     let (
         latest_change_kind,
         latest_change_summary,
         latest_change_origin,
         latest_change_timestamp,
         latest_change_channel,
-    ) = latest_change_header(&recent_flow);
-    let latest_change_source = latest_change_source(&recent_flow);
+    ) = latest_change_header(&core.recent_flow);
+    let latest_change_source = latest_change_source(&core.recent_flow);
     let (
         last_operator_action_kind,
         last_operator_action_summary,
         last_operator_action_origin,
         last_operator_action_timestamp,
         last_operator_action_channel,
-    ) = last_operator_action_header(&recent_flow);
+    ) = last_operator_action_header(&core.recent_flow);
 
-    let (latest_hash, latest_type, latest_timestamp, latest_origin, latest_channel) =
-        state_event_header(&recent_events);
-    let ai_last_insight = recent_ai_insights
+    let (event_type, event_timestamp, event_origin, event_channel) =
+        state_event_header(core.latest_event.as_ref());
+
+    let ai_last_insight = core
+        .recent_ai_insights
         .first()
         .map(|insight| insight.summary.clone())
         .unwrap_or_else(|| "No anomaly patterns observed in this window.".to_string());
@@ -251,9 +367,8 @@ pub fn build_state_response(
         .unwrap_or_else(|_| "stable".to_string())
         .to_lowercase();
 
-    StateResponse {
+    StateDerived {
         system_status: "operational".to_string(),
-        peers_count: unique_peer_count(records),
         relay_status,
         network_mode,
         mesh_status,
@@ -272,18 +387,12 @@ pub fn build_state_response(
         last_operator_action_origin,
         last_operator_action_timestamp,
         last_operator_action_channel,
-        recent_events,
-        recent_chat_messages,
-        recent_ai_insights,
-        recent_flow,
         ai_last_insight,
-        recent_event_hash: latest_hash.clone(),
         last_sync: now_sync,
-        last_event_hash: latest_hash,
-        event_type: latest_type,
-        event_timestamp: latest_timestamp,
-        event_origin: latest_origin,
-        event_channel: latest_channel,
+        event_type,
+        event_timestamp,
+        event_origin,
+        event_channel,
         state_schema: STATE_RESPONSE_SCHEMA,
         state_schema_version: STATE_RESPONSE_SCHEMA_VERSION,
         timestamp: now_timestamp,
@@ -320,11 +429,9 @@ fn event_origin(record: &AuditRecord) -> String {
     }
 }
 
-fn state_event_header(events: &[StateEvent]) -> (Option<String>, String, u64, String, String) {
-    let latest = events.first();
-    if let Some(event) = latest {
+fn state_event_header(latest_event: Option<&StateEvent>) -> (String, u64, String, String) {
+    if let Some(event) = latest_event {
         (
-            Some(event.hash.clone()),
             event.r#type.clone(),
             event.timestamp,
             event.origin.clone(),
@@ -332,7 +439,6 @@ fn state_event_header(events: &[StateEvent]) -> (Option<String>, String, u64, St
         )
     } else {
         (
-            None,
             "startup".to_string(),
             0,
             "core_engine".to_string(),
@@ -790,5 +896,45 @@ mod tests {
             Some(v) => env::set_var("NEXO_RELAY_STATUS", v),
             None => env::remove_var("NEXO_RELAY_STATUS"),
         }
+    }
+
+    #[test]
+    fn state_build_path_keeps_core_and_derived_separate_outputs() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_state_core_derived_{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos(),
+        ));
+        let mut state = AppState::for_tests(path);
+        state.p2p_db_path = None;
+        let records = vec![
+            sample_record("a", Approved, "alice", 10_000),
+            sample_record("b", Blocked, "bob", 20_000),
+        ];
+        let chat_send = ChatSendCapability {
+            available: true,
+            mode: "local_only",
+            reason: "",
+            error_message: "",
+        };
+
+        let response = build_state_response(&state, &records, 11, 22, &chat_send, 5);
+
+        assert_eq!(response.recent_events.len(), 2);
+        assert_eq!(response.recent_flow.len(), 3);
+        assert_eq!(
+            response.recent_event_hash,
+            Some(records[0].audit_hash.clone())
+        );
+        assert_eq!(response.event_type, "system_event:approved");
+        assert_eq!(response.recent_event_hash, response.last_event_hash);
+        assert_eq!(response.peers_count, 2);
+        assert!(response.chat_send_available);
+        assert_eq!(response.chat_send_mode, "local_only");
+        assert_eq!(response.state_schema, STATE_RESPONSE_SCHEMA);
+        assert_eq!(response.state_schema_version, STATE_RESPONSE_SCHEMA_VERSION);
+        assert_eq!(response.timestamp, 22);
     }
 }
