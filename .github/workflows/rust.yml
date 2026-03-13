@@ -178,6 +178,13 @@ jobs:
         cd tools/zig
         zig build test
         zig build run -- verify ../../fixtures/audit_sample.jsonl
+    - name: Verify Rust-generated audit artifact offline (Zig)
+      run: |
+        tmp_audit="$(mktemp /tmp/nexo-zig-runtime-XXXXXX.jsonl)"
+        cargo run --quiet --bin gen_zig_fixtures
+        cp fixtures/audit_rust_blake3.jsonl "$tmp_audit"
+        cd tools/zig
+        zig build run -- verify "$tmp_audit"
 
   bench:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
