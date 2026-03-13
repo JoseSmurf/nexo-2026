@@ -83,7 +83,9 @@ This demo executes the current verifiable path in one command:
 
 Related docs:
 - [`scripts/demo_decision_flow.sh`](scripts/demo_decision_flow.sh)
+- [`scripts/demo_decision_flow_flagged.sh`](scripts/demo_decision_flow_flagged.sh)
 - [`examples/basic_decision_flow.md`](examples/basic_decision_flow.md)
+- [`examples/flagged_decision_flow.md`](examples/flagged_decision_flow.md)
 - [`RELEASE_PLAN_v0.2.0.md`](RELEASE_PLAN_v0.2.0.md)
 
 ## Quickstart (60s)
