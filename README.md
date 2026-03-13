@@ -10,6 +10,7 @@ This project is focused on applied security engineering for deterministic system
 - [Core guarantees](#core-guarantees)
 - [Architecture overview](#architecture-overview)
 - [Quick Demo](#quick-demo)
+- [Audit Inspection](#audit-inspection)
 - [Quickstart (60s)](#quickstart-60s)
 - [Quick demo (2 terminals)](#quick-demo-2-terminals)
 - [Relay bridge (global mode)](#relay-bridge-global-mode)
@@ -87,6 +88,16 @@ Related docs:
 - [`examples/basic_decision_flow.md`](examples/basic_decision_flow.md)
 - [`examples/flagged_decision_flow.md`](examples/flagged_decision_flow.md)
 - [`RELEASE_PLAN_v0.2.0.md`](RELEASE_PLAN_v0.2.0.md)
+
+## Audit Inspection
+
+To inspect the latest persisted audit artifact after a request or demo run:
+
+```bash
+bash scripts/inspect_audit_artifact.sh
+```
+
+This reads the latest record from `NEXO_AUDIT_PATH` or `logs/audit_records.jsonl`, prints the main audit fields, writes a single-artifact temporary `.jsonl`, and shows the exact Zig verification command for that artifact.
 
 ## Quickstart (60s)
 
