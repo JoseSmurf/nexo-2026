@@ -75,6 +75,15 @@ Minimal safe posture for the current system:
 
 This repository does not yet add a separate archival subsystem. Current safe practice is disciplined file retention around `NEXO_AUDIT_PATH`.
 
+Recommended minimal convention:
+
+- active file:
+  - `logs/audit_records.jsonl`
+- archived closed files:
+  - `logs/audit_archive/YYYY-MM-DD/audit_records-*.jsonl`
+
+The system does not require this exact layout, but using a stable archive directory makes later lookup and recovery easier.
+
 ## 4. Inspecting recent decisions
 
 To inspect the latest persisted artifact:
@@ -87,6 +96,19 @@ To inspect a specific audit file:
 
 ```bash
 bash scripts/inspect_audit_artifact.sh /path/to/audit_records.jsonl
+```
+
+To locate a past artifact by `request_id`, `audit_hash`, or `record_hash`:
+
+```bash
+bash scripts/find_audit_artifact.sh <request_id-or-hash>
+```
+
+To search only one archive file or one archive directory:
+
+```bash
+bash scripts/find_audit_artifact.sh <request_id-or-hash> /path/to/audit_records.jsonl
+bash scripts/find_audit_artifact.sh <request_id-or-hash> /path/to/audit_archive/
 ```
 
 The helper will:
@@ -121,6 +143,12 @@ cd tools/zig
 zig build run -- verify /path/to/audit_records.jsonl
 ```
 
+If the record is no longer in the active audit file:
+
+1. locate it with `scripts/find_audit_artifact.sh`
+2. verify the prepared single-artifact `.jsonl`
+3. if needed, recover the original archived JSONL file from protected storage and verify that file directly
+
 For a quick local walkthrough:
 
 ```bash
@@ -145,11 +173,19 @@ A minimal operator loop for the current system is:
 4. verify the artifact with Zig
 5. retain the JSONL artifact in protected storage
 
+For historical recovery:
+
+1. search active and archived files with `scripts/find_audit_artifact.sh`
+2. confirm the matched `request_id`, `audit_hash`, and `record_hash`
+3. verify the prepared artifact with Zig
+4. restore the archived JSONL file only if deeper historical review is required
+
 ## 7. Related repository paths
 
 - `scripts/demo_decision_flow.sh`
 - `scripts/demo_decision_flow_flagged.sh`
 - `scripts/inspect_audit_artifact.sh`
+- `scripts/find_audit_artifact.sh`
 - `examples/basic_decision_flow.md`
 - `examples/flagged_decision_flow.md`
 - `examples/audit_inspection_flow.md`

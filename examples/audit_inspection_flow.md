@@ -8,6 +8,12 @@ Use:
 bash scripts/inspect_audit_artifact.sh
 ```
 
+To find an older artifact by `request_id`, `audit_hash`, or `record_hash`, use:
+
+```bash
+bash scripts/find_audit_artifact.sh <request_id-or-hash>
+```
+
 By default the helper reads:
 
 - `NEXO_AUDIT_PATH` when set
@@ -32,6 +38,13 @@ You can also inspect a specific file path:
 
 ```bash
 bash scripts/inspect_audit_artifact.sh /tmp/nexo-demo-audit-123456.jsonl
+```
+
+And you can restrict historical lookup to one file or archive directory:
+
+```bash
+bash scripts/find_audit_artifact.sh <request_id-or-hash> /tmp/nexo-demo-audit-123456.jsonl
+bash scripts/find_audit_artifact.sh <request_id-or-hash> /tmp/nexo-audit-archive/
 ```
 
 The verification step remains:

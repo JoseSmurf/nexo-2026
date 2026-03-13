@@ -100,6 +100,12 @@ bash scripts/inspect_audit_artifact.sh
 
 This reads the latest record from `NEXO_AUDIT_PATH` or `logs/audit_records.jsonl`, prints the main audit fields, writes a single-artifact temporary `.jsonl`, and shows the exact Zig verification command for that artifact.
 
+To find a past artifact by `request_id`, `audit_hash`, or `record_hash` across the active file and `logs/audit_archive/`:
+
+```bash
+bash scripts/find_audit_artifact.sh <request_id-or-hash>
+```
+
 For a compact runtime signal, `/api/state` also exposes the recent audit-chain status via:
 - `audit_chain_status`
 - `audit_chain_checked_records`
