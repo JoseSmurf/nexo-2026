@@ -282,4 +282,127 @@ class CoreAdapterBoundaryTest < Minitest::Test
     assert_equal('2026-03-13 11:55:00 UTC', state[:latest_change_timestamp])
     assert_equal('system', state[:latest_change_channel])
   end
+
+  # Contract: full build_state path in core mode.
+  # Core fields are treated as read-only input, while derived UI fields are only
+  # filled through explicit core values or documented fallback derivation.
+  def test_build_state_contract_in_core_mode_with_stubbed_core_read
+    core_payload = {
+      'system_status' => 'operational',
+      'peers_count' => 9,
+      'relay_status' => 'core relay online',
+      'network_mode' => 'hybrid',
+      'mesh_status' => 'stable',
+      'ai_last_insight' => 'Core stream is authoritative in this path.',
+      'recent_event_hash' => 'core-hash-authoritative',
+      'last_sync' => '2026-03-13T10:00:00Z',
+      'last_event_hash' => 'core-last-event',
+      'event_type' => 'system_event:approved',
+      'event_timestamp' => '2026-03-13 10:00:00 UTC',
+      'event_origin' => 'core_engine',
+      'event_channel' => 'system',
+      'chat_send_available' => true,
+      'chat_send_mode' => 'core',
+      'chat_send_reason' => '',
+      'recent_events' => [
+        {
+          'hash' => 'event-alpha',
+          'type' => 'system_event:approved',
+          'timestamp' => '2026-03-13 09:59:00 UTC',
+          'origin' => 'core_engine',
+          'channel' => 'system',
+        },
+      ],
+      'recent_ai_insights' => [
+        {
+          'text' => 'Flow is stable.',
+          'timestamp' => '2026-03-13 09:58:00 UTC',
+          'type' => 'observation',
+          'origin' => 'core_engine',
+        },
+      ],
+      'recent_chat_messages' => [
+        {
+          'hash' => 'chat-alpha',
+          'origin' => 'node-a',
+          'channel' => 'global',
+          'text' => 'core chat from node-a',
+          'timestamp' => '2026-03-13 09:58:30 UTC',
+        },
+      ],
+      'recent_flow' => [
+        {
+          'kind' => 'event',
+          'origin' => 'core_engine',
+          'summary' => 'approved decision',
+          'timestamp' => '2026-03-13 10:00:00 UTC',
+          'hash' => 'flow-event-core',
+          'channel' => 'system',
+        },
+        {
+          'kind' => 'chat',
+          'origin' => 'ui_dashboard',
+          'summary' => 'ignored if explicitly reconstructed',
+          'timestamp' => '2026-03-13 09:57:00 UTC',
+          'hash' => 'flow-chat-core',
+          'channel' => 'global',
+        },
+      ],
+      # Omitted here to assert derivation from explicit recent_flow in core mode.
+      # latest_change_* must follow adapter fallback derivation rules when not sent.
+    }
+
+    normalized_core_state = CoreAdapter.normalize(core_payload, source: :core)
+
+    CoreAdapter.stub(:read_core_state, [normalized_core_state, 'ok']) do
+      state, health, source, status = CoreAdapter.build_state
+
+      assert_equal('real', health)
+      assert_equal('core', source)
+      assert_equal('ok', status)
+
+      # core-verbatim fields
+      assert_equal('operational', state[:system_status])
+      assert_equal(9, state[:peers_count])
+      assert_equal('core relay online', state[:relay_status])
+      assert_equal('hybrid', state[:network_mode])
+      assert_equal('stable', state[:mesh_status])
+      assert_equal('Core stream is authoritative in this path.', state[:ai_last_insight])
+      assert_equal('core-hash-authoritative', state[:recent_event_hash])
+      assert_equal('2026-03-13T10:00:00Z', state[:last_sync])
+      assert_equal(true, state[:chat_send_available])
+      assert_equal('core', state[:chat_send_mode])
+
+      # recent_flow in core mode must remain payload-provided and not be rebuilt.
+      assert_equal([
+        {
+          kind: 'event',
+          origin: 'core_engine',
+          summary: 'approved decision',
+          timestamp: '2026-03-13 10:00:00 UTC',
+          hash: 'flow-event-core',
+          channel: 'system',
+        },
+        {
+          kind: 'chat',
+          origin: 'ui_dashboard',
+          summary: 'ignored if explicitly reconstructed',
+          timestamp: '2026-03-13 09:57:00 UTC',
+          hash: 'flow-chat-core',
+          channel: 'global',
+        },
+      ], state[:recent_flow])
+
+      # latest_change_* follows documented derivation path only when not explicitly provided.
+      assert_equal('event', state[:latest_change_kind])
+      assert_equal('approved decision', state[:latest_change_summary])
+      assert_equal('core_engine', state[:latest_change_origin])
+      assert_equal('2026-03-13 10:00:00 UTC', state[:latest_change_timestamp])
+      assert_equal('system', state[:latest_change_channel])
+      assert_equal('core_decision', state[:latest_change_source])
+
+      # UI must not use fallback semantics in core mode.
+      assert_equal('writable', state[:write_status])
+    end
+  end
 end
