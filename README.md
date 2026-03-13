@@ -9,6 +9,7 @@ This project is focused on applied security engineering for deterministic system
 - [What problem it solves](#what-problem-it-solves)
 - [Core guarantees](#core-guarantees)
 - [Architecture overview](#architecture-overview)
+- [Quick Demo](#quick-demo)
 - [Quickstart (60s)](#quickstart-60s)
 - [Quick demo (2 terminals)](#quick-demo-2-terminals)
 - [Relay bridge (global mode)](#relay-bridge-global-mode)
@@ -67,6 +68,23 @@ Client (signed request)
 
 Optional distributed guards: Redis (replay/rate-limit coordination)
 ```
+
+## Quick Demo
+
+For the fastest end-to-end walkthrough, run:
+
+```bash
+bash scripts/demo_decision_flow.sh
+```
+
+This demo executes the current verifiable path in one command:
+
+`API -> engine decision -> trace -> audit record -> Zig verification`
+
+Related docs:
+- [`scripts/demo_decision_flow.sh`](scripts/demo_decision_flow.sh)
+- [`examples/basic_decision_flow.md`](examples/basic_decision_flow.md)
+- [`RELEASE_PLAN_v0.2.0.md`](RELEASE_PLAN_v0.2.0.md)
 
 ## Quickstart (60s)
 
