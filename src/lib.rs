@@ -370,8 +370,9 @@ pub fn evaluate_with_config(
     };
 
     let (final_decision, trace) = crate::engine::evaluate(tx, &profile_for_engine, &cfg);
-    let hash = audit_hash(&trace);
-    (final_decision, trace, hash)
+    let trace_decisions = trace.into_decisions();
+    let hash = audit_hash(&trace_decisions);
+    (final_decision, trace_decisions, hash)
 }
 #[cfg(test)]
 mod tests {
