@@ -117,3 +117,55 @@ fn rule_aml(tx: &TransactionIntent, cfg: &EngineConfig) -> Decision {
 
     Decision::Approved
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::engine::evaluate;
+    use crate::profile::RuleProfile;
+    use crate::{EngineConfig, TransactionIntent};
+
+    fn sample_profile() -> RuleProfile {
+        RuleProfile {
+            name: "br_default_v1",
+            version: "2026.02",
+            country: "BR",
+            tz_offset_minutes: -180,
+            night_start: 20,
+            night_end: 6,
+            night_limit_cents: 100_000,
+            aml_amount_cents: 5_000_000,
+            aml_risk_bps: 9_000,
+        }
+    }
+
+    fn sample_config() -> EngineConfig {
+        EngineConfig {
+            tz_offset_minutes: -180,
+            night_start: 20,
+            night_end: 6,
+            night_limit_cents: 100_000,
+            aml_amount_cents: 5_000_000,
+            aml_risk_bps: 9_000,
+        }
+    }
+
+    fn sample_intent() -> TransactionIntent<'static> {
+        let st = 1_736_986_900_000u64;
+        TransactionIntent::new("user_x", 50_000, false, true, st - 60_000, st, 1_000, true).unwrap()
+    }
+
+    #[test]
+    fn evaluate_reproducible_for_identical_input() {
+        let profile = sample_profile();
+        let config = sample_config();
+        let intent = sample_intent();
+
+        let (expected_decision, expected_trace) = evaluate(&intent, &profile, &config);
+
+        for _ in 0..1_000 {
+            let (decision, trace) = evaluate(&intent, &profile, &config);
+            assert_eq!(decision, expected_decision);
+            assert_eq!(trace, expected_trace);
+        }
+    }
+}
