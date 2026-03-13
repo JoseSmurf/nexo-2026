@@ -1,24 +1,119 @@
 use crate::profile::RuleProfile;
-use crate::{evaluate_with_config, EngineConfig, FinalDecision, TransactionIntent};
+use crate::{Decision, EngineConfig, FinalDecision, Severity, TransactionIntent};
 
 use super::trace::DecisionTrace;
 
+/// Deterministic rule evaluation entrypoint.
+///
+/// `profile` is currently not used to keep exact parity with the existing
+/// `evaluate_with_config` behavior. It remains part of the contract so callers
+/// can pass profile data now, and future engine refactors can consume it
+/// without changing this call shape.
 pub fn evaluate(
     intent: &TransactionIntent,
     _profile: &RuleProfile,
     config: &EngineConfig,
 ) -> (FinalDecision, DecisionTrace) {
-    let (decision, trace, _hash) = evaluate_with_config(
-        intent,
-        EngineConfig {
-            tz_offset_minutes: config.tz_offset_minutes,
-            night_start: config.night_start,
-            night_end: config.night_end,
-            night_limit_cents: config.night_limit_cents,
-            aml_amount_cents: config.aml_amount_cents,
-            aml_risk_bps: config.aml_risk_bps,
-        },
-    );
+    // Contract: trace order is fixed and versioned by audit_hash(schema=trace_v4).
+    // Reordering rules here changes forensic hashes and must be treated as breaking.
+    let trace = vec![
+        rule_ui_integrity(intent),
+        rule_night_limit(intent, config),
+        rule_aml(intent, config),
+    ];
 
-    (decision, trace)
+    let final_decision = if trace.iter().any(|d| matches!(d, Decision::Blocked { .. })) {
+        FinalDecision::Blocked
+    } else if trace
+        .iter()
+        .any(|d| matches!(d, Decision::FlaggedForReview { .. }))
+    {
+        FinalDecision::Flagged
+    } else {
+        FinalDecision::Approved
+    };
+
+    (final_decision, trace)
+}
+
+fn policy_hour(timestamp_utc_ms: u64, offset_minutes: i16) -> u8 {
+    let utc_s = (timestamp_utc_ms / 1000) as i64;
+    let local_s = utc_s + (offset_minutes as i64 * 60);
+    let mut sec_day = local_s % 86_400;
+    if sec_day < 0 {
+        sec_day += 86_400;
+    }
+    (sec_day / 3600) as u8
+}
+
+fn rule_ui_integrity(tx: &TransactionIntent) -> Decision {
+    if !tx.ui_hash_valid {
+        Decision::Blocked {
+            rule_id: "UI-FRAUD-001",
+            reason: "UI integrity verification failed.",
+            severity: Severity::Critica,
+            measured: 1,
+            threshold: 0,
+        }
+    } else {
+        Decision::Approved
+    }
+}
+
+fn rule_night_limit(tx: &TransactionIntent, cfg: &EngineConfig) -> Decision {
+    let hour = policy_hour(tx.timestamp_utc_ms, cfg.tz_offset_minutes);
+    let is_night = if cfg.night_start <= cfg.night_end {
+        hour >= cfg.night_start && hour <= cfg.night_end
+    } else {
+        hour >= cfg.night_start || hour <= cfg.night_end
+    };
+
+    if is_night && tx.amount_cents > cfg.night_limit_cents {
+        Decision::Blocked {
+            rule_id: "BCB-NIGHT-001",
+            reason: "Night transaction limit exceeded.",
+            severity: Severity::Grave,
+            measured: tx.amount_cents,
+            threshold: cfg.night_limit_cents,
+        }
+    } else {
+        Decision::Approved
+    }
+}
+
+fn rule_aml(tx: &TransactionIntent, cfg: &EngineConfig) -> Decision {
+    if tx.is_pep && !tx.has_active_kyc {
+        return Decision::Blocked {
+            rule_id: "KYC-PEP-002",
+            reason: "PEP without active KYC.",
+            severity: Severity::Grave,
+            measured: 1,
+            threshold: 0,
+        };
+    }
+
+    let high_risk = tx.risk_bps >= cfg.aml_risk_bps;
+    let high_amount = tx.amount_cents >= cfg.aml_amount_cents;
+
+    if high_risk && high_amount {
+        return Decision::Blocked {
+            rule_id: "AML-FATF-001",
+            reason: "High-risk and high-amount transaction.",
+            severity: Severity::Critica,
+            measured: tx.amount_cents,
+            threshold: cfg.aml_amount_cents,
+        };
+    }
+
+    if high_risk || high_amount {
+        return Decision::FlaggedForReview {
+            rule_id: "AML-FATF-REVIEW-001",
+            reason: "Transaction requires AML review.",
+            severity: Severity::Alta,
+            measured: tx.amount_cents,
+            threshold: cfg.aml_amount_cents,
+        };
+    }
+
+    Decision::Approved
 }

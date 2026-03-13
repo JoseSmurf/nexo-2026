@@ -145,88 +145,6 @@ impl<'a> TransactionIntent<'a> {
     }
 }
 
-fn policy_hour(timestamp_utc_ms: u64, offset_minutes: i16) -> u8 {
-    let utc_s = (timestamp_utc_ms / 1000) as i64;
-    let local_s = utc_s + (offset_minutes as i64 * 60);
-    let mut sec_day = local_s % 86_400;
-    if sec_day < 0 {
-        sec_day += 86_400;
-    }
-    (sec_day / 3600) as u8
-}
-
-fn rule_ui_integrity(tx: &TransactionIntent) -> Decision {
-    if !tx.ui_hash_valid {
-        Decision::Blocked {
-            rule_id: "UI-FRAUD-001",
-            reason: "UI integrity verification failed.",
-            severity: Severity::Critica,
-            measured: 1,
-            threshold: 0,
-        }
-    } else {
-        Decision::Approved
-    }
-}
-
-fn rule_night_limit(tx: &TransactionIntent, cfg: EngineConfig) -> Decision {
-    let hour = policy_hour(tx.timestamp_utc_ms, cfg.tz_offset_minutes);
-    let is_night = if cfg.night_start <= cfg.night_end {
-        hour >= cfg.night_start && hour <= cfg.night_end
-    } else {
-        hour >= cfg.night_start || hour <= cfg.night_end
-    };
-
-    if is_night && tx.amount_cents > cfg.night_limit_cents {
-        Decision::Blocked {
-            rule_id: "BCB-NIGHT-001",
-            reason: "Night transaction limit exceeded.",
-            severity: Severity::Grave,
-            measured: tx.amount_cents,
-            threshold: cfg.night_limit_cents,
-        }
-    } else {
-        Decision::Approved
-    }
-}
-
-fn rule_aml(tx: &TransactionIntent, cfg: EngineConfig) -> Decision {
-    if tx.is_pep && !tx.has_active_kyc {
-        return Decision::Blocked {
-            rule_id: "KYC-PEP-002",
-            reason: "PEP without active KYC.",
-            severity: Severity::Grave,
-            measured: 1,
-            threshold: 0,
-        };
-    }
-
-    let high_risk = tx.risk_bps >= cfg.aml_risk_bps;
-    let high_amount = tx.amount_cents >= cfg.aml_amount_cents;
-
-    if high_risk && high_amount {
-        return Decision::Blocked {
-            rule_id: "AML-FATF-001",
-            reason: "High-risk and high-amount transaction.",
-            severity: Severity::Critica,
-            measured: tx.amount_cents,
-            threshold: cfg.aml_amount_cents,
-        };
-    }
-
-    if high_risk || high_amount {
-        return Decision::FlaggedForReview {
-            rule_id: "AML-FATF-REVIEW-001",
-            reason: "Transaction requires AML review.",
-            severity: Severity::Alta,
-            measured: tx.amount_cents,
-            threshold: cfg.aml_amount_cents,
-        };
-    }
-
-    Decision::Approved
-}
-
 fn hash_field(h: &mut blake3::Hasher, tag: &[u8], data: &[u8]) {
     h.update(&(tag.len() as u32).to_le_bytes());
     h.update(tag);
@@ -439,25 +357,19 @@ pub fn evaluate_with_config(
     tx: &TransactionIntent,
     cfg: EngineConfig,
 ) -> (FinalDecision, Vec<Decision>, String) {
-    // Contract: trace order is fixed and versioned by audit_hash(schema=trace_v4).
-    // Reordering rules here changes forensic hashes and must be treated as breaking.
-    let trace = vec![
-        rule_ui_integrity(tx),
-        rule_night_limit(tx, cfg),
-        rule_aml(tx, cfg),
-    ];
-
-    let final_decision = if trace.iter().any(|d| matches!(d, Decision::Blocked { .. })) {
-        FinalDecision::Blocked
-    } else if trace
-        .iter()
-        .any(|d| matches!(d, Decision::FlaggedForReview { .. }))
-    {
-        FinalDecision::Flagged
-    } else {
-        FinalDecision::Approved
+    let profile_for_engine = crate::profile::RuleProfile {
+        name: "",
+        version: "",
+        country: "",
+        tz_offset_minutes: cfg.tz_offset_minutes,
+        night_start: cfg.night_start,
+        night_end: cfg.night_end,
+        night_limit_cents: cfg.night_limit_cents,
+        aml_amount_cents: cfg.aml_amount_cents,
+        aml_risk_bps: cfg.aml_risk_bps,
     };
 
+    let (final_decision, trace) = crate::engine::evaluate(tx, &profile_for_engine, &cfg);
     let hash = audit_hash(&trace);
     (final_decision, trace, hash)
 }
