@@ -129,7 +129,7 @@ mod tests {
     use crate::engine::trace::{DecisionTrace, TraceFormatVersion};
     use crate::profile::RuleProfile;
     use crate::Decision;
-    use crate::{EngineConfig, TransactionIntent};
+    use crate::{EngineConfig, FinalDecision, TransactionIntent};
 
     fn sample_profile() -> RuleProfile {
         RuleProfile {
@@ -159,6 +159,42 @@ mod tests {
     fn sample_intent() -> TransactionIntent<'static> {
         let st = 1_736_986_900_000u64;
         TransactionIntent::new("user_x", 50_000, false, true, st - 60_000, st, 1_000, true).unwrap()
+    }
+
+    fn trace_contract_assertions(
+        trace: &DecisionTrace,
+        expected_final: FinalDecision,
+        expected_aml_rule_id: &'static str,
+    ) {
+        assert_eq!(trace.len(), 3);
+        assert_eq!(trace.format_version, TraceFormatVersion::V1.as_str());
+        assert_eq!(trace.steps[0].index, 0);
+        assert_eq!(trace.steps[1].index, 1);
+        assert_eq!(trace.steps[2].index, 2);
+        assert_eq!(trace.steps[0].rule_id, "UI-FRAUD-001");
+        assert_eq!(trace.steps[1].rule_id, "BCB-NIGHT-001");
+        assert_eq!(trace.steps[2].rule_id, expected_aml_rule_id);
+        assert_eq!(trace.steps[0].decision, Decision::Approved);
+        assert_eq!(trace.steps[1].decision, Decision::Approved);
+        match expected_final {
+            FinalDecision::Approved => {
+                assert_eq!(trace.steps[2].decision, Decision::Approved);
+            }
+            FinalDecision::Flagged => {
+                assert!(matches!(
+                    trace.steps[2].decision,
+                    Decision::FlaggedForReview {
+                        rule_id,
+                        ..
+                    } if rule_id == expected_aml_rule_id
+                ));
+            }
+            FinalDecision::Blocked => {
+                assert!(matches!(trace.steps[2].decision, Decision::Blocked { .. }));
+                assert_eq!(expected_aml_rule_id, "AML-FATF-001");
+            }
+        }
+        assert_eq!(trace.steps[2].rule_id, expected_aml_rule_id);
     }
 
     #[test]
@@ -223,5 +259,92 @@ mod tests {
             assert_eq!(decision, expected_decision);
             assert_eq!(trace, expected_trace);
         }
+    }
+
+    #[test]
+    fn aml_trace_contract_approved() {
+        let profile = sample_profile();
+        let config = EngineConfig {
+            aml_amount_cents: 10_000_000,
+            aml_risk_bps: 9_000,
+            ..sample_config()
+        };
+        let intent = TransactionIntent::new(
+            "aml_approved",
+            50_000,
+            false,
+            true,
+            1_736_986_900_000 - 60_000,
+            1_736_986_900_000,
+            100,
+            true,
+        )
+        .unwrap();
+
+        let (decision, trace) = evaluate(&intent, &profile, &config);
+        assert_eq!(decision, FinalDecision::Approved);
+        trace_contract_assertions(&trace, FinalDecision::Approved, "AML-FATF-001");
+        assert_eq!(trace.steps[2].rule_id, "AML-FATF-001");
+    }
+
+    #[test]
+    fn aml_trace_contract_flagged() {
+        let profile = sample_profile();
+        let config = EngineConfig {
+            aml_amount_cents: 5_000_000,
+            aml_risk_bps: 9_000,
+            night_limit_cents: 10_000_000,
+            ..sample_config()
+        };
+        let intent = TransactionIntent::new(
+            "aml_flagged",
+            4_000_000,
+            false,
+            true,
+            1_736_986_900_000 - 60_000,
+            1_736_986_900_000,
+            9_500,
+            true,
+        )
+        .unwrap();
+
+        let (decision, trace) = evaluate(&intent, &profile, &config);
+        assert_eq!(decision, FinalDecision::Flagged);
+        trace_contract_assertions(&trace, FinalDecision::Flagged, "AML-FATF-REVIEW-001");
+        assert_eq!(trace.steps[2].rule_id, "AML-FATF-REVIEW-001");
+    }
+
+    #[test]
+    fn aml_trace_contract_blocked() {
+        let profile = sample_profile();
+        let config = EngineConfig {
+            aml_amount_cents: 1_000_000,
+            aml_risk_bps: 9_000,
+            night_limit_cents: 10_000_000,
+            ..sample_config()
+        };
+        let intent = TransactionIntent::new(
+            "aml_blocked",
+            2_000_000,
+            false,
+            true,
+            1_736_986_900_000 - 60_000,
+            1_736_986_900_000,
+            9_000,
+            true,
+        )
+        .unwrap();
+
+        let (decision, trace) = evaluate(&intent, &profile, &config);
+        assert_eq!(decision, FinalDecision::Blocked);
+        trace_contract_assertions(&trace, FinalDecision::Blocked, "AML-FATF-001");
+        assert_eq!(trace.steps[2].rule_id, "AML-FATF-001");
+        assert!(matches!(
+            trace.steps[2].decision,
+            Decision::Blocked {
+                rule_id: "AML-FATF-001",
+                ..
+            }
+        ));
     }
 }
