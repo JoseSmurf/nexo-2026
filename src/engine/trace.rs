@@ -4,12 +4,14 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct TraceStep {
     pub index: u32,
+    pub rule_id: &'static str,
     pub decision: Decision,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct DecisionTrace {
     pub schema: &'static str,
+    pub format_version: &'static str,
     pub steps: Vec<TraceStep>,
 }
 
@@ -17,6 +19,7 @@ impl Default for DecisionTrace {
     fn default() -> Self {
         Self {
             schema: "v1",
+            format_version: "1",
             steps: Vec::new(),
         }
     }
@@ -30,13 +33,18 @@ impl DecisionTrace {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             schema: "v1",
+            format_version: "1",
             steps: Vec::with_capacity(capacity),
         }
     }
 
-    pub fn push(&mut self, decision: Decision) {
+    pub fn push(&mut self, rule_id: &'static str, decision: Decision) {
         let index = self.steps.len() as u32;
-        self.steps.push(TraceStep { index, decision });
+        self.steps.push(TraceStep {
+            index,
+            rule_id,
+            decision,
+        });
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Decision> {
