@@ -52,3 +52,63 @@ pub fn compute_record_hash(record: &AuditRecord) -> String {
     h.update(&record.risk_bps.to_le_bytes());
     h.finalize().to_hex().to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::compute_record_hash;
+    use crate::audit_store::AuditRecord;
+    use crate::FinalDecision;
+    use serde_json::json;
+
+    fn sample_record() -> AuditRecord {
+        AuditRecord {
+            request_id: "known-request-001".to_string(),
+            calc_version: Some("fixture_rust_v1".to_string()),
+            profile_name: "br_default_v1".to_string(),
+            profile_version: "2026.02".to_string(),
+            timestamp_utc_ms: 1_771_845_406_862,
+            user_id: "rust_fixture_user".to_string(),
+            amount_cents: 150_000,
+            risk_bps: 9_999,
+            final_decision: FinalDecision::Flagged,
+            trace: json!([
+                "Approved",
+                "Approved",
+                {
+                    "FlaggedForReview": {
+                        "measured": 150000,
+                        "reason": "Transaction requires AML review.",
+                        "rule_id": "AML-FATF-REVIEW-001",
+                        "severity": "Alta",
+                        "threshold": 5000000
+                    }
+                }
+            ]),
+            audit_hash: "bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3"
+                .to_string(),
+            hash_algo: "blake3".to_string(),
+            sha3_shadow: None,
+            prev_record_hash: None,
+            record_hash: None,
+        }
+    }
+
+    #[test]
+    fn compute_record_hash_is_stable_for_known_input() {
+        let record = sample_record();
+        assert_eq!(
+            compute_record_hash(&record),
+            "fa75306f29d04f6aafcec77d7dfceb7b44386284e87df8b8c51f5071d01d663f"
+        );
+    }
+
+    #[test]
+    fn identical_audit_records_produce_identical_record_hashes() {
+        let record_a = sample_record();
+        let record_b = sample_record();
+        assert_eq!(
+            compute_record_hash(&record_a),
+            compute_record_hash(&record_b)
+        );
+    }
+}

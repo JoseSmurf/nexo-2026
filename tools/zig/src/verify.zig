@@ -465,6 +465,22 @@ test "verifyLine accepts Rust-generated hybrid fixture file" {
     try std.testing.expectEqual(schema.VerifyResult.Ok, result);
 }
 
+test "all Rust-generated fixture artifacts remain verifiable" {
+    const fixture_paths = [_][]const u8{
+        "../../fixtures/audit_rust_blake3.jsonl",
+        "../../fixtures/audit_rust_shake512.jsonl",
+        "../../fixtures/audit_rust_hybrid.jsonl",
+    };
+
+    for (fixture_paths) |path| {
+        const line = try readFirstNonEmptyLine(std.testing.allocator, path);
+        defer std.testing.allocator.free(line);
+
+        const result = verifyLine(std.testing.allocator, line);
+        try std.testing.expectEqual(schema.VerifyResult.Ok, result);
+    }
+}
+
 test "verifyLine rejects diverging trace and trace_bytes" {
     const canonical = "evil-canonical-bytes";
     const hash_bytes = try hashCanonicalBytes(std.testing.allocator, .blake3_256, canonical);

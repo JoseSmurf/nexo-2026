@@ -937,4 +937,31 @@ mod tests {
         assert_eq!(response.state_schema_version, STATE_RESPONSE_SCHEMA_VERSION);
         assert_eq!(response.timestamp, 22);
     }
+
+    #[test]
+    fn state_field_contract_explicitly_separates_core_and_derived_fields() {
+        let contract = state_field_contract();
+
+        let recent_events = contract
+            .iter()
+            .find(|field| field.field == "recent_events")
+            .expect("recent_events field contract");
+        let recent_flow = contract
+            .iter()
+            .find(|field| field.field == "recent_flow")
+            .expect("recent_flow field contract");
+        let state_schema = contract
+            .iter()
+            .find(|field| field.field == "state_schema")
+            .expect("state_schema field contract");
+        let latest_change_kind = contract
+            .iter()
+            .find(|field| field.field == "latest_change_kind")
+            .expect("latest_change_kind field contract");
+
+        assert_eq!(recent_events.provenance, StateFieldProvenance::CoreVerbatim);
+        assert_eq!(recent_flow.provenance, StateFieldProvenance::CoreVerbatim);
+        assert_eq!(state_schema.provenance, StateFieldProvenance::Derived);
+        assert_eq!(latest_change_kind.provenance, StateFieldProvenance::Derived);
+    }
 }

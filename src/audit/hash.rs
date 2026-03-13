@@ -199,3 +199,44 @@ pub fn audit_hash_with_algo(trace: &[crate::Decision], algo: AuditHashAlgo) -> S
 pub fn audit_hash(trace: &[crate::Decision]) -> String {
     audit_hash_with_algo(trace, AuditHashAlgo::Blake3)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{audit_hash, audit_hash_with_algo, AuditHashAlgo};
+    use crate::{Decision, Severity};
+
+    fn flagged_trace() -> Vec<Decision> {
+        vec![
+            Decision::Approved,
+            Decision::Approved,
+            Decision::FlaggedForReview {
+                rule_id: "AML-FATF-REVIEW-001",
+                reason: "Transaction requires AML review.",
+                severity: Severity::Alta,
+                measured: 150_000,
+                threshold: 5_000_000,
+            },
+        ]
+    }
+
+    #[test]
+    fn semantic_trace_hash_is_stable_for_known_blake3_input() {
+        let trace = flagged_trace();
+        assert_eq!(
+            audit_hash(&trace),
+            "bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3"
+        );
+    }
+
+    #[test]
+    fn equal_semantic_traces_produce_equal_hashes() {
+        let trace_a = flagged_trace();
+        let trace_b = flagged_trace();
+
+        assert_eq!(audit_hash(&trace_a), audit_hash(&trace_b));
+        assert_eq!(
+            audit_hash_with_algo(&trace_a, AuditHashAlgo::Shake256_512),
+            audit_hash_with_algo(&trace_b, AuditHashAlgo::Shake256_512)
+        );
+    }
+}

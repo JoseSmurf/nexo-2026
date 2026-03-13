@@ -1621,6 +1621,20 @@ mod tests {
     }
 
     #[test]
+    fn evaluate_with_config_is_reproducible_for_identical_input() {
+        let tx = base_tx();
+        let cfg = cfg_brasil();
+        let baseline = evaluate_with_config(&tx, cfg);
+
+        for _ in 0..256 {
+            let current = evaluate_with_config(&tx, cfg);
+            assert_eq!(current.0, baseline.0);
+            assert_eq!(current.1, baseline.1);
+            assert_eq!(current.2, baseline.2);
+        }
+    }
+
+    #[test]
     fn hash_is_not_empty() {
         let tx = base_tx();
         let (_d, _t, hash) = evaluate(&tx);
