@@ -159,4 +159,127 @@ class CoreAdapterBoundaryTest < Minitest::Test
     # latest_change_source is only auto-derived when not explicitly supplied.
     assert_equal('operator_action', state[:latest_change_source])
   end
+
+  # Contract: when source is :core, first-order core fields are verbatim read-only.
+  # UI-derived fields (latest_change_* and write_status family) may only be filled
+  # by explicit core values or the documented derivation fallback path.
+  def test_core_mode_contract_prevents_core_semantic_reinterpretation
+    core_payload = {
+      'system_status' => 'operational',
+      'peers_count' => 11,
+      'relay_status' => 'relay mesh online',
+      'network_mode' => 'mesh',
+      'mesh_status' => 'stable',
+      'ai_last_insight' => 'Operator flow steady across window.',
+      'recent_event_hash' => 'core-event-hash',
+      'last_sync' => '2026-03-13 12:00:00 UTC',
+      'last_event_hash' => 'explicit-last-event',
+      'event_type' => 'system_event:blocked',
+      'event_timestamp' => '2026-03-13 11:55:00 UTC',
+      'event_origin' => 'core_engine',
+      'event_channel' => 'system',
+      'chat_send_available' => false,
+      'chat_send_mode' => 'core_unavailable',
+      'chat_send_reason' => 'policy denies writes',
+      'recent_events' => [
+        {
+          'hash' => 'core-event-1',
+          'type' => 'system_event:blocked',
+          'timestamp' => '2026-03-13 11:55:00 UTC',
+          'origin' => 'core_engine',
+          'channel' => 'system',
+        },
+      ],
+      'recent_ai_insights' => [
+        {
+          'text' => 'passive control update.',
+          'timestamp' => '2026-03-13 11:54:00 UTC',
+          'type' => 'observation',
+          'origin' => 'core_system',
+        },
+      ],
+      'recent_chat_messages' => [
+        {
+          'hash' => 'core-chat-1',
+          'origin' => 'node-b',
+          'channel' => 'global',
+          'text' => 'core chat sample',
+          'timestamp' => '2026-03-13 11:53:00 UTC',
+        },
+      ],
+      'recent_flow' => [
+        {
+          'kind' => 'event',
+          'origin' => 'core_engine',
+          'summary' => 'blocked decision',
+          'timestamp' => '2026-03-13 11:55:00 UTC',
+          'hash' => 'core-flow-evt',
+          'channel' => 'system',
+        },
+        {
+          'kind' => 'chat',
+          'origin' => 'ui_dashboard',
+          'summary' => 'operator message',
+          'timestamp' => '2026-03-13 11:56:00 UTC',
+          'hash' => 'core-flow-chat',
+          'channel' => 'global',
+        },
+      ],
+      'latest_change_source' => 'core_decision',
+      'latest_change_kind' => 'event',
+      'latest_change_summary' => 'core explicit latest',
+      'latest_change_origin' => 'core_engine',
+      'latest_change_timestamp' => '2026-03-13 11:57:00 UTC',
+      'latest_change_channel' => 'system',
+    }
+
+    state = CoreAdapter.normalize(core_payload, source: :core)
+
+    core_verbatim_fields = {
+      system_status: 'operational',
+      peers_count: 11,
+      relay_status: 'relay mesh online',
+      network_mode: 'mesh',
+      mesh_status: 'stable',
+      ai_last_insight: 'Operator flow steady across window.',
+      recent_event_hash: 'core-event-hash',
+      last_sync: '2026-03-13 12:00:00 UTC',
+      chat_send_available: false,
+      chat_send_mode: 'core_unavailable',
+      chat_send_reason: 'policy denies writes',
+    }
+
+    core_verbatim_fields.each do |key, value|
+      assert_equal(value, state[key], "core-verbatim field was mutated: #{key}")
+    end
+
+    # recent_flow should be preserved from core (validated/canonicalized, not rebuilt from events/insights/chat in core mode).
+    assert_equal([
+      {
+        kind: 'event',
+        origin: 'core_engine',
+        summary: 'blocked decision',
+        timestamp: '2026-03-13 11:55:00 UTC',
+        hash: 'core-flow-evt',
+        channel: 'system',
+      },
+      {
+        kind: 'chat',
+        origin: 'ui_dashboard',
+        summary: 'operator message',
+        timestamp: '2026-03-13 11:56:00 UTC',
+        hash: 'core-flow-chat',
+        channel: 'global',
+      },
+    ], state[:recent_flow])
+
+    # Core may provide only latest_change_source explicitly in this adapter contract;
+    # the rest follows the documented derivation path from recent_flow.
+    assert_equal('core_decision', state[:latest_change_source])
+    assert_equal('event', state[:latest_change_kind])
+    assert_equal('blocked decision', state[:latest_change_summary])
+    assert_equal('core_engine', state[:latest_change_origin])
+    assert_equal('2026-03-13 11:55:00 UTC', state[:latest_change_timestamp])
+    assert_equal('system', state[:latest_change_channel])
+  end
 end
