@@ -126,7 +126,9 @@ fn rule_aml(tx: &TransactionIntent, cfg: &EngineConfig) -> Decision {
 #[cfg(test)]
 mod tests {
     use crate::engine::evaluate;
+    use crate::engine::trace::{DecisionTrace, TraceFormatVersion};
     use crate::profile::RuleProfile;
+    use crate::Decision;
     use crate::{EngineConfig, TransactionIntent};
 
     fn sample_profile() -> RuleProfile {
@@ -157,6 +159,55 @@ mod tests {
     fn sample_intent() -> TransactionIntent<'static> {
         let st = 1_736_986_900_000u64;
         TransactionIntent::new("user_x", 50_000, false, true, st - 60_000, st, 1_000, true).unwrap()
+    }
+
+    #[test]
+    fn decision_trace_contract_is_stable_golden() {
+        let profile = sample_profile();
+        let config = sample_config();
+        let intent = TransactionIntent::new(
+            "contract_golden_user",
+            75_000,
+            false,
+            true,
+            1_736_986_900_000 - 60_000,
+            1_736_986_900_000,
+            1_000,
+            true,
+        )
+        .unwrap();
+
+        let expected = DecisionTrace {
+            schema: "v1",
+            format_version: TraceFormatVersion::V1.as_str(),
+            steps: vec![
+                crate::engine::trace::TraceStep {
+                    index: 0,
+                    rule_id: "UI-FRAUD-001",
+                    decision: Decision::Approved,
+                },
+                crate::engine::trace::TraceStep {
+                    index: 1,
+                    rule_id: "BCB-NIGHT-001",
+                    decision: Decision::Approved,
+                },
+                crate::engine::trace::TraceStep {
+                    index: 2,
+                    rule_id: "AML-FATF-001",
+                    decision: Decision::Approved,
+                },
+            ],
+        };
+
+        let (_decision, actual) = evaluate(&intent, &profile, &config);
+        assert_eq!(actual, expected);
+        assert_eq!(actual.format_version, TraceFormatVersion::V1.as_str());
+        assert_eq!(actual.steps[0].index, 0);
+        assert_eq!(actual.steps[1].index, 1);
+        assert_eq!(actual.steps[2].index, 2);
+        assert_eq!(actual.steps[0].rule_id, "UI-FRAUD-001");
+        assert_eq!(actual.steps[1].rule_id, "BCB-NIGHT-001");
+        assert_eq!(actual.steps[2].rule_id, "AML-FATF-001");
     }
 
     #[test]

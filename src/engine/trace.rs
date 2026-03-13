@@ -1,6 +1,20 @@
 use crate::Decision;
 use serde::Serialize;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TraceFormatVersion {
+    #[default]
+    V1,
+}
+
+impl TraceFormatVersion {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::V1 => "1",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct TraceStep {
     pub index: u32,
@@ -19,7 +33,7 @@ impl Default for DecisionTrace {
     fn default() -> Self {
         Self {
             schema: "v1",
-            format_version: "1",
+            format_version: TraceFormatVersion::V1.as_str(),
             steps: Vec::new(),
         }
     }
@@ -33,7 +47,7 @@ impl DecisionTrace {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             schema: "v1",
-            format_version: "1",
+            format_version: TraceFormatVersion::V1.as_str(),
             steps: Vec::with_capacity(capacity),
         }
     }

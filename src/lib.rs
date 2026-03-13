@@ -1603,6 +1603,24 @@ mod tests {
     }
 
     #[test]
+    fn hash_uses_stable_decision_sequence_independent_of_trace_container() {
+        let tx = base_tx();
+        let (decision, trace_decisions, hash_from_api) = evaluate(&tx);
+        let (decision_again, _trace_again, hash_from_trace) = evaluate(&tx);
+
+        assert_eq!(decision, decision_again);
+        assert_eq!(trace_decisions, _trace_again);
+
+        let expected = crate::audit_hash(&trace_decisions);
+        let expected_again = crate::audit_hash(&trace_decisions);
+
+        assert_eq!(hash_from_api, expected);
+        assert_eq!(hash_from_trace, expected_again);
+        assert_eq!(hash_from_api, hash_from_trace);
+        assert_eq!(expected, expected_again);
+    }
+
+    #[test]
     fn hash_is_not_empty() {
         let tx = base_tx();
         let (_d, _t, hash) = evaluate(&tx);
