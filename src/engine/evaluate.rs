@@ -17,9 +17,15 @@ pub fn evaluate(
     // Contract: trace order is fixed and versioned by audit_hash(schema=trace_v4).
     // Reordering rules here changes forensic hashes and must be treated as breaking.
     let mut trace = DecisionTrace::new();
-    trace.push("ui-integrity", rule_ui_integrity(intent));
-    trace.push("night-limit", rule_night_limit(intent, config));
-    trace.push("aml-check", rule_aml(intent, config));
+    trace.push("UI-FRAUD-001", rule_ui_integrity(intent));
+    trace.push("BCB-NIGHT-001", rule_night_limit(intent, config));
+    let aml_decision = rule_aml(intent, config);
+    let aml_rule_id = match aml_decision {
+        Decision::Approved => "AML-FATF-001",
+        Decision::Blocked { rule_id, .. } => rule_id,
+        Decision::FlaggedForReview { rule_id, .. } => rule_id,
+    };
+    trace.push(aml_rule_id, aml_decision);
 
     let final_decision = if trace.iter().any(|d| matches!(d, Decision::Blocked { .. })) {
         FinalDecision::Blocked
