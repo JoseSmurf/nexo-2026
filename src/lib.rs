@@ -15,6 +15,7 @@ pub mod chat;
 pub mod cli;
 #[cfg(feature = "network")]
 pub mod discovery;
+pub mod engine;
 pub mod message;
 #[cfg(feature = "network")]
 pub mod network_udp;
