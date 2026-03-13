@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.2.0 - Draft
+
+### Included in first public release
+- Deterministic `POST /evaluate` API flow with signed requests.
+- Stable Rust decision engine with ordered rule execution and deterministic `trace`.
+- Deterministic audit hashing with explicit `hash_algo`.
+- Audit record persistence to JSONL with record chaining fields.
+- Offline Zig verifier for forensic validation of audit records.
+- Release documentation for local end-to-end verification flow.
+
+### Intentionally deferred
+- Distributed/P2P features as part of the public release contract.
+- Ruby dashboard as the primary release surface.
+- Julia historical observation workflow as a release requirement.
+- Secret-provider and deployment breadth as part of release acceptance.
+
 ## Unreleased
 
 ### Hash Contract Migration
