@@ -68,6 +68,53 @@ jobs:
     - name: Clippy fail-closed
       run: cargo clippy --all-targets --all-features -- -D warnings
 
+  engine_boundaries:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Cache cargo + target
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-engine-boundaries
+        restore-keys: |
+          ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
+          ${{ runner.os }}-cargo-
+    - name: Fail if forbidden patterns enter engine
+      run: |
+        set -euo pipefail
+        prohibited=(
+          "std::time"
+          "std::fs"
+          "std::net"
+          "rand"
+          "HashMap"
+          "HashSet"
+          "tracing"
+          "log::"
+          "std::env"
+        )
+        for token in "${prohibited[@]}"; do
+          if grep -RIn --fixed-strings --exclude-dir=target --exclude-dir=.git --color=never "$token" src/engine/; then
+            echo "Forbidden token '$token' found in src/engine"
+            exit 1
+          fi
+        done
+        echo "Engine boundary check passed"
+    - name: Engine determinism and trace-contract tests
+      run: |
+        for test_name in aml_trace_contract_approved aml_trace_contract_flagged aml_trace_contract_blocked decision_trace_contract_is_stable_golden evaluate_reproducible_for_identical_input; do
+          cargo test -q "$test_name"
+        done
+        for test_name in aml_trace_contract_approved aml_trace_contract_flagged aml_trace_contract_blocked decision_trace_contract_is_stable_golden evaluate_reproducible_for_identical_input; do
+          cargo test --features network -q "$test_name"
+        done
+
   security:
     runs-on: ubuntu-latest
     steps:
