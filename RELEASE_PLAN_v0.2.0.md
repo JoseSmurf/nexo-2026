@@ -86,7 +86,7 @@ In a second terminal:
 cd nexo-2026
 REQ_ID="$(cat /proc/sys/kernel/random/uuid)"
 TS="$(date +%s%3N)"
-BODY="$(printf '{"user_id":"release_user","amount_cents":150000,"is_pep":false,"has_active_kyc":true,"timestamp_utc_ms":%s,"risk_bps":1200,"ui_hash_valid":true,"request_id":"%s"}' "$TS" "$REQ_ID")"
+BODY="$(printf '{"user_id":"release_user","amount_cents":50000,"is_pep":false,"has_active_kyc":true,"timestamp_utc_ms":%s,"risk_bps":1200,"ui_hash_valid":true,"request_id":"%s"}' "$TS" "$REQ_ID")"
 SIG="$(cargo run --quiet --bin sign_request -- "$NEXO_HMAC_SECRET" "$NEXO_HMAC_KEY_ID" "$REQ_ID" "$TS" "$BODY")"
 curl -sS -X POST 'http://127.0.0.1:3000/evaluate' \
   -H 'content-type: application/json' \
@@ -123,6 +123,16 @@ Expected verifier outcome:
 
 - `ok` when the record is structurally valid and the hash matches the trace semantics
 - non-zero exit when schema drift or tampering is detected
+
+### Fast demo path
+
+For a single-command local demo:
+
+```bash
+bash scripts/demo_decision_flow.sh
+```
+
+This script starts the API, sends one signed request, captures the generated audit artifact in a temporary file, and verifies that artifact with the Zig verifier.
 
 ## Release acceptance checklist
 

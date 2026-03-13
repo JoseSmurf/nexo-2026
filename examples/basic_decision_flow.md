@@ -7,6 +7,14 @@ This example shows one real local flow:
 3. produce one audit record
 4. verify that record with the Zig verifier
 
+Fast path:
+
+```bash
+bash scripts/demo_decision_flow.sh
+```
+
+The script starts the API with a temporary audit path, sends one signed request, prints the response, prints the generated audit record, and runs the Zig verifier against that generated artifact.
+
 ## Start the API
 
 ```bash
@@ -26,7 +34,7 @@ Open a second terminal:
 cd nexo-2026
 REQ_ID="$(cat /proc/sys/kernel/random/uuid)"
 TS="$(date +%s%3N)"
-BODY="$(printf '{"user_id":"example_user","amount_cents":150000,"is_pep":false,"has_active_kyc":true,"timestamp_utc_ms":%s,"risk_bps":1200,"ui_hash_valid":true,"request_id":"%s"}' "$TS" "$REQ_ID")"
+BODY="$(printf '{"user_id":"example_user","amount_cents":50000,"is_pep":false,"has_active_kyc":true,"timestamp_utc_ms":%s,"risk_bps":1200,"ui_hash_valid":true,"request_id":"%s"}' "$TS" "$REQ_ID")"
 SIG="$(cargo run --quiet --bin sign_request -- "$NEXO_HMAC_SECRET" "$NEXO_HMAC_KEY_ID" "$REQ_ID" "$TS" "$BODY")"
 curl -sS -X POST 'http://127.0.0.1:3000/evaluate' \
   -H 'content-type: application/json' \
