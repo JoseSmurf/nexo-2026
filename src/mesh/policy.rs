@@ -2,16 +2,20 @@ use crate::mesh::errors::MeshContractError;
 use crate::mesh::types::{NodeLifecycleState, NodeRole, OrderingMode, SyncCursor};
 
 /// Conservative v0 ordering contract for accepted local history.
+#[allow(dead_code)]
 pub const DEFAULT_NODE_ORDERING: OrderingMode = OrderingMode::TimestampAscLocalTieBreak;
 
 /// Conservative v0 ordering contract for relay pull results.
+#[allow(dead_code)]
 pub const DEFAULT_RELAY_ORDERING: OrderingMode = OrderingMode::TimestampAscRelayRowTieBreak;
 
 /// `u64::MAX` is reserved as an invalid cursor sentinel in v0.
 /// A valid cursor must be either `0` for bootstrap or a concrete observed timestamp boundary.
+#[allow(dead_code)]
 pub const INVALID_SYNC_CURSOR_TS_MS: u64 = u64::MAX;
 
 /// Returns whether a lifecycle transition is valid under the current documentation contract.
+#[allow(dead_code)]
 pub fn is_valid_lifecycle_transition(from: NodeLifecycleState, to: NodeLifecycleState) -> bool {
     match (from, to) {
         (NodeLifecycleState::New, NodeLifecycleState::Active)
@@ -27,6 +31,7 @@ pub fn is_valid_lifecycle_transition(from: NodeLifecycleState, to: NodeLifecycle
 }
 
 /// Validates a lifecycle transition and returns a precise contract error when it is not allowed.
+#[allow(dead_code)]
 pub fn validate_lifecycle_transition(
     from: NodeLifecycleState,
     to: NodeLifecycleState,
@@ -39,11 +44,13 @@ pub fn validate_lifecycle_transition(
 }
 
 /// Returns whether a node role may behave as a passive relay in the v0 contract.
+#[allow(dead_code)]
 pub const fn role_can_act_as_relay(role: NodeRole) -> bool {
     matches!(role, NodeRole::StablePcNode | NodeRole::Relay)
 }
 
 /// Validates passive relay eligibility without implying semantic authority.
+#[allow(dead_code)]
 pub fn validate_relay_role(role: NodeRole) -> Result<(), MeshContractError> {
     if role_can_act_as_relay(role) {
         Ok(())
@@ -53,11 +60,13 @@ pub fn validate_relay_role(role: NodeRole) -> Result<(), MeshContractError> {
 }
 
 /// v0 cursors are timestamp based and reserve `u64::MAX` as an invalid sentinel.
+#[allow(dead_code)]
 pub const fn is_valid_sync_cursor(cursor: SyncCursor) -> bool {
     cursor.since_ts_ms != INVALID_SYNC_CURSOR_TS_MS
 }
 
 /// Validates the current v0 sync cursor shape using the smallest concrete rule already assumed by the contract.
+#[allow(dead_code)]
 pub fn validate_sync_cursor(cursor: SyncCursor) -> Result<(), MeshContractError> {
     if is_valid_sync_cursor(cursor) {
         Ok(())
