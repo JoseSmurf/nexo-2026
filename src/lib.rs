@@ -12,7 +12,7 @@ pub mod cli;
 #[cfg(feature = "network")]
 pub mod discovery;
 pub mod engine;
-pub mod mesh;
+pub(crate) mod mesh;
 pub mod message;
 #[cfg(feature = "network")]
 pub mod network_udp;
