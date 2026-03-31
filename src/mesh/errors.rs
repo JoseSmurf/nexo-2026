@@ -9,5 +9,7 @@ pub enum MeshContractError {
         to: NodeLifecycleState,
     },
     RoleNotPermittedAsRelay(NodeRole),
-    InvalidSyncCursor,
+    InvalidSyncCursor {
+        since_ts_ms: u64,
+    },
 }

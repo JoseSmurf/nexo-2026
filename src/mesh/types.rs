@@ -44,7 +44,6 @@ pub enum MeshAcceptance {
 /// v0 stays intentionally simple and does not claim global causal ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OrderingMode {
-    LocalInsertionOrder,
     TimestampAscLocalTieBreak,
     TimestampAscRelayRowTieBreak,
 }

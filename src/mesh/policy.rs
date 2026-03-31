@@ -7,6 +7,10 @@ pub const DEFAULT_NODE_ORDERING: OrderingMode = OrderingMode::TimestampAscLocalT
 /// Conservative v0 ordering contract for relay pull results.
 pub const DEFAULT_RELAY_ORDERING: OrderingMode = OrderingMode::TimestampAscRelayRowTieBreak;
 
+/// `u64::MAX` is reserved as an invalid cursor sentinel in v0.
+/// A valid cursor must be either `0` for bootstrap or a concrete observed timestamp boundary.
+pub const INVALID_SYNC_CURSOR_TS_MS: u64 = u64::MAX;
+
 /// Returns whether a lifecycle transition is valid under the current documentation contract.
 pub fn is_valid_lifecycle_transition(from: NodeLifecycleState, to: NodeLifecycleState) -> bool {
     match (from, to) {
@@ -48,18 +52,19 @@ pub fn validate_relay_role(role: NodeRole) -> Result<(), MeshContractError> {
     }
 }
 
-/// v0 cursors are timestamp based and must remain monotonic and non-negative.
+/// v0 cursors are timestamp based and reserve `u64::MAX` as an invalid sentinel.
 pub const fn is_valid_sync_cursor(cursor: SyncCursor) -> bool {
-    let _ = cursor;
-    true
+    cursor.since_ts_ms != INVALID_SYNC_CURSOR_TS_MS
 }
 
-/// Validates the current v0 sync cursor shape and reserves an explicit error for future tightening.
+/// Validates the current v0 sync cursor shape using the smallest concrete rule already assumed by the contract.
 pub fn validate_sync_cursor(cursor: SyncCursor) -> Result<(), MeshContractError> {
     if is_valid_sync_cursor(cursor) {
         Ok(())
     } else {
-        Err(MeshContractError::InvalidSyncCursor)
+        Err(MeshContractError::InvalidSyncCursor {
+            since_ts_ms: cursor.since_ts_ms,
+        })
     }
 }
 
@@ -147,5 +152,14 @@ mod tests {
         assert!(is_valid_sync_cursor(SyncCursor::new(0)));
         assert!(is_valid_sync_cursor(SyncCursor::new(1_736_986_900_000)));
         assert_eq!(validate_sync_cursor(SyncCursor::new(42)), Ok(()));
+        assert!(!is_valid_sync_cursor(SyncCursor::new(
+            INVALID_SYNC_CURSOR_TS_MS
+        )));
+        assert_eq!(
+            validate_sync_cursor(SyncCursor::new(INVALID_SYNC_CURSOR_TS_MS)),
+            Err(MeshContractError::InvalidSyncCursor {
+                since_ts_ms: INVALID_SYNC_CURSOR_TS_MS,
+            })
+        );
     }
 }
