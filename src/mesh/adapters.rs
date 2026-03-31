@@ -1,8 +1,12 @@
 use crate::message::{event_hash, CanonicalMessage};
 
+#[cfg(feature = "network")]
+use super::policy::validate_sync_cursor;
 use super::policy::{DEFAULT_NODE_ORDERING, DEFAULT_RELAY_ORDERING};
 #[cfg(feature = "network")]
 use super::types::MeshAcceptance;
+#[cfg(feature = "network")]
+use super::types::SyncCursor;
 use super::types::{AcceptedEventRef, MeshEventKind, OrderingMode};
 
 #[cfg(feature = "network")]
@@ -35,6 +39,17 @@ pub(crate) fn accepted_event_ref_from_canonical_message(
     }
 }
 
+/// Projects a locally accepted canonical message into the conservative mesh v0 shape.
+#[allow(dead_code)]
+pub(crate) fn project_live_ingress_message(
+    message: &CanonicalMessage,
+) -> (OrderingMode, AcceptedEventRef) {
+    (
+        local_node_ordering_mode(),
+        accepted_event_ref_from_canonical_message(message, MeshEventKind::LiveIngress),
+    )
+}
+
 /// Maps the current persistent store insertion status into the minimal mesh acceptance vocabulary.
 #[cfg(feature = "network")]
 #[allow(dead_code)]
@@ -63,6 +78,20 @@ pub(crate) fn accepted_event_ref_from_stored_message(
     }
 }
 
+/// Projects a stored sync item into the conservative mesh v0 shape after cursor validation.
+#[cfg(feature = "network")]
+#[allow(dead_code)]
+pub(crate) fn project_stored_message_for_sync(
+    message: &StoredMessage,
+    since_ts_ms: u64,
+) -> Option<(OrderingMode, AcceptedEventRef)> {
+    validate_sync_cursor(SyncCursor::new(since_ts_ms)).ok()?;
+    Some((
+        relay_pull_ordering_mode(),
+        accepted_event_ref_from_stored_message(message, MeshEventKind::SyncItem),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,15 +101,14 @@ mod tests {
         let message = CanonicalMessage::new_with_nonce("node_a", 1_736_986_900_000, 7, b"hello")
             .expect("msg");
 
-        let accepted =
-            accepted_event_ref_from_canonical_message(&message, MeshEventKind::LiveIngress);
+        let (ordering, accepted) = project_live_ingress_message(&message);
 
         assert_eq!(accepted.event_hash, event_hash(&message));
         assert_eq!(accepted.sender_id, "node_a");
         assert_eq!(accepted.timestamp_utc_ms, 1_736_986_900_000);
         assert_eq!(accepted.nonce, 7);
         assert_eq!(accepted.kind, MeshEventKind::LiveIngress);
-        assert_eq!(local_node_ordering_mode(), DEFAULT_NODE_ORDERING);
+        assert_eq!(ordering, DEFAULT_NODE_ORDERING);
         assert_eq!(relay_pull_ordering_mode(), DEFAULT_RELAY_ORDERING);
     }
 
@@ -96,13 +124,15 @@ mod tests {
             content: b"payload".to_vec(),
         };
 
-        let accepted = accepted_event_ref_from_stored_message(&message, MeshEventKind::SyncItem);
+        let (ordering, accepted) =
+            project_stored_message_for_sync(&message, 0).expect("valid sync projection");
 
         assert_eq!(accepted.event_hash, "ehash");
         assert_eq!(accepted.sender_id, "node_b");
         assert_eq!(accepted.timestamp_utc_ms, 42);
         assert_eq!(accepted.nonce, 9);
         assert_eq!(accepted.kind, MeshEventKind::SyncItem);
+        assert_eq!(ordering, DEFAULT_RELAY_ORDERING);
         assert_eq!(
             mesh_acceptance_from_store_insert_status(StoreInsertStatus::Inserted),
             MeshAcceptance::Accepted
@@ -111,5 +141,6 @@ mod tests {
             mesh_acceptance_from_store_insert_status(StoreInsertStatus::Duplicate),
             MeshAcceptance::Duplicate
         );
+        assert!(project_stored_message_for_sync(&message, u64::MAX).is_none());
     }
 }

@@ -1658,6 +1658,8 @@ fn now_utc_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mesh::adapters::{project_live_ingress_message, project_stored_message_for_sync};
+    use crate::mesh::types::{MeshEventKind, OrderingMode};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::time::{sleep, Duration};
@@ -1704,6 +1706,43 @@ mod tests {
         assert!(!known.contains(&peer));
         promote_candidate_peer(&mut candidates, &mut known, peer);
         assert!(known.contains(&peer));
+    }
+
+    #[test]
+    fn mesh_projection_for_local_chat_message_uses_conservative_ordering() {
+        let msg = CanonicalMessage::new_with_nonce("node_a", 1_736_986_900_000, 7, b"hello")
+            .expect("msg");
+
+        let (ordering, accepted) = project_live_ingress_message(&msg);
+
+        assert_eq!(ordering, OrderingMode::TimestampAscLocalTieBreak);
+        assert_eq!(accepted.event_hash, event_hash(&msg));
+        assert_eq!(accepted.sender_id, "node_a");
+        assert_eq!(accepted.timestamp_utc_ms, 1_736_986_900_000);
+        assert_eq!(accepted.nonce, 7);
+        assert_eq!(accepted.kind, MeshEventKind::LiveIngress);
+    }
+
+    #[test]
+    fn mesh_projection_for_stored_chat_sync_item_stays_non_authoritative() {
+        let stored = crate::offline_store::StoredMessage {
+            event_hash: "sync-hash".to_string(),
+            sender_id: "node_b".to_string(),
+            channel: "global".to_string(),
+            timestamp_utc_ms: 42,
+            nonce: 9,
+            content: b"payload".to_vec(),
+        };
+
+        let projected = project_stored_message_for_sync(&stored, 0).expect("valid projection");
+
+        assert_eq!(projected.0, OrderingMode::TimestampAscRelayRowTieBreak);
+        assert_eq!(projected.1.event_hash, "sync-hash");
+        assert_eq!(projected.1.sender_id, "node_b");
+        assert_eq!(projected.1.timestamp_utc_ms, 42);
+        assert_eq!(projected.1.nonce, 9);
+        assert_eq!(projected.1.kind, MeshEventKind::SyncItem);
+        assert!(project_stored_message_for_sync(&stored, u64::MAX).is_none());
     }
 
     #[tokio::test]
