@@ -32,6 +32,7 @@ Este documento não cobre:
 - `src/message.rs` já inclui `sender_id`, `timestamp_utc_ms` e `nonce` no `CanonicalMessage`.
 - `src/message.rs` já faz `event_hash` determinístico sobre identidade, tempo, nonce e conteúdo.
 - `src/chat.rs` já usa `get_or_create_identity()` e `next_nonce()` no caminho P2P local.
+- O repositório ainda não vincula, como regra contratual de runtime, `sender_id` e `node_identity`.
 - O repositório ainda não possui cliente mobile real.
 - O repositório ainda não possui contrato explícito de restore/reinstall/rejoin.
 
@@ -47,7 +48,7 @@ Este documento não cobre:
 
 ## O que é a identidade canônica de um nó no v0
 
-No v0, a identidade canônica de um nó deve ser tratada como **identidade local da instalação persistida em storage local**, materializada por uma chave local persistida e refletida no `sender_id` usado para emissão de eventos.
+No v0, a identidade canônica de um nó deve ser tratada como **identidade local da instalação persistida em storage local**, centrada em uma chave local persistida. A relação canônica entre essa chave e o `sender_id` usado para emissão de eventos ainda precisa ser formalizada como contrato.
 
 Isso implica:
 
@@ -69,7 +70,7 @@ O que precisa ser formalizado:
 
 No v0:
 
-- a chave local representa a identidade do nó;
+- a chave local deve servir como base contratual da identidade do nó no v0;
 - a chave é local ao storage persistido da instalação;
 - a chave não deve ser tratada, por enquanto, como identidade compartilhada entre múltiplos dispositivos do mesmo usuário.
 
@@ -157,6 +158,8 @@ Restore deve ser tratado como continuação do mesmo nó **somente se**:
 - a identidade local persistida for restaurada de forma íntegra;
 - o estado mínimo necessário para monotonicidade continuar consistente;
 - não houver ambiguidade sobre reaproveitamento parcial do estado.
+
+No estado atual do repositório, esses critérios ainda são contratuais/documentais; eles ainda não aparecem como validação explícita de runtime.
 
 Se essas condições não forem satisfeitas, restore não deve implicar continuidade automática.
 
