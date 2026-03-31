@@ -9,16 +9,19 @@ use super::types::{AcceptedEventRef, MeshEventKind, OrderingMode};
 use crate::offline_store::{StoreInsertStatus, StoredMessage};
 
 /// Returns the conservative ordering mode for accepted local node history in v0.
+#[allow(dead_code)]
 pub(crate) const fn local_node_ordering_mode() -> OrderingMode {
     DEFAULT_NODE_ORDERING
 }
 
 /// Returns the conservative ordering mode for relay pull results in v0.
+#[allow(dead_code)]
 pub(crate) const fn relay_pull_ordering_mode() -> OrderingMode {
     DEFAULT_RELAY_ORDERING
 }
 
 /// Builds a lightweight accepted-event reference from an already validated canonical message.
+#[allow(dead_code)]
 pub(crate) fn accepted_event_ref_from_canonical_message(
     message: &CanonicalMessage,
     kind: MeshEventKind,
@@ -34,6 +37,7 @@ pub(crate) fn accepted_event_ref_from_canonical_message(
 
 /// Maps the current persistent store insertion status into the minimal mesh acceptance vocabulary.
 #[cfg(feature = "network")]
+#[allow(dead_code)]
 pub(crate) const fn mesh_acceptance_from_store_insert_status(
     status: StoreInsertStatus,
 ) -> MeshAcceptance {
@@ -45,6 +49,7 @@ pub(crate) const fn mesh_acceptance_from_store_insert_status(
 
 /// Builds a lightweight accepted-event reference from an already stored local message.
 #[cfg(feature = "network")]
+#[allow(dead_code)]
 pub(crate) fn accepted_event_ref_from_stored_message(
     message: &StoredMessage,
     kind: MeshEventKind,
