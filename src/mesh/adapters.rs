@@ -311,11 +311,14 @@ fn automatic_recovery_classification(
         return RecoveryClassification::Invalid;
     }
 
-    if identity_fingerprint.is_some() {
+    let has_minimal_continuity_evidence =
+        accepted_state.event_count > 0 || relay_since_ts_ms.is_some();
+
+    if identity_fingerprint.is_some() && has_minimal_continuity_evidence {
         return RecoveryClassification::Intact;
     }
 
-    if accepted_state.event_count == 0 && relay_since_ts_ms.is_none() {
+    if identity_fingerprint.is_none() && !has_minimal_continuity_evidence {
         RecoveryClassification::NewNode
     } else {
         RecoveryClassification::Ambiguous
@@ -764,6 +767,20 @@ mod tests {
         assert_eq!(witness.classification, RecoveryClassification::Ambiguous);
         assert_eq!(witness.identity_fingerprint, None);
         assert_eq!(witness.accepted_state.event_count, 1);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn recovery_witness_identity_alone_is_ambiguous() {
+        let store = OfflineStore::open_in_memory().expect("store");
+        store.get_or_create_identity().expect("identity");
+
+        let witness = build_recovery_witness(&store, &[], 0).expect("witness");
+
+        assert_eq!(witness.classification, RecoveryClassification::Ambiguous);
+        assert!(witness.identity_fingerprint.is_some());
+        assert_eq!(witness.accepted_state.event_count, 0);
+        assert_eq!(witness.relay_since_ts_ms, None);
     }
 
     #[cfg(feature = "network")]
