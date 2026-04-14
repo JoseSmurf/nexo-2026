@@ -13,6 +13,10 @@ O objetivo aqui não é desenhar um produto imaginário. O objetivo é:
 
 Este documento não altera o núcleo determinístico e não propõe mudanças de runtime neste momento.
 
+Leitura complementar:
+
+- `docs/NEXO_WITNESS_LAYER.md`
+
 ## O que o Nexo é hoje
 
 Hoje o NEXO é, concretamente:
