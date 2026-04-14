@@ -104,9 +104,9 @@ pub(crate) fn project_stored_message_for_sync(
 pub(crate) fn project_local_accepted_history(
     messages: &[StoredMessage],
     since_ts_ms: u64,
-) -> Option<(OrderingMode, Vec<AcceptedEventRef>)> {
-    validate_sync_cursor(SyncCursor::new(since_ts_ms)).ok()?;
-    Some((
+) -> Result<(OrderingMode, Vec<AcceptedEventRef>), MeshContractError> {
+    validate_sync_cursor(SyncCursor::new(since_ts_ms))?;
+    Ok((
         local_node_ordering_mode(),
         messages
             .iter()
@@ -145,17 +145,27 @@ fn mesh_event_kind_tag(kind: MeshEventKind) -> u8 {
 }
 
 #[cfg(feature = "network")]
-fn parse_event_hash_hex(hash: &str) -> Option<[u8; 32]> {
+fn parse_event_hash_hex(hash: &str) -> Result<[u8; 32], MeshContractError> {
     if hash.len() != 64 {
-        return None;
+        return Err(MeshContractError::InvalidAcceptedEventHash {
+            event_hash: hash.to_string(),
+        });
     }
 
     let mut out = [0u8; 32];
     for (index, chunk) in hash.as_bytes().chunks_exact(2).enumerate() {
-        let raw = std::str::from_utf8(chunk).ok()?;
-        out[index] = u8::from_str_radix(raw, 16).ok()?;
+        let raw = std::str::from_utf8(chunk).map_err(|_| {
+            MeshContractError::InvalidAcceptedEventHash {
+                event_hash: hash.to_string(),
+            }
+        })?;
+        out[index] = u8::from_str_radix(raw, 16).map_err(|_| {
+            MeshContractError::InvalidAcceptedEventHash {
+                event_hash: hash.to_string(),
+            }
+        })?;
     }
-    Some(out)
+    Ok(out)
 }
 
 #[cfg(feature = "network")]
@@ -163,6 +173,7 @@ fn accepted_state_digest(
     ordering: OrderingMode,
     since_ts_ms: u64,
     events: &[AcceptedEventRef],
+    event_hashes: &[[u8; 32]],
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     witness_hash_field(&mut hasher, b"schema", b"mesh_accepted_state_witness_v1");
@@ -174,8 +185,8 @@ fn accepted_state_digest(
         &(events.len() as u64).to_le_bytes(),
     );
 
-    for event in events {
-        witness_hash_field(&mut hasher, b"event_hash", event.event_hash.as_bytes());
+    for (event, event_hash) in events.iter().zip(event_hashes.iter()) {
+        witness_hash_field(&mut hasher, b"event_hash", event_hash);
         witness_hash_field(&mut hasher, b"sender_id", event.sender_id.as_bytes());
         witness_hash_field(
             &mut hasher,
@@ -198,20 +209,19 @@ pub(crate) fn build_accepted_state_witness(
     since_ts_ms: u64,
 ) -> Result<AcceptedStateWitness, MeshContractError> {
     validate_sync_cursor(SyncCursor::new(since_ts_ms))?;
-    let (ordering, projected) = project_local_accepted_history(messages, since_ts_ms)
-        .expect("validated cursor must project local accepted history");
+    let (ordering, projected) = project_local_accepted_history(messages, since_ts_ms)?;
+    let event_hashes = projected
+        .iter()
+        .map(|event| parse_event_hash_hex(&event.event_hash))
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(AcceptedStateWitness {
         ordering,
         since_ts_ms,
         event_count: projected.len() as u64,
-        first_event_hash: projected
-            .first()
-            .and_then(|event| parse_event_hash_hex(&event.event_hash)),
-        last_event_hash: projected
-            .last()
-            .and_then(|event| parse_event_hash_hex(&event.event_hash)),
-        state_digest: accepted_state_digest(ordering, since_ts_ms, &projected),
+        first_event_hash: event_hashes.first().copied(),
+        last_event_hash: event_hashes.last().copied(),
+        state_digest: accepted_state_digest(ordering, since_ts_ms, &projected, &event_hashes),
     })
 }
 
@@ -306,7 +316,12 @@ mod tests {
         assert_eq!(projected[1].nonce, 3);
         assert_eq!(projected[1].kind, MeshEventKind::LocalReplay);
         assert_eq!(messages, original);
-        assert!(project_local_accepted_history(&messages, u64::MAX).is_none());
+        assert_eq!(
+            project_local_accepted_history(&messages, u64::MAX),
+            Err(MeshContractError::InvalidSyncCursor {
+                since_ts_ms: u64::MAX,
+            })
+        );
     }
 
     #[cfg(feature = "network")]
@@ -394,6 +409,7 @@ mod tests {
         let witness_b = build_accepted_state_witness(&messages, 0).expect("witness b");
 
         assert_eq!(witness_a, witness_b);
+        assert_eq!(witness_a.state_digest, witness_b.state_digest);
     }
 
     #[cfg(feature = "network")]
@@ -438,6 +454,28 @@ mod tests {
             witness,
             Err(MeshContractError::InvalidSyncCursor {
                 since_ts_ms: u64::MAX,
+            })
+        );
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn accepted_state_witness_rejects_malformed_projected_hash() {
+        let messages = vec![StoredMessage {
+            event_hash: "not-hex".to_string(),
+            sender_id: "node_a".to_string(),
+            channel: "global".to_string(),
+            timestamp_utc_ms: 10,
+            nonce: 1,
+            content: b"one".to_vec(),
+        }];
+
+        let witness = build_accepted_state_witness(&messages, 0);
+
+        assert_eq!(
+            witness,
+            Err(MeshContractError::InvalidAcceptedEventHash {
+                event_hash: "not-hex".to_string(),
             })
         );
     }
