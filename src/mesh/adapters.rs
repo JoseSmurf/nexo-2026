@@ -8,6 +8,10 @@ use super::policy::{DEFAULT_NODE_ORDERING, DEFAULT_RELAY_ORDERING};
 #[cfg(feature = "network")]
 use super::types::AcceptedStateWitness;
 #[cfg(feature = "network")]
+use super::types::BandwidthDigestComparison;
+#[cfg(feature = "network")]
+use super::types::BandwidthMinimalSyncDigest;
+#[cfg(feature = "network")]
 use super::types::MeshAcceptance;
 #[cfg(feature = "network")]
 use super::types::RecoveryClassification;
@@ -348,6 +352,60 @@ pub(crate) fn build_accepted_state_witness(
         last_event_hash: event_hashes.last().copied(),
         state_digest: accepted_state_digest(ordering, since_ts_ms, &projected, &event_hashes),
     })
+}
+
+/// Builds a bandwidth-minimal digest for a local accepted-history window.
+/// This helper is read-only and is derived from `AcceptedStateWitness` over the selected window.
+#[cfg(feature = "network")]
+#[allow(dead_code)]
+pub(crate) fn build_bandwidth_minimal_sync_digest(
+    messages: &[StoredMessage],
+    since_ts_ms: u64,
+    until_ts_ms: u64,
+) -> Result<BandwidthMinimalSyncDigest, MeshContractError> {
+    validate_sync_cursor(SyncCursor::new(since_ts_ms))?;
+    validate_sync_cursor(SyncCursor::new(until_ts_ms))?;
+    if until_ts_ms < since_ts_ms {
+        return Err(MeshContractError::InvalidSyncWindow {
+            since_ts_ms,
+            until_ts_ms,
+        });
+    }
+
+    let windowed = messages
+        .iter()
+        .filter(|message| message.timestamp_utc_ms <= until_ts_ms)
+        .cloned()
+        .collect::<Vec<_>>();
+    let accepted = build_accepted_state_witness(&windowed, since_ts_ms)?;
+
+    Ok(BandwidthMinimalSyncDigest {
+        ordering: accepted.ordering,
+        since_ts_ms,
+        until_ts_ms,
+        event_count: accepted.event_count,
+        state_digest: accepted.state_digest,
+    })
+}
+
+/// Compares two bandwidth-minimal digests.
+/// `ExactMatch` means local equality for the same summary fields only.
+#[cfg(feature = "network")]
+#[allow(dead_code)]
+pub(crate) fn compare_bandwidth_minimal_sync_digest(
+    left: &BandwidthMinimalSyncDigest,
+    right: &BandwidthMinimalSyncDigest,
+) -> BandwidthDigestComparison {
+    if left.ordering == right.ordering
+        && left.since_ts_ms == right.since_ts_ms
+        && left.until_ts_ms == right.until_ts_ms
+        && left.event_count == right.event_count
+        && left.state_digest == right.state_digest
+    {
+        BandwidthDigestComparison::ExactMatch
+    } else {
+        BandwidthDigestComparison::Different
+    }
 }
 
 /// Builds the smallest read-only continuity witness for local recovery inspection in v0.
@@ -725,6 +783,214 @@ mod tests {
         assert_eq!(projected.len(), 2);
         assert_eq!(projected[0].event_hash, messages[1].event_hash);
         assert_eq!(projected[1].event_hash, messages[2].event_hash);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn bandwidth_minimal_sync_digest_same_input_is_deterministic() {
+        let messages = vec![
+            StoredMessage {
+                event_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+                    .to_string(),
+                sender_id: "node_a".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 10,
+                nonce: 1,
+                content: b"one".to_vec(),
+            },
+            StoredMessage {
+                event_hash: "2222222222222222222222222222222222222222222222222222222222222222"
+                    .to_string(),
+                sender_id: "node_b".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 20,
+                nonce: 2,
+                content: b"two".to_vec(),
+            },
+        ];
+
+        let digest_a = build_bandwidth_minimal_sync_digest(&messages, 0, 25).expect("digest a");
+        let digest_b = build_bandwidth_minimal_sync_digest(&messages, 0, 25).expect("digest b");
+        let accepted = build_accepted_state_witness(&messages, 0).expect("accepted");
+
+        assert_eq!(digest_a, digest_b);
+        assert_eq!(digest_a.ordering, accepted.ordering);
+        assert_eq!(digest_a.event_count, accepted.event_count);
+        assert_eq!(digest_a.state_digest, accepted.state_digest);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn bandwidth_minimal_sync_digest_empty_window_is_stable() {
+        let messages = vec![StoredMessage {
+            event_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            sender_id: "node_a".to_string(),
+            channel: "global".to_string(),
+            timestamp_utc_ms: 100,
+            nonce: 1,
+            content: b"one".to_vec(),
+        }];
+
+        let digest_a = build_bandwidth_minimal_sync_digest(&messages, 0, 50).expect("digest a");
+        let digest_b = build_bandwidth_minimal_sync_digest(&messages, 0, 50).expect("digest b");
+
+        assert_eq!(digest_a, digest_b);
+        assert_eq!(digest_a.event_count, 0);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn bandwidth_minimal_sync_digest_window_change_updates_digest() {
+        let messages = vec![
+            StoredMessage {
+                event_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+                    .to_string(),
+                sender_id: "node_a".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 10,
+                nonce: 1,
+                content: b"one".to_vec(),
+            },
+            StoredMessage {
+                event_hash: "2222222222222222222222222222222222222222222222222222222222222222"
+                    .to_string(),
+                sender_id: "node_b".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 20,
+                nonce: 2,
+                content: b"two".to_vec(),
+            },
+        ];
+
+        let narrow = build_bandwidth_minimal_sync_digest(&messages, 0, 15).expect("narrow");
+        let wide = build_bandwidth_minimal_sync_digest(&messages, 0, 25).expect("wide");
+
+        assert_ne!(narrow.state_digest, wide.state_digest);
+        assert_ne!(narrow.event_count, wide.event_count);
+        assert_ne!(narrow.until_ts_ms, wide.until_ts_ms);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn bandwidth_minimal_sync_digest_history_change_updates_digest() {
+        let messages_a = vec![
+            StoredMessage {
+                event_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+                    .to_string(),
+                sender_id: "node_a".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 10,
+                nonce: 1,
+                content: b"one".to_vec(),
+            },
+            StoredMessage {
+                event_hash: "2222222222222222222222222222222222222222222222222222222222222222"
+                    .to_string(),
+                sender_id: "node_b".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 20,
+                nonce: 2,
+                content: b"two".to_vec(),
+            },
+        ];
+        let messages_b = vec![
+            messages_a[0].clone(),
+            StoredMessage {
+                event_hash: "3333333333333333333333333333333333333333333333333333333333333333"
+                    .to_string(),
+                sender_id: "node_c".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 20,
+                nonce: 2,
+                content: b"three".to_vec(),
+            },
+        ];
+
+        let digest_a = build_bandwidth_minimal_sync_digest(&messages_a, 0, 25).expect("digest a");
+        let digest_b = build_bandwidth_minimal_sync_digest(&messages_b, 0, 25).expect("digest b");
+
+        assert_ne!(digest_a.state_digest, digest_b.state_digest);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn bandwidth_minimal_sync_digest_rejects_invalid_cursor() {
+        let digest = build_bandwidth_minimal_sync_digest(&[], u64::MAX, u64::MAX);
+
+        assert_eq!(
+            digest,
+            Err(MeshContractError::InvalidSyncCursor {
+                since_ts_ms: u64::MAX,
+            })
+        );
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn bandwidth_minimal_sync_digest_rejects_invalid_window() {
+        let digest = build_bandwidth_minimal_sync_digest(&[], 100, 99);
+
+        assert_eq!(
+            digest,
+            Err(MeshContractError::InvalidSyncWindow {
+                since_ts_ms: 100,
+                until_ts_ms: 99,
+            })
+        );
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn bandwidth_minimal_sync_digest_compare_equal_returns_exact_match() {
+        let messages = vec![StoredMessage {
+            event_hash: "4444444444444444444444444444444444444444444444444444444444444444"
+                .to_string(),
+            sender_id: "node_d".to_string(),
+            channel: "global".to_string(),
+            timestamp_utc_ms: 40,
+            nonce: 4,
+            content: b"four".to_vec(),
+        }];
+        let digest = build_bandwidth_minimal_sync_digest(&messages, 0, 50).expect("digest");
+
+        // Local exact match for the same summary fields only; this is not global convergence.
+        assert_eq!(
+            compare_bandwidth_minimal_sync_digest(&digest, &digest),
+            BandwidthDigestComparison::ExactMatch
+        );
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn bandwidth_minimal_sync_digest_compare_different_returns_different() {
+        let messages = vec![
+            StoredMessage {
+                event_hash: "5555555555555555555555555555555555555555555555555555555555555555"
+                    .to_string(),
+                sender_id: "node_e".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 50,
+                nonce: 5,
+                content: b"five".to_vec(),
+            },
+            StoredMessage {
+                event_hash: "6666666666666666666666666666666666666666666666666666666666666666"
+                    .to_string(),
+                sender_id: "node_f".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 60,
+                nonce: 6,
+                content: b"six".to_vec(),
+            },
+        ];
+        let digest_a = build_bandwidth_minimal_sync_digest(&messages, 0, 55).expect("digest a");
+        let digest_b = build_bandwidth_minimal_sync_digest(&messages, 0, 65).expect("digest b");
+
+        assert_eq!(
+            compare_bandwidth_minimal_sync_digest(&digest_a, &digest_b),
+            BandwidthDigestComparison::Different
+        );
     }
 
     #[cfg(feature = "network")]
