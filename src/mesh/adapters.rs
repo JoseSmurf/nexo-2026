@@ -10,11 +10,18 @@ use super::types::AcceptedStateWitness;
 #[cfg(feature = "network")]
 use super::types::MeshAcceptance;
 #[cfg(feature = "network")]
+use super::types::RecoveryClassification;
+#[cfg(feature = "network")]
+use super::types::RecoveryWitness;
+#[cfg(feature = "network")]
 use super::types::SyncCursor;
 use super::types::{AcceptedEventRef, MeshEventKind, OrderingMode};
 
 #[cfg(feature = "network")]
-use crate::offline_store::{StoreInsertStatus, StoredMessage};
+use crate::offline_store::{OfflineStore, StoreInsertStatus, StoredMessage};
+
+#[cfg(feature = "network")]
+const RECOVERY_WITNESS_RELAY_SINCE_KEY: &str = "last_relay_pull_since_ms";
 
 /// Returns the conservative ordering mode for accepted local node history in v0.
 #[allow(dead_code)]
@@ -200,6 +207,121 @@ fn accepted_state_digest(
     *hasher.finalize().as_bytes()
 }
 
+#[cfg(feature = "network")]
+fn recovery_classification_tag(classification: RecoveryClassification) -> u8 {
+    match classification {
+        RecoveryClassification::NewNode => 0,
+        RecoveryClassification::Intact => 1,
+        RecoveryClassification::RestoredValid => 2,
+        RecoveryClassification::Ambiguous => 3,
+        RecoveryClassification::Invalid => 4,
+    }
+}
+
+#[cfg(feature = "network")]
+fn identity_fingerprint(pubkey: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    witness_hash_field(&mut hasher, b"schema", b"mesh_identity_fingerprint_v1");
+    witness_hash_field(&mut hasher, b"node_identity_pubkey", pubkey);
+    *hasher.finalize().as_bytes()
+}
+
+#[cfg(feature = "network")]
+fn recovery_continuity_digest(
+    classification: RecoveryClassification,
+    identity_fingerprint: Option<[u8; 32]>,
+    relay_since_ts_ms: Option<u64>,
+    accepted_state: &AcceptedStateWitness,
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    witness_hash_field(&mut hasher, b"schema", b"mesh_recovery_witness_v1");
+    witness_hash_field(
+        &mut hasher,
+        b"classification",
+        &[recovery_classification_tag(classification)],
+    );
+    witness_hash_field(
+        &mut hasher,
+        b"identity_present",
+        &[u8::from(identity_fingerprint.is_some())],
+    );
+    if let Some(fingerprint) = identity_fingerprint {
+        witness_hash_field(&mut hasher, b"identity_fingerprint", &fingerprint);
+    }
+    witness_hash_field(
+        &mut hasher,
+        b"relay_since_present",
+        &[u8::from(relay_since_ts_ms.is_some())],
+    );
+    if let Some(relay_since) = relay_since_ts_ms {
+        witness_hash_field(
+            &mut hasher,
+            b"relay_since_ts_ms",
+            &relay_since.to_le_bytes(),
+        );
+    }
+    witness_hash_field(
+        &mut hasher,
+        b"accepted_ordering",
+        ordering_mode_tag(accepted_state.ordering),
+    );
+    witness_hash_field(
+        &mut hasher,
+        b"accepted_since_ts_ms",
+        &accepted_state.since_ts_ms.to_le_bytes(),
+    );
+    witness_hash_field(
+        &mut hasher,
+        b"accepted_event_count",
+        &accepted_state.event_count.to_le_bytes(),
+    );
+    witness_hash_field(
+        &mut hasher,
+        b"accepted_first_present",
+        &[u8::from(accepted_state.first_event_hash.is_some())],
+    );
+    if let Some(first_event_hash) = accepted_state.first_event_hash {
+        witness_hash_field(&mut hasher, b"accepted_first_event_hash", &first_event_hash);
+    }
+    witness_hash_field(
+        &mut hasher,
+        b"accepted_last_present",
+        &[u8::from(accepted_state.last_event_hash.is_some())],
+    );
+    if let Some(last_event_hash) = accepted_state.last_event_hash {
+        witness_hash_field(&mut hasher, b"accepted_last_event_hash", &last_event_hash);
+    }
+    witness_hash_field(
+        &mut hasher,
+        b"accepted_state_digest",
+        &accepted_state.state_digest,
+    );
+    *hasher.finalize().as_bytes()
+}
+
+#[cfg(feature = "network")]
+fn automatic_recovery_classification(
+    identity_fingerprint: Option<[u8; 32]>,
+    relay_since_ts_ms: Option<u64>,
+    accepted_state: &AcceptedStateWitness,
+    invalid_identity_state: bool,
+    invalid_relay_state: bool,
+) -> RecoveryClassification {
+    if invalid_identity_state || invalid_relay_state {
+        return RecoveryClassification::Invalid;
+    }
+
+    if identity_fingerprint.is_some() {
+        return RecoveryClassification::Intact;
+    }
+
+    if accepted_state.event_count == 0 && relay_since_ts_ms.is_none() {
+        RecoveryClassification::NewNode
+    } else {
+        RecoveryClassification::Ambiguous
+    }
+}
+
 /// Builds the smallest deterministic witness for a local accepted-history slice in v0.
 /// This helper is read-only and does not mutate runtime, storage, dedup, or sync state.
 #[cfg(feature = "network")]
@@ -225,9 +347,84 @@ pub(crate) fn build_accepted_state_witness(
     })
 }
 
+/// Builds the smallest read-only continuity witness for local recovery inspection in v0.
+/// This helper never creates identity, never writes store state, and never emits `RestoredValid`
+/// automatically without explicit external continuity evidence.
+#[cfg(feature = "network")]
+#[allow(dead_code)]
+pub(crate) fn build_recovery_witness(
+    store: &OfflineStore,
+    messages: &[StoredMessage],
+    since_ts_ms: u64,
+) -> Result<RecoveryWitness, MeshContractError> {
+    let accepted_state = build_accepted_state_witness(messages, since_ts_ms)?;
+
+    let raw_identity = store
+        .read_identity_pubkey_bytes()
+        .map_err(|_| MeshContractError::NodeIdentityInspectionFailed)?;
+    let (identity_fingerprint, invalid_identity_state) = match raw_identity {
+        Some(pubkey_bytes) if pubkey_bytes.len() == 32 => {
+            let mut pubkey = [0u8; 32];
+            pubkey.copy_from_slice(&pubkey_bytes);
+            (Some(identity_fingerprint(&pubkey)), false)
+        }
+        Some(_) => (None, true),
+        None => (None, false),
+    };
+
+    let raw_relay_since = store
+        .read_relay_state_value(RECOVERY_WITNESS_RELAY_SINCE_KEY)
+        .map_err(|_| MeshContractError::RelayStateInspectionFailed {
+            key: RECOVERY_WITNESS_RELAY_SINCE_KEY.to_string(),
+        })?;
+    let (relay_since_ts_ms, invalid_relay_state) = match raw_relay_since {
+        Some(raw) => match raw.parse::<u64>() {
+            Ok(parsed) => (Some(parsed), false),
+            Err(_) => (None, true),
+        },
+        None => (None, false),
+    };
+
+    let classification = automatic_recovery_classification(
+        identity_fingerprint,
+        relay_since_ts_ms,
+        &accepted_state,
+        invalid_identity_state,
+        invalid_relay_state,
+    );
+
+    Ok(RecoveryWitness {
+        classification,
+        identity_fingerprint,
+        relay_since_ts_ms,
+        continuity_digest: recovery_continuity_digest(
+            classification,
+            identity_fingerprint,
+            relay_since_ts_ms,
+            &accepted_state,
+        ),
+        accepted_state,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "network")]
+    use rusqlite::{params, Connection};
+    #[cfg(feature = "network")]
+    use std::fs;
+    #[cfg(feature = "network")]
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(feature = "network")]
+    fn temp_db_path(prefix: &str) -> std::path::PathBuf {
+        let uniq = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}_{uniq}.db"))
+    }
 
     #[test]
     fn canonical_message_adapter_matches_contract_defaults() {
@@ -525,5 +722,184 @@ mod tests {
         assert_eq!(projected.len(), 2);
         assert_eq!(projected[0].event_hash, messages[1].event_hash);
         assert_eq!(projected[1].event_hash, messages[2].event_hash);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn recovery_witness_without_identity_or_evidence_is_new_node_and_does_not_create_identity() {
+        let store = OfflineStore::open_in_memory().expect("store");
+        assert_eq!(
+            store.read_identity_pubkey_bytes().expect("identity before"),
+            None
+        );
+
+        let witness = build_recovery_witness(&store, &[], 0).expect("witness");
+
+        assert_eq!(witness.classification, RecoveryClassification::NewNode);
+        assert_eq!(witness.identity_fingerprint, None);
+        assert_eq!(witness.relay_since_ts_ms, None);
+        assert_eq!(witness.accepted_state.event_count, 0);
+        assert_eq!(
+            store.read_identity_pubkey_bytes().expect("identity after"),
+            None
+        );
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn recovery_witness_without_identity_but_with_accepted_evidence_is_ambiguous() {
+        let store = OfflineStore::open_in_memory().expect("store");
+        let messages = vec![StoredMessage {
+            event_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+                .to_string(),
+            sender_id: "node_a".to_string(),
+            channel: "global".to_string(),
+            timestamp_utc_ms: 10,
+            nonce: 1,
+            content: b"one".to_vec(),
+        }];
+
+        let witness = build_recovery_witness(&store, &messages, 0).expect("witness");
+
+        assert_eq!(witness.classification, RecoveryClassification::Ambiguous);
+        assert_eq!(witness.identity_fingerprint, None);
+        assert_eq!(witness.accepted_state.event_count, 1);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn recovery_witness_valid_identity_and_accepted_state_is_intact() {
+        let store = OfflineStore::open_in_memory().expect("store");
+        store.get_or_create_identity().expect("identity");
+        let messages = vec![StoredMessage {
+            event_hash: "2222222222222222222222222222222222222222222222222222222222222222"
+                .to_string(),
+            sender_id: "node_b".to_string(),
+            channel: "global".to_string(),
+            timestamp_utc_ms: 20,
+            nonce: 2,
+            content: b"two".to_vec(),
+        }];
+
+        let witness = build_recovery_witness(&store, &messages, 0).expect("witness");
+
+        assert_eq!(witness.classification, RecoveryClassification::Intact);
+        assert_ne!(
+            witness.classification,
+            RecoveryClassification::RestoredValid
+        );
+        assert!(witness.identity_fingerprint.is_some());
+        assert_eq!(witness.accepted_state.event_count, 1);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn recovery_witness_malformed_identity_is_invalid() {
+        let path = temp_db_path("nexo_recovery_invalid_identity");
+        {
+            let store = OfflineStore::open(path.to_str().expect("path")).expect("store");
+            drop(store);
+        }
+        let conn = Connection::open(&path).expect("conn");
+        conn.execute(
+            "INSERT INTO node_identity(id, pubkey, seckey) VALUES (1, ?1, ?2)",
+            params![vec![7u8; 31], vec![9u8; 64]],
+        )
+        .expect("insert identity");
+        drop(conn);
+
+        let store = OfflineStore::open(path.to_str().expect("path")).expect("store");
+        let witness = build_recovery_witness(&store, &[], 0).expect("witness");
+
+        assert_eq!(witness.classification, RecoveryClassification::Invalid);
+        assert_eq!(witness.identity_fingerprint, None);
+        drop(store);
+        fs::remove_file(path).expect("cleanup");
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn recovery_witness_same_input_yields_same_continuity_digest() {
+        let store = OfflineStore::open_in_memory().expect("store");
+        store.get_or_create_identity().expect("identity");
+        let messages = vec![StoredMessage {
+            event_hash: "3333333333333333333333333333333333333333333333333333333333333333"
+                .to_string(),
+            sender_id: "node_c".to_string(),
+            channel: "global".to_string(),
+            timestamp_utc_ms: 30,
+            nonce: 3,
+            content: b"three".to_vec(),
+        }];
+
+        let witness_a = build_recovery_witness(&store, &messages, 0).expect("witness a");
+        let witness_b = build_recovery_witness(&store, &messages, 0).expect("witness b");
+
+        assert_eq!(witness_a, witness_b);
+        assert_eq!(witness_a.continuity_digest, witness_b.continuity_digest);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn recovery_witness_digest_changes_when_accepted_state_changes() {
+        let store = OfflineStore::open_in_memory().expect("store");
+        store.get_or_create_identity().expect("identity");
+        let messages = vec![
+            StoredMessage {
+                event_hash: "4444444444444444444444444444444444444444444444444444444444444444"
+                    .to_string(),
+                sender_id: "node_d".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 40,
+                nonce: 4,
+                content: b"four".to_vec(),
+            },
+            StoredMessage {
+                event_hash: "5555555555555555555555555555555555555555555555555555555555555555"
+                    .to_string(),
+                sender_id: "node_e".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 50,
+                nonce: 5,
+                content: b"five".to_vec(),
+            },
+        ];
+        let reordered = vec![messages[1].clone(), messages[0].clone()];
+
+        let witness_a = build_recovery_witness(&store, &messages, 0).expect("witness a");
+        let witness_b = build_recovery_witness(&store, &reordered, 0).expect("witness b");
+
+        assert_ne!(
+            witness_a.accepted_state.state_digest,
+            witness_b.accepted_state.state_digest
+        );
+        assert_ne!(witness_a.continuity_digest, witness_b.continuity_digest);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn recovery_witness_never_emits_restored_valid_automatically() {
+        let intact_store = OfflineStore::open_in_memory().expect("store");
+        intact_store.get_or_create_identity().expect("identity");
+        let intact = build_recovery_witness(&intact_store, &[], 0).expect("intact");
+
+        let ambiguous_store = OfflineStore::open_in_memory().expect("store");
+        let ambiguous_messages = vec![StoredMessage {
+            event_hash: "6666666666666666666666666666666666666666666666666666666666666666"
+                .to_string(),
+            sender_id: "node_f".to_string(),
+            channel: "global".to_string(),
+            timestamp_utc_ms: 60,
+            nonce: 6,
+            content: b"six".to_vec(),
+        }];
+        let ambiguous =
+            build_recovery_witness(&ambiguous_store, &ambiguous_messages, 0).expect("ambiguous");
+
+        assert_ne!(intact.classification, RecoveryClassification::RestoredValid);
+        assert_ne!(
+            ambiguous.classification,
+            RecoveryClassification::RestoredValid
+        );
     }
 }
