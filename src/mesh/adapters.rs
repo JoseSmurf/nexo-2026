@@ -92,6 +92,28 @@ pub(crate) fn project_stored_message_for_sync(
     ))
 }
 
+/// Projects an already materialized slice of accepted local messages into the conservative mesh
+/// v0 history shape. This helper is read-only: it preserves caller order, applies only the
+/// documented timestamp boundary, and does not mutate store state, dedup state, or sync state.
+#[cfg(feature = "network")]
+#[allow(dead_code)]
+pub(crate) fn project_local_accepted_history(
+    messages: &[StoredMessage],
+    since_ts_ms: u64,
+) -> Option<(OrderingMode, Vec<AcceptedEventRef>)> {
+    validate_sync_cursor(SyncCursor::new(since_ts_ms)).ok()?;
+    Some((
+        local_node_ordering_mode(),
+        messages
+            .iter()
+            .filter(|message| message.timestamp_utc_ms >= since_ts_ms)
+            .map(|message| {
+                accepted_event_ref_from_stored_message(message, MeshEventKind::LocalReplay)
+            })
+            .collect(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,5 +164,80 @@ mod tests {
             MeshAcceptance::Duplicate
         );
         assert!(project_stored_message_for_sync(&message, u64::MAX).is_none());
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn local_accepted_history_projection_is_stable_and_read_only() {
+        let messages = vec![
+            StoredMessage {
+                event_hash: "ehash-2".to_string(),
+                sender_id: "node_b".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 20,
+                nonce: 2,
+                content: b"two".to_vec(),
+            },
+            StoredMessage {
+                event_hash: "ehash-3".to_string(),
+                sender_id: "node_c".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 30,
+                nonce: 3,
+                content: b"three".to_vec(),
+            },
+        ];
+        let original = messages.clone();
+
+        let (ordering, projected) =
+            project_local_accepted_history(&messages, 20).expect("valid local projection");
+
+        assert_eq!(ordering, DEFAULT_NODE_ORDERING);
+        assert_eq!(projected.len(), 2);
+        assert_eq!(projected[0].event_hash, "ehash-2");
+        assert_eq!(projected[0].sender_id, "node_b");
+        assert_eq!(projected[0].timestamp_utc_ms, 20);
+        assert_eq!(projected[0].nonce, 2);
+        assert_eq!(projected[0].kind, MeshEventKind::LocalReplay);
+        assert_eq!(projected[1].event_hash, "ehash-3");
+        assert_eq!(projected[1].sender_id, "node_c");
+        assert_eq!(projected[1].timestamp_utc_ms, 30);
+        assert_eq!(projected[1].nonce, 3);
+        assert_eq!(projected[1].kind, MeshEventKind::LocalReplay);
+        assert_eq!(messages, original);
+        assert!(project_local_accepted_history(&messages, u64::MAX).is_none());
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn local_accepted_history_projection_applies_timestamp_boundary_only() {
+        let messages = vec![
+            StoredMessage {
+                event_hash: "ehash-1".to_string(),
+                sender_id: "node_a".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 10,
+                nonce: 1,
+                content: b"one".to_vec(),
+            },
+            StoredMessage {
+                event_hash: "ehash-2".to_string(),
+                sender_id: "node_b".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 20,
+                nonce: 2,
+                content: b"two".to_vec(),
+            },
+        ];
+
+        let (_, projected) =
+            project_local_accepted_history(&messages, 15).expect("valid local projection");
+
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].event_hash, "ehash-2");
+        assert_eq!(projected[0].sender_id, "node_b");
+        assert_eq!(projected[0].timestamp_utc_ms, 20);
+        assert_eq!(projected[0].nonce, 2);
+        assert_eq!(projected[0].kind, MeshEventKind::LocalReplay);
     }
 }
