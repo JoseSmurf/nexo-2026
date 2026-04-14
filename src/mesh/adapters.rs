@@ -389,7 +389,8 @@ pub(crate) fn build_bandwidth_minimal_sync_digest(
 }
 
 /// Compares two bandwidth-minimal digests.
-/// `ExactMatch` means local equality for the same summary fields only.
+/// `ExactMatch` is returned only when all summary fields are equal.
+/// Matching digests are local equivalence only and do not prove global convergence.
 #[cfg(feature = "network")]
 #[allow(dead_code)]
 pub(crate) fn compare_bandwidth_minimal_sync_digest(
@@ -917,6 +918,19 @@ mod tests {
     #[test]
     fn bandwidth_minimal_sync_digest_rejects_invalid_cursor() {
         let digest = build_bandwidth_minimal_sync_digest(&[], u64::MAX, u64::MAX);
+
+        assert_eq!(
+            digest,
+            Err(MeshContractError::InvalidSyncCursor {
+                since_ts_ms: u64::MAX,
+            })
+        );
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn bandwidth_minimal_sync_digest_rejects_invalid_until_cursor() {
+        let digest = build_bandwidth_minimal_sync_digest(&[], 0, u64::MAX);
 
         assert_eq!(
             digest,

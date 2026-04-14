@@ -125,6 +125,9 @@ pub struct BandwidthMinimalSyncDigest {
     pub since_ts_ms: u64,
     pub until_ts_ms: u64,
     pub event_count: u64,
+    /// Do not compare this field in isolation.
+    /// Valid digest equality must use the full summary through
+    /// `compare_bandwidth_minimal_sync_digest`.
     pub state_digest: [u8; 32],
 }
 
