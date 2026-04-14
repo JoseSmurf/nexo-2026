@@ -115,3 +115,26 @@ pub struct RecoveryWitness {
     pub accepted_state: AcceptedStateWitness,
     pub continuity_digest: [u8; 32],
 }
+
+/// Minimal digest shape used to compare accepted-history windows with low bandwidth cost.
+/// This summary is local-only and does not decide sync runtime behavior.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BandwidthMinimalSyncDigest {
+    pub ordering: OrderingMode,
+    pub since_ts_ms: u64,
+    pub until_ts_ms: u64,
+    pub event_count: u64,
+    /// Do not compare this field in isolation.
+    /// Valid digest equality must use the full summary through
+    /// `compare_bandwidth_minimal_sync_digest`.
+    pub state_digest: [u8; 32],
+}
+
+/// Result of comparing two bandwidth-minimal digest summaries.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BandwidthDigestComparison {
+    ExactMatch,
+    Different,
+}

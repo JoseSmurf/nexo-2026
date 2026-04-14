@@ -13,6 +13,10 @@ pub enum MeshContractError {
     InvalidSyncCursor {
         since_ts_ms: u64,
     },
+    InvalidSyncWindow {
+        since_ts_ms: u64,
+        until_ts_ms: u64,
+    },
     InvalidAcceptedEventHash {
         event_hash: String,
     },
