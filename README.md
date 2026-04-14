@@ -1,11 +1,57 @@
 # NEXO 2026
 
-NEXO is a deterministic decision engine designed for security-critical financial workflows where reproducibility, auditability, and fail-closed behavior are mandatory. It receives signed requests, applies explicit rules, returns a reproducible trace, and writes a cryptographically verifiable audit record.
+NEXO is a local-first, verifiable, and resilient system for security-critical financial workflows.
+Rust remains the deterministic trust core: it validates signed input fail-closed, executes explicit rules, and emits reproducible audit artifacts.
 
-This project is focused on applied security engineering for deterministic systems.
+NEXO evolves mesh capabilities through local evidence first (Witness Layer), not through premature global authority claims.
+
+## What NEXO Is (and Is Not)
+
+NEXO is:
+
+- local-first operation with deterministic Rust decisions;
+- reproducible audit artifacts with independent verification;
+- witness-driven mesh evolution with conservative contracts.
+
+NEXO is not:
+
+- a global truth oracle;
+- a consensus protocol;
+- a CRDT runtime;
+- a full sync runtime protocol (yet).
+
+## Witness Layer (Current)
+
+- `AcceptedStateWitness`
+  - Proves deterministic local accepted-history evidence.
+  - Does not prove global convergence or global truth.
+- `RecoveryWitness`
+  - Proves deterministic, read-only local continuity evidence.
+  - Does not auto-decide restore/rejoin runtime behavior.
+- `RelayNeutralityProof`
+  - Proves relay passivity through signature rejection, dedup, and operational ordering checks.
+  - Does not grant semantic authority to relay or prove causal/global ordering.
+
+See:
+
+- [`docs/NEXO_WITNESS_LAYER.md`](docs/NEXO_WITNESS_LAYER.md)
+- [`docs/NEXO_MESH_ARCHITECTURE_NOTES.md`](docs/NEXO_MESH_ARCHITECTURE_NOTES.md)
+- [`docs/NEXO_MESH_NODE_IDENTITY_AND_LIFECYCLE.md`](docs/NEXO_MESH_NODE_IDENTITY_AND_LIFECYCLE.md)
+- [`docs/NEXO_MESH_NODE_AND_SYNC_CONTRACT.md`](docs/NEXO_MESH_NODE_AND_SYNC_CONTRACT.md)
+
+## Start Here
+
+- [Quickstart (60s)](#quickstart-60s)
+- [Quick Demo](#quick-demo)
+- [Operational Guide](#operational-guide)
+- [P2P Protocol & Operations](#p2p-protocol--operations)
+- [Testing commands](#testing-commands)
 
 ## Table of Contents
 
+- [What NEXO Is (and Is Not)](#what-nexo-is-and-is-not)
+- [Witness Layer (Current)](#witness-layer-current)
+- [Start Here](#start-here)
 - [What problem it solves](#what-problem-it-solves)
 - [Core guarantees](#core-guarantees)
 - [Architecture overview](#architecture-overview)
