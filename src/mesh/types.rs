@@ -78,3 +78,16 @@ pub struct AcceptedEventRef {
     pub nonce: u64,
     pub kind: MeshEventKind,
 }
+
+/// Deterministic summary of a local accepted-history slice.
+/// This witness is local-only and does not claim global truth or full convergence.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceptedStateWitness {
+    pub ordering: OrderingMode,
+    pub since_ts_ms: u64,
+    pub event_count: u64,
+    pub first_event_hash: Option<[u8; 32]>,
+    pub last_event_hash: Option<[u8; 32]>,
+    pub state_digest: [u8; 32],
+}

@@ -1,8 +1,12 @@
 use crate::message::{event_hash, CanonicalMessage};
 
 #[cfg(feature = "network")]
+use super::errors::MeshContractError;
+#[cfg(feature = "network")]
 use super::policy::validate_sync_cursor;
 use super::policy::{DEFAULT_NODE_ORDERING, DEFAULT_RELAY_ORDERING};
+#[cfg(feature = "network")]
+use super::types::AcceptedStateWitness;
 #[cfg(feature = "network")]
 use super::types::MeshAcceptance;
 #[cfg(feature = "network")]
@@ -112,6 +116,103 @@ pub(crate) fn project_local_accepted_history(
             })
             .collect(),
     ))
+}
+
+#[cfg(feature = "network")]
+fn witness_hash_field(hasher: &mut blake3::Hasher, tag: &[u8], data: &[u8]) {
+    hasher.update(&(tag.len() as u32).to_le_bytes());
+    hasher.update(tag);
+    hasher.update(&(data.len() as u32).to_le_bytes());
+    hasher.update(data);
+}
+
+#[cfg(feature = "network")]
+fn ordering_mode_tag(ordering: OrderingMode) -> &'static [u8] {
+    match ordering {
+        OrderingMode::TimestampAscLocalTieBreak => b"timestamp_asc_local_tiebreak",
+        OrderingMode::TimestampAscRelayRowTieBreak => b"timestamp_asc_relay_row_tiebreak",
+    }
+}
+
+#[cfg(feature = "network")]
+fn mesh_event_kind_tag(kind: MeshEventKind) -> u8 {
+    match kind {
+        MeshEventKind::LiveIngress => 0,
+        MeshEventKind::SyncItem => 1,
+        MeshEventKind::RelayPullReplay => 2,
+        MeshEventKind::LocalReplay => 3,
+    }
+}
+
+#[cfg(feature = "network")]
+fn parse_event_hash_hex(hash: &str) -> Option<[u8; 32]> {
+    if hash.len() != 64 {
+        return None;
+    }
+
+    let mut out = [0u8; 32];
+    for (index, chunk) in hash.as_bytes().chunks_exact(2).enumerate() {
+        let raw = std::str::from_utf8(chunk).ok()?;
+        out[index] = u8::from_str_radix(raw, 16).ok()?;
+    }
+    Some(out)
+}
+
+#[cfg(feature = "network")]
+fn accepted_state_digest(
+    ordering: OrderingMode,
+    since_ts_ms: u64,
+    events: &[AcceptedEventRef],
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    witness_hash_field(&mut hasher, b"schema", b"mesh_accepted_state_witness_v1");
+    witness_hash_field(&mut hasher, b"ordering", ordering_mode_tag(ordering));
+    witness_hash_field(&mut hasher, b"since_ts_ms", &since_ts_ms.to_le_bytes());
+    witness_hash_field(
+        &mut hasher,
+        b"event_count",
+        &(events.len() as u64).to_le_bytes(),
+    );
+
+    for event in events {
+        witness_hash_field(&mut hasher, b"event_hash", event.event_hash.as_bytes());
+        witness_hash_field(&mut hasher, b"sender_id", event.sender_id.as_bytes());
+        witness_hash_field(
+            &mut hasher,
+            b"timestamp_utc_ms",
+            &event.timestamp_utc_ms.to_le_bytes(),
+        );
+        witness_hash_field(&mut hasher, b"nonce", &event.nonce.to_le_bytes());
+        witness_hash_field(&mut hasher, b"kind", &[mesh_event_kind_tag(event.kind)]);
+    }
+
+    *hasher.finalize().as_bytes()
+}
+
+/// Builds the smallest deterministic witness for a local accepted-history slice in v0.
+/// This helper is read-only and does not mutate runtime, storage, dedup, or sync state.
+#[cfg(feature = "network")]
+#[allow(dead_code)]
+pub(crate) fn build_accepted_state_witness(
+    messages: &[StoredMessage],
+    since_ts_ms: u64,
+) -> Result<AcceptedStateWitness, MeshContractError> {
+    validate_sync_cursor(SyncCursor::new(since_ts_ms))?;
+    let (ordering, projected) = project_local_accepted_history(messages, since_ts_ms)
+        .expect("validated cursor must project local accepted history");
+
+    Ok(AcceptedStateWitness {
+        ordering,
+        since_ts_ms,
+        event_count: projected.len() as u64,
+        first_event_hash: projected
+            .first()
+            .and_then(|event| parse_event_hash_hex(&event.event_hash)),
+        last_event_hash: projected
+            .last()
+            .and_then(|event| parse_event_hash_hex(&event.event_hash)),
+        state_digest: accepted_state_digest(ordering, since_ts_ms, &projected),
+    })
 }
 
 #[cfg(test)]
@@ -239,5 +340,152 @@ mod tests {
         assert_eq!(projected[0].timestamp_utc_ms, 20);
         assert_eq!(projected[0].nonce, 2);
         assert_eq!(projected[0].kind, MeshEventKind::LocalReplay);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn accepted_state_witness_empty_is_deterministic() {
+        let messages = vec![StoredMessage {
+            event_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            sender_id: "node_a".to_string(),
+            channel: "global".to_string(),
+            timestamp_utc_ms: 10,
+            nonce: 1,
+            content: b"one".to_vec(),
+        }];
+
+        let witness_a = build_accepted_state_witness(&messages, 20).expect("witness a");
+        let witness_b = build_accepted_state_witness(&messages, 20).expect("witness b");
+
+        assert_eq!(witness_a, witness_b);
+        assert_eq!(witness_a.ordering, DEFAULT_NODE_ORDERING);
+        assert_eq!(witness_a.since_ts_ms, 20);
+        assert_eq!(witness_a.event_count, 0);
+        assert_eq!(witness_a.first_event_hash, None);
+        assert_eq!(witness_a.last_event_hash, None);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn accepted_state_witness_same_projection_yields_same_digest() {
+        let messages = vec![
+            StoredMessage {
+                event_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+                    .to_string(),
+                sender_id: "node_a".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 10,
+                nonce: 1,
+                content: b"one".to_vec(),
+            },
+            StoredMessage {
+                event_hash: "2222222222222222222222222222222222222222222222222222222222222222"
+                    .to_string(),
+                sender_id: "node_b".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 20,
+                nonce: 2,
+                content: b"two".to_vec(),
+            },
+        ];
+
+        let witness_a = build_accepted_state_witness(&messages, 0).expect("witness a");
+        let witness_b = build_accepted_state_witness(&messages, 0).expect("witness b");
+
+        assert_eq!(witness_a, witness_b);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn accepted_state_witness_digest_changes_when_projection_changes() {
+        let messages = vec![
+            StoredMessage {
+                event_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+                    .to_string(),
+                sender_id: "node_a".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 10,
+                nonce: 1,
+                content: b"one".to_vec(),
+            },
+            StoredMessage {
+                event_hash: "2222222222222222222222222222222222222222222222222222222222222222"
+                    .to_string(),
+                sender_id: "node_b".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 20,
+                nonce: 2,
+                content: b"two".to_vec(),
+            },
+        ];
+        let reordered = vec![messages[1].clone(), messages[0].clone()];
+
+        let witness_a = build_accepted_state_witness(&messages, 0).expect("witness a");
+        let witness_b = build_accepted_state_witness(&reordered, 0).expect("witness b");
+
+        assert_ne!(witness_a.state_digest, witness_b.state_digest);
+        assert_ne!(witness_a.first_event_hash, witness_b.first_event_hash);
+        assert_ne!(witness_a.last_event_hash, witness_b.last_event_hash);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn accepted_state_witness_rejects_invalid_cursor() {
+        let witness = build_accepted_state_witness(&[], u64::MAX);
+
+        assert_eq!(
+            witness,
+            Err(MeshContractError::InvalidSyncCursor {
+                since_ts_ms: u64::MAX,
+            })
+        );
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn accepted_state_witness_metadata_matches_projection() {
+        let messages = vec![
+            StoredMessage {
+                event_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+                    .to_string(),
+                sender_id: "node_a".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 10,
+                nonce: 1,
+                content: b"one".to_vec(),
+            },
+            StoredMessage {
+                event_hash: "2222222222222222222222222222222222222222222222222222222222222222"
+                    .to_string(),
+                sender_id: "node_b".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 20,
+                nonce: 2,
+                content: b"two".to_vec(),
+            },
+            StoredMessage {
+                event_hash: "3333333333333333333333333333333333333333333333333333333333333333"
+                    .to_string(),
+                sender_id: "node_c".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 30,
+                nonce: 3,
+                content: b"three".to_vec(),
+            },
+        ];
+
+        let (_, projected) =
+            project_local_accepted_history(&messages, 15).expect("valid local projection");
+        let witness = build_accepted_state_witness(&messages, 15).expect("witness");
+
+        assert_eq!(witness.ordering, DEFAULT_NODE_ORDERING);
+        assert_eq!(witness.since_ts_ms, 15);
+        assert_eq!(witness.event_count, projected.len() as u64);
+        assert_eq!(witness.first_event_hash, Some([0x22; 32]));
+        assert_eq!(witness.last_event_hash, Some([0x33; 32]));
+        assert_eq!(projected.len(), 2);
+        assert_eq!(projected[0].event_hash, messages[1].event_hash);
+        assert_eq!(projected[1].event_hash, messages[2].event_hash);
     }
 }
