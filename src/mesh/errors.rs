@@ -16,4 +16,8 @@ pub enum MeshContractError {
     InvalidAcceptedEventHash {
         event_hash: String,
     },
+    NodeIdentityInspectionFailed,
+    RelayStateInspectionFailed {
+        key: String,
+    },
 }

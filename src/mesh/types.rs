@@ -91,3 +91,27 @@ pub struct AcceptedStateWitness {
     pub last_event_hash: Option<[u8; 32]>,
     pub state_digest: [u8; 32],
 }
+
+/// Conservative local continuity classification for recovery inspection.
+/// `RestoredValid` exists for the contract shape but remains reserved until explicit restore evidence exists.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecoveryClassification {
+    NewNode,
+    Intact,
+    RestoredValid,
+    Ambiguous,
+    Invalid,
+}
+
+/// Deterministic summary of the local evidence available for node continuity.
+/// This witness is read-only and does not govern runtime restore or rejoin decisions.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryWitness {
+    pub classification: RecoveryClassification,
+    pub identity_fingerprint: Option<[u8; 32]>,
+    pub relay_since_ts_ms: Option<u64>,
+    pub accepted_state: AcceptedStateWitness,
+    pub continuity_digest: [u8; 32],
+}

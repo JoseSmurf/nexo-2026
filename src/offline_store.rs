@@ -362,6 +362,27 @@ impl OfflineStore {
         Ok((pubkey, seckey))
     }
 
+    pub fn read_identity_pubkey_bytes(&self) -> Result<Option<Vec<u8>>, rusqlite::Error> {
+        self.conn
+            .query_row("SELECT pubkey FROM node_identity WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .optional()
+    }
+
+    pub fn read_relay_state_value(&self, key: &str) -> Result<Option<String>, rusqlite::Error> {
+        if key.trim().is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName("key".to_string()));
+        }
+        self.conn
+            .query_row(
+                "SELECT value FROM relay_state WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
     pub fn get_relay_state_u64(&self, key: &str) -> Result<Option<u64>, rusqlite::Error> {
         if key.trim().is_empty() {
             return Err(rusqlite::Error::InvalidParameterName("key".to_string()));
