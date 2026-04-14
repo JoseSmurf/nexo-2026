@@ -346,13 +346,17 @@ mod tests {
         content_hash_bytes, event_hash_bytes_from_parts, sign_event_hash,
     };
 
-    #[tokio::test]
-    async fn relay_push_pull_is_deterministic_and_dedups() {
+    fn temp_db_path(prefix: &str) -> std::path::PathBuf {
         let uniq = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        let db_path = std::env::temp_dir().join(format!("nexo_relay_{uniq}.db"));
+        std::env::temp_dir().join(format!("{prefix}_{uniq}.db"))
+    }
+
+    #[tokio::test]
+    async fn relay_push_pull_is_deterministic_and_dedups() {
+        let db_path = temp_db_path("nexo_relay");
 
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local addr");
@@ -395,8 +399,16 @@ mod tests {
             signed_event_from_json_value(pull_json.items[0].clone()).expect("item0 to signed");
         let got_1 =
             signed_event_from_json_value(pull_json.items[1].clone()).expect("item1 to signed");
-        assert_eq!(got_0.timestamp_utc_ms, 1000);
-        assert_eq!(got_1.timestamp_utc_ms, 2000);
+        assert_eq!(got_0, item_a);
+        assert_eq!(got_1, item_b);
+        assert_eq!(
+            validate_and_event_hash(&got_0).expect("hash 0"),
+            validate_and_event_hash(&item_a).expect("orig hash 0")
+        );
+        assert_eq!(
+            validate_and_event_hash(&got_1).expect("hash 1"),
+            validate_and_event_hash(&item_b).expect("orig hash 1")
+        );
 
         let push_2 = client
             .post(format!("{base}/push"))
@@ -409,8 +421,91 @@ mod tests {
         assert_eq!(push_2_json.inserted, 0);
         assert_eq!(push_2_json.duplicates, 2);
 
+        let pull_after_dup = client
+            .get(format!("{base}/pull?since_ms=0&limit=200"))
+            .send()
+            .await
+            .expect("pull after dup");
+        assert_eq!(pull_after_dup.status(), StatusCode::OK);
+        let pull_after_dup_json = pull_after_dup
+            .json::<PullResponse>()
+            .await
+            .expect("pull after dup json");
+        assert_eq!(pull_after_dup_json.items.len(), 2);
+        let got_after_dup_0 = signed_event_from_json_value(pull_after_dup_json.items[0].clone())
+            .expect("item0 after dup to signed");
+        let got_after_dup_1 = signed_event_from_json_value(pull_after_dup_json.items[1].clone())
+            .expect("item1 after dup to signed");
+        assert_eq!(got_after_dup_0, item_a);
+        assert_eq!(got_after_dup_1, item_b);
+
         server.abort();
         let _ = server.await;
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn relay_push_rejects_invalid_signature_without_storing_event() {
+        let db_path = temp_db_path("nexo_relay_invalid_sig");
+        let mut invalid = make_signed_event("node_bad", 3_000, 7, b"bad", 4);
+        invalid.signature[0] ^= 0xFF;
+
+        let result = push_items(
+            db_path.to_str().expect("db path"),
+            vec![signed_event_to_json_value(&invalid)],
+        );
+
+        match result {
+            Err(RelayError::BadRequest(msg)) => assert_eq!(msg, "invalid_sig"),
+            other => panic!("expected invalid_sig rejection, got {other:?}"),
+        }
+
+        let pulled = pull_items(db_path.to_str().expect("db path"), 0, 200).expect("pull");
+        assert!(pulled.is_empty());
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn relay_pull_ordering_is_operational_timestamp_then_rowid() {
+        let db_path = temp_db_path("nexo_relay_ordering");
+        let late = make_signed_event("node_late", 2_000, 1, b"late", 4);
+        let early_b = make_signed_event("node_early_b", 1_000, 2, b"early-b", 4);
+        let early_a = make_signed_event("node_early_a", 1_000, 1, b"early-a", 4);
+
+        let pushed = push_items(
+            db_path.to_str().expect("db path"),
+            vec![
+                signed_event_to_json_value(&late),
+                signed_event_to_json_value(&early_b),
+                signed_event_to_json_value(&early_a),
+            ],
+        )
+        .expect("push");
+        assert_eq!(pushed.inserted, 3);
+        assert_eq!(pushed.duplicates, 0);
+
+        let pulled = pull_items(db_path.to_str().expect("db path"), 0, 200).expect("pull");
+        assert_eq!(pulled.len(), 3);
+        let pulled_0 = signed_event_from_json_value(pulled[0].clone()).expect("pulled 0 to signed");
+        let pulled_1 = signed_event_from_json_value(pulled[1].clone()).expect("pulled 1 to signed");
+        let pulled_2 = signed_event_from_json_value(pulled[2].clone()).expect("pulled 2 to signed");
+
+        assert_eq!(pulled_0, early_b);
+        assert_eq!(pulled_1, early_a);
+        assert_eq!(pulled_2, late);
+        assert_eq!(
+            validate_and_event_hash(&pulled_0).expect("hash 0"),
+            validate_and_event_hash(&early_b).expect("orig hash 0")
+        );
+        assert_eq!(
+            validate_and_event_hash(&pulled_1).expect("hash 1"),
+            validate_and_event_hash(&early_a).expect("orig hash 1")
+        );
+        assert_eq!(
+            validate_and_event_hash(&pulled_2).expect("hash 2"),
+            validate_and_event_hash(&late).expect("orig hash 2")
+        );
+
         let _ = fs::remove_file(db_path);
     }
 
