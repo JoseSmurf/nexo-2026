@@ -162,3 +162,37 @@ pub struct OperationalTruthSurface {
     pub is_global_truth: bool,
     pub reason: String,
 }
+
+/// Identifies the simulated continuity context for a read-only convergence harness run.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SyncConvergenceScenario {
+    Replay,
+    Restart,
+    Rejoin,
+}
+
+/// Local-only outcome of comparing two accepted-history slices in the same window.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SyncConvergenceOutcome {
+    EquivalentLocalSlice,
+    DivergentLocalSlice,
+}
+
+/// Read-only report produced by the sync-convergence harness for controlled scenarios.
+/// This shape is intentionally conservative and does not claim global convergence.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncConvergenceHarnessReport {
+    pub scenario: SyncConvergenceScenario,
+    pub since_ts_ms: u64,
+    pub until_ts_ms: u64,
+    pub left: BandwidthMinimalSyncDigest,
+    pub right: BandwidthMinimalSyncDigest,
+    pub comparison: BandwidthDigestComparison,
+    pub outcome: SyncConvergenceOutcome,
+    pub is_authoritative_for_runtime: bool,
+    pub is_global_truth: bool,
+    pub reason: String,
+}
