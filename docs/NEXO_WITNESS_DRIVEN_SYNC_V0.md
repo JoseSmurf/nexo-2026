@@ -74,11 +74,40 @@ Nao implica:
 - witness deterministico de continuidade local;
 - harness de neutralidade do relay;
 - digest minimo read-only para comparacao economica de janelas.
+- harness read-only de convergencia local por comparacao de slices (`SyncConvergenceHarness`).
+
+## SyncConvergenceHarness Guardrails
+
+Entradas validas:
+
+- dois snapshots locais independentes (left/right) como listas de mensagens;
+- janela explicita com `since_ts_ms` e `until_ts_ms` validos (`until >= since`);
+- cenario declarado (`Replay`, `Restart`, `Rejoin`) para contextualizar a simulacao.
+
+Interpretacao permitida:
+
+- resultado `EquivalentLocalSlice` indica equivalencia local daquela janela, para aquelas entradas;
+- resultado `DivergentLocalSlice` indica diferenca local detectavel na comparacao da janela;
+- o report serve como evidencia diagnostica read-only e apoio contratual para futuros passos de sync v0.
+
+Interpretacao proibida:
+
+- tratar `EquivalentLocalSlice` como prova de convergencia global da malha;
+- tratar o report como autoridade de runtime para executar sync automaticamente;
+- inferir causalidade global, consenso ou verdade global a partir da comparacao local.
+
+Nao-claims obrigatorios:
+
+- nao e convergencia global;
+- nao e runtime authority;
+- nao decide sync automaticamente.
+
+Qualquer integracao futura com decisao real de sync precisa de contrato explicito antes de codigo operacional.
 
 ## O que ainda nao existe
 
 - pull/delta runtime orientado por digest;
-- contrato de convergencia minima para sync real;
+- contrato de convergencia minima para sync real com enforcement de runtime;
 - API publica nova para sync witness-driven;
 - politica de reconciliacao completa entre nos.
 
@@ -94,7 +123,7 @@ Nao implica:
 ## Proximos PRs possiveis
 
 1. `OperationalTruthSurface`: separar verdade de contrato vs campos derivados de diagnostico.
-2. `SyncConvergenceHarness`: cenarios controlados de replay/restart/rejoin sem overclaim global.
+2. `SyncConvergenceHarness Hardening`: ampliar cenarios e limites semanticos sem integrar runtime.
 3. `Witness-driven Delta Contract (docs only)`: contrato minimo para delta futuro antes de runtime.
 
 ## Regra de integracao futura

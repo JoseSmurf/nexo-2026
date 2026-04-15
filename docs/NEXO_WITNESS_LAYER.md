@@ -189,3 +189,4 @@ No v0, a Witness Layer serve para provar evidencia local com determinismo e humi
 Para o caminho de evolucao para sync economico sem integracao de runtime neste momento, ver:
 
 - `docs/NEXO_WITNESS_DRIVEN_SYNC_V0.md`
+- `docs/NEXO_WITNESS_DRIVEN_SYNC_V0.md` (secao `SyncConvergenceHarness Guardrails` para limites de uso e nao-claims)
