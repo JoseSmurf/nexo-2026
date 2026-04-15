@@ -5,7 +5,6 @@ use super::errors::MeshContractError;
 #[cfg(feature = "network")]
 use super::policy::validate_sync_cursor;
 use super::policy::{DEFAULT_NODE_ORDERING, DEFAULT_RELAY_ORDERING};
-#[cfg(feature = "network")]
 use super::types::BandwidthDigestComparison;
 #[cfg(feature = "network")]
 use super::types::MeshAcceptance;
@@ -14,14 +13,11 @@ use super::types::OperationalTruthSurface;
 #[cfg(feature = "network")]
 use super::types::RecoveryClassification;
 #[cfg(feature = "network")]
-use super::types::SyncConvergenceOutcome;
-#[cfg(feature = "network")]
-use super::types::SyncConvergenceScenario;
-#[cfg(feature = "network")]
 use super::types::SyncCursor;
 use super::types::{
     AcceptedEventRef, AcceptedStateWitness, BandwidthMinimalSyncDigest, MeshEventKind,
-    OrderingMode, RecoveryWitness, SyncConvergenceHarnessReport,
+    OrderingMode, RecoveryWitness, SyncConvergenceHarnessReport, SyncConvergenceOutcome,
+    SyncConvergenceScenario, SyncSliceComparability,
 };
 
 #[cfg(feature = "network")]
@@ -394,7 +390,6 @@ pub(crate) fn build_bandwidth_minimal_sync_digest(
 /// Compares two bandwidth-minimal digests.
 /// `ExactMatch` is returned only when all summary fields are equal.
 /// Matching digests are local equivalence only and do not prove global convergence.
-#[cfg(feature = "network")]
 #[allow(dead_code)]
 pub(crate) fn compare_bandwidth_minimal_sync_digest(
     left: &BandwidthMinimalSyncDigest,
@@ -412,6 +407,79 @@ pub(crate) fn compare_bandwidth_minimal_sync_digest(
     }
 }
 
+/// Returns whether two local slices can be interpreted in the same context.
+/// Comparability is intentionally minimal: same ordering and same time window.
+#[allow(dead_code)]
+pub(crate) fn classify_sync_slice_comparability(
+    left: &BandwidthMinimalSyncDigest,
+    right: &BandwidthMinimalSyncDigest,
+) -> SyncSliceComparability {
+    if left.ordering == right.ordering
+        && left.since_ts_ms == right.since_ts_ms
+        && left.until_ts_ms == right.until_ts_ms
+    {
+        SyncSliceComparability::Comparable
+    } else {
+        SyncSliceComparability::NotComparable
+    }
+}
+
+/// Interprets digest comparison only after comparability is established.
+#[allow(dead_code)]
+pub(crate) fn classify_sync_convergence_diagnostic(
+    comparability: SyncSliceComparability,
+    comparison: BandwidthDigestComparison,
+) -> SyncConvergenceOutcome {
+    match comparability {
+        SyncSliceComparability::Comparable => match comparison {
+            BandwidthDigestComparison::ExactMatch => SyncConvergenceOutcome::EquivalentLocalSlice,
+            BandwidthDigestComparison::Different => SyncConvergenceOutcome::DivergentLocalSlice,
+        },
+        SyncSliceComparability::NotComparable => SyncConvergenceOutcome::NotComparableLocalSlice,
+    }
+}
+
+fn sync_convergence_diagnostic_reason(outcome: SyncConvergenceOutcome) -> &'static str {
+    match outcome {
+        SyncConvergenceOutcome::EquivalentLocalSlice => {
+            "Read-only comparable local slice equivalence; not global convergence, not runtime sync authority, and not an automatic sync decision."
+        }
+        SyncConvergenceOutcome::DivergentLocalSlice => {
+            "Read-only comparable local slice divergence; not global convergence, not runtime sync authority, not an automatic sync decision, and not a global/network failure verdict."
+        }
+        SyncConvergenceOutcome::NotComparableLocalSlice => {
+            "Read-only local slice context mismatch (ordering/since/until); treat as not comparable (not local divergence), not global convergence, not runtime sync authority, and not an automatic sync decision."
+        }
+    }
+}
+
+/// Builds a read-only local convergence report from already materialized digest slices.
+/// This helper is pure and does not mutate runtime, protocol, relay state, or storage.
+#[allow(dead_code)]
+pub(crate) fn build_sync_convergence_harness_report_from_digests(
+    scenario: SyncConvergenceScenario,
+    left: BandwidthMinimalSyncDigest,
+    right: BandwidthMinimalSyncDigest,
+) -> SyncConvergenceHarnessReport {
+    let comparison = compare_bandwidth_minimal_sync_digest(&left, &right);
+    let comparability = classify_sync_slice_comparability(&left, &right);
+    let outcome = classify_sync_convergence_diagnostic(comparability, comparison);
+
+    SyncConvergenceHarnessReport {
+        scenario,
+        since_ts_ms: left.since_ts_ms,
+        until_ts_ms: left.until_ts_ms,
+        left,
+        right,
+        comparability,
+        comparison,
+        outcome,
+        is_authoritative_for_runtime: false,
+        is_global_truth: false,
+        reason: sync_convergence_diagnostic_reason(outcome).to_string(),
+    }
+}
+
 /// Builds a read-only local convergence report for a controlled scenario and window.
 /// This helper does not mutate runtime, protocol, relay state, or storage.
 #[cfg(feature = "network")]
@@ -425,24 +493,9 @@ pub(crate) fn build_sync_convergence_harness_report(
 ) -> Result<SyncConvergenceHarnessReport, MeshContractError> {
     let left = build_bandwidth_minimal_sync_digest(left_messages, since_ts_ms, until_ts_ms)?;
     let right = build_bandwidth_minimal_sync_digest(right_messages, since_ts_ms, until_ts_ms)?;
-    let comparison = compare_bandwidth_minimal_sync_digest(&left, &right);
-    let outcome = match comparison {
-        BandwidthDigestComparison::ExactMatch => SyncConvergenceOutcome::EquivalentLocalSlice,
-        BandwidthDigestComparison::Different => SyncConvergenceOutcome::DivergentLocalSlice,
-    };
-
-    Ok(SyncConvergenceHarnessReport {
-        scenario,
-        since_ts_ms,
-        until_ts_ms,
-        left,
-        right,
-        comparison,
-        outcome,
-        is_authoritative_for_runtime: false,
-        is_global_truth: false,
-        reason: "Read-only local window comparison for simulated replay/restart/rejoin; not global convergence and not runtime sync authority.".to_string(),
-    })
+    Ok(build_sync_convergence_harness_report_from_digests(
+        scenario, left, right,
+    ))
 }
 
 fn operational_truth_surface(
@@ -657,19 +710,11 @@ mod tests {
     }
 
     fn sample_sync_convergence_equivalent_report() -> SyncConvergenceHarnessReport {
-        let digest = sample_bandwidth_digest();
-        SyncConvergenceHarnessReport {
-            scenario: crate::mesh::types::SyncConvergenceScenario::Replay,
-            since_ts_ms: digest.since_ts_ms,
-            until_ts_ms: digest.until_ts_ms,
-            left: digest.clone(),
-            right: digest,
-            comparison: crate::mesh::types::BandwidthDigestComparison::ExactMatch,
-            outcome: crate::mesh::types::SyncConvergenceOutcome::EquivalentLocalSlice,
-            is_authoritative_for_runtime: false,
-            is_global_truth: false,
-            reason: "Read-only local window comparison for simulated replay/restart/rejoin; not global convergence and not runtime sync authority.".to_string(),
-        }
+        build_sync_convergence_harness_report_from_digests(
+            SyncConvergenceScenario::Replay,
+            sample_bandwidth_digest(),
+            sample_bandwidth_digest(),
+        )
     }
 
     fn sample_sync_convergence_divergent_report() -> SyncConvergenceHarnessReport {
@@ -677,19 +722,23 @@ mod tests {
         let mut right = sample_bandwidth_digest();
         right.state_digest = [0x77; 32];
         right.event_count = 3;
-
-        SyncConvergenceHarnessReport {
-            scenario: crate::mesh::types::SyncConvergenceScenario::Rejoin,
-            since_ts_ms: left.since_ts_ms,
-            until_ts_ms: left.until_ts_ms,
+        build_sync_convergence_harness_report_from_digests(
+            SyncConvergenceScenario::Rejoin,
             left,
             right,
-            comparison: crate::mesh::types::BandwidthDigestComparison::Different,
-            outcome: crate::mesh::types::SyncConvergenceOutcome::DivergentLocalSlice,
-            is_authoritative_for_runtime: false,
-            is_global_truth: false,
-            reason: "Read-only local window comparison for simulated replay/restart/rejoin; not global convergence and not runtime sync authority.".to_string(),
-        }
+        )
+    }
+
+    fn sample_sync_convergence_not_comparable_report() -> SyncConvergenceHarnessReport {
+        let left = sample_bandwidth_digest();
+        let mut right = sample_bandwidth_digest();
+        right.since_ts_ms = left.since_ts_ms + 1;
+
+        build_sync_convergence_harness_report_from_digests(
+            SyncConvergenceScenario::Restart,
+            left,
+            right,
+        )
     }
 
     #[cfg(feature = "network")]
@@ -834,6 +883,113 @@ mod tests {
         assert!(!lower.contains("automatic runtime"));
     }
 
+    #[test]
+    fn sync_convergence_diagnostic_equal_comparable_slice_is_equivalent() {
+        let report = build_sync_convergence_harness_report_from_digests(
+            SyncConvergenceScenario::Replay,
+            sample_bandwidth_digest(),
+            sample_bandwidth_digest(),
+        );
+
+        assert_eq!(report.comparability, SyncSliceComparability::Comparable);
+        assert_eq!(report.comparison, BandwidthDigestComparison::ExactMatch);
+        assert_eq!(report.outcome, SyncConvergenceOutcome::EquivalentLocalSlice);
+    }
+
+    #[test]
+    fn sync_convergence_diagnostic_different_digest_in_same_context_is_divergent() {
+        let left = sample_bandwidth_digest();
+        let mut right = sample_bandwidth_digest();
+        right.state_digest = [0x88; 32];
+
+        let report = build_sync_convergence_harness_report_from_digests(
+            SyncConvergenceScenario::Rejoin,
+            left,
+            right,
+        );
+
+        assert_eq!(report.comparability, SyncSliceComparability::Comparable);
+        assert_eq!(report.comparison, BandwidthDigestComparison::Different);
+        assert_eq!(report.outcome, SyncConvergenceOutcome::DivergentLocalSlice);
+    }
+
+    #[test]
+    fn sync_convergence_diagnostic_since_mismatch_is_not_comparable() {
+        let left = sample_bandwidth_digest();
+        let mut right = sample_bandwidth_digest();
+        right.since_ts_ms = left.since_ts_ms + 1;
+
+        let report = build_sync_convergence_harness_report_from_digests(
+            SyncConvergenceScenario::Restart,
+            left,
+            right,
+        );
+
+        assert_eq!(report.comparability, SyncSliceComparability::NotComparable);
+        assert_eq!(
+            report.outcome,
+            SyncConvergenceOutcome::NotComparableLocalSlice
+        );
+    }
+
+    #[test]
+    fn sync_convergence_diagnostic_until_mismatch_is_not_comparable() {
+        let left = sample_bandwidth_digest();
+        let mut right = sample_bandwidth_digest();
+        right.until_ts_ms = left.until_ts_ms + 1;
+
+        let report = build_sync_convergence_harness_report_from_digests(
+            SyncConvergenceScenario::Restart,
+            left,
+            right,
+        );
+
+        assert_eq!(report.comparability, SyncSliceComparability::NotComparable);
+        assert_eq!(
+            report.outcome,
+            SyncConvergenceOutcome::NotComparableLocalSlice
+        );
+    }
+
+    #[test]
+    fn sync_convergence_diagnostic_ordering_mismatch_is_not_comparable() {
+        let left = sample_bandwidth_digest();
+        let mut right = sample_bandwidth_digest();
+        right.ordering = OrderingMode::TimestampAscRelayRowTieBreak;
+
+        let report = build_sync_convergence_harness_report_from_digests(
+            SyncConvergenceScenario::Restart,
+            left,
+            right,
+        );
+
+        assert_eq!(report.comparability, SyncSliceComparability::NotComparable);
+        assert_eq!(
+            report.outcome,
+            SyncConvergenceOutcome::NotComparableLocalSlice
+        );
+    }
+
+    #[test]
+    fn sync_convergence_diagnostic_not_comparable_is_never_authoritative_or_global() {
+        let report = sample_sync_convergence_not_comparable_report();
+        let lower = report.reason.to_ascii_lowercase();
+
+        assert_eq!(report.comparability, SyncSliceComparability::NotComparable);
+        assert_eq!(
+            report.outcome,
+            SyncConvergenceOutcome::NotComparableLocalSlice
+        );
+        assert!(!report.is_global_truth);
+        assert!(!report.is_authoritative_for_runtime);
+        assert!(lower.contains("not comparable"));
+        assert!(lower.contains("not global convergence"));
+        assert!(lower.contains("not runtime sync authority"));
+        assert!(!lower.contains("consensus"));
+        assert!(!lower.contains("global truth"));
+        assert!(!lower.contains("network error"));
+    }
+
     #[cfg(feature = "network")]
     #[test]
     fn sync_convergence_harness_replay_identical_snapshots_are_equivalent() {
@@ -847,6 +1003,7 @@ mod tests {
         )
         .expect("report");
 
+        assert_eq!(report.comparability, SyncSliceComparability::Comparable);
         assert_eq!(report.outcome, SyncConvergenceOutcome::EquivalentLocalSlice);
         assert_eq!(report.comparison, BandwidthDigestComparison::ExactMatch);
         assert!(!report.is_global_truth);
@@ -868,6 +1025,7 @@ mod tests {
         )
         .expect("report");
 
+        assert_eq!(report.comparability, SyncSliceComparability::Comparable);
         assert_eq!(report.outcome, SyncConvergenceOutcome::EquivalentLocalSlice);
         assert_eq!(report.comparison, BandwidthDigestComparison::ExactMatch);
         assert_eq!(report.left.event_count, 0);
@@ -893,11 +1051,12 @@ mod tests {
         )
         .expect("report");
 
+        assert_eq!(report.comparability, SyncSliceComparability::Comparable);
         assert_eq!(report.outcome, SyncConvergenceOutcome::DivergentLocalSlice);
         assert_eq!(report.comparison, BandwidthDigestComparison::Different);
         assert!(!report.is_global_truth);
         assert!(!report.is_authoritative_for_runtime);
-        assert!(report.reason.contains("Read-only local window comparison"));
+        assert!(report.reason.contains("comparable local slice divergence"));
         assert!(report.reason.contains("not global convergence"));
         assert!(report.reason.contains("not runtime sync authority"));
     }
@@ -918,6 +1077,7 @@ mod tests {
         )
         .expect("report");
 
+        assert_eq!(report.comparability, SyncSliceComparability::Comparable);
         assert_eq!(report.outcome, SyncConvergenceOutcome::DivergentLocalSlice);
         assert_eq!(report.comparison, BandwidthDigestComparison::Different);
         assert_eq!(report.left.event_count, report.right.event_count);
@@ -939,16 +1099,19 @@ mod tests {
         )
         .expect("report");
 
+        assert_eq!(report.comparability, SyncSliceComparability::Comparable);
         assert_eq!(report.comparison, BandwidthDigestComparison::ExactMatch);
         assert_eq!(report.outcome, SyncConvergenceOutcome::EquivalentLocalSlice);
         assert!(!report.is_global_truth);
         assert!(!report.is_authoritative_for_runtime);
-        assert!(report.reason.contains("Read-only local window comparison"));
+        assert!(report.reason.contains("comparable local slice equivalence"));
         assert!(report.reason.contains("not global convergence"));
         assert!(report.reason.contains("not runtime sync authority"));
-        assert!(!report.reason.to_ascii_lowercase().contains("consensus"));
-        assert!(!report.reason.to_ascii_lowercase().contains("global truth"));
-        assert!(!report.reason.to_ascii_lowercase().contains("automatic"));
+        let lower = report.reason.to_ascii_lowercase();
+        assert!(!lower.contains("consensus"));
+        assert!(!lower.contains("global truth"));
+        assert!(!lower.contains("is an automatic sync decision"));
+        assert!(lower.contains("not an automatic sync decision"));
     }
 
     #[cfg(feature = "network")]
