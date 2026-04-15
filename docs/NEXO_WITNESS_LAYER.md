@@ -183,3 +183,9 @@ Limite:
 ## Tese operacional da Witness Layer
 
 No v0, a Witness Layer serve para provar evidencia local com determinismo e humildade semantica: ela reduz risco de regressao e prepara a evolucao do Mesh sem fingir autoridade global antes da hora.
+
+## Referencia complementar
+
+Para o caminho de evolucao para sync economico sem integracao de runtime neste momento, ver:
+
+- `docs/NEXO_WITNESS_DRIVEN_SYNC_V0.md`
