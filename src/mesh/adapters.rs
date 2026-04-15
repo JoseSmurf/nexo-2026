@@ -458,13 +458,24 @@ pub(crate) fn classify_bandwidth_minimal_sync_digest_truth_surface(
     )
 }
 
-/// Classifies the relay neutrality harness as contract truth with explicit authority limits.
+/// Classifies the relay neutrality harness as a contract surface category.
+/// This is not an execution-status signal for a specific proof run.
 #[allow(dead_code)]
-pub(crate) fn classify_relay_neutrality_proof_truth_surface() -> OperationalTruthSurface {
+pub(crate) fn classify_relay_neutrality_contract_surface() -> OperationalTruthSurface {
     operational_truth_surface(
         OperationalTruthKind::ContractTruth,
-        "mesh.relay_neutrality_proof_harness",
-        "Contract-level harness evidence for relay neutrality; does not make relay an authority.",
+        "mesh.relay_neutrality_contract_surface",
+        "Contract-surface classification only for relay neutrality harness; not proof-run execution status and does not make relay an authority.",
+    )
+}
+
+/// Reserves a classification slot for future derived diagnostics.
+#[allow(dead_code)]
+pub(crate) fn classify_reserved_derived_diagnostic_surface() -> OperationalTruthSurface {
+    operational_truth_surface(
+        OperationalTruthKind::DerivedDiagnostic,
+        "mesh.derived_diagnostic.reserved",
+        "Reserved derived-diagnostic surface; not contract truth and not runtime authority.",
     )
 }
 
@@ -623,7 +634,7 @@ mod tests {
 
     #[test]
     fn operational_truth_surface_contract_truth_is_explicit_and_limited() {
-        let relay_surface = classify_relay_neutrality_proof_truth_surface();
+        let relay_surface = classify_relay_neutrality_contract_surface();
 
         assert_eq!(relay_surface.kind, OperationalTruthKind::ContractTruth);
         assert!(!relay_surface.is_global_truth);
@@ -639,13 +650,34 @@ mod tests {
             classify_accepted_state_witness_truth_surface(&sample_accepted_state_witness());
         let accepted_b =
             classify_accepted_state_witness_truth_surface(&sample_accepted_state_witness());
+        let recovery_a = classify_recovery_witness_truth_surface(&sample_recovery_witness());
+        let recovery_b = classify_recovery_witness_truth_surface(&sample_recovery_witness());
         let digest_a =
             classify_bandwidth_minimal_sync_digest_truth_surface(&sample_bandwidth_digest());
         let digest_b =
             classify_bandwidth_minimal_sync_digest_truth_surface(&sample_bandwidth_digest());
+        let relay_a = classify_relay_neutrality_contract_surface();
+        let relay_b = classify_relay_neutrality_contract_surface();
 
         assert_eq!(accepted_a, accepted_b);
+        assert_eq!(recovery_a, recovery_b);
         assert_eq!(digest_a, digest_b);
+        assert_eq!(relay_a, relay_b);
+    }
+
+    #[test]
+    fn operational_truth_surface_has_reserved_derived_diagnostic_slot() {
+        let derived_surface = classify_reserved_derived_diagnostic_surface();
+
+        assert_eq!(
+            derived_surface.kind,
+            OperationalTruthKind::DerivedDiagnostic
+        );
+        assert!(!derived_surface.is_global_truth);
+        assert!(!derived_surface.is_authoritative_for_runtime);
+        assert!(derived_surface
+            .reason
+            .contains("Reserved derived-diagnostic surface"));
     }
 
     #[cfg(feature = "network")]
