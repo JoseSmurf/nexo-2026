@@ -1107,9 +1107,11 @@ mod tests {
         assert!(report.reason.contains("comparable local slice equivalence"));
         assert!(report.reason.contains("not global convergence"));
         assert!(report.reason.contains("not runtime sync authority"));
-        assert!(!report.reason.to_ascii_lowercase().contains("consensus"));
-        assert!(!report.reason.to_ascii_lowercase().contains("global truth"));
-        assert!(!report.reason.to_ascii_lowercase().contains("automatic"));
+        let lower = report.reason.to_ascii_lowercase();
+        assert!(!lower.contains("consensus"));
+        assert!(!lower.contains("global truth"));
+        assert!(!lower.contains("is an automatic sync decision"));
+        assert!(lower.contains("not an automatic sync decision"));
     }
 
     #[cfg(feature = "network")]
