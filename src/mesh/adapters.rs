@@ -766,6 +766,27 @@ mod tests {
 
     #[cfg(feature = "network")]
     #[test]
+    fn sync_convergence_harness_empty_window_is_equivalent_local_slice() {
+        let messages = sample_convergence_messages();
+        let report = build_sync_convergence_harness_report(
+            SyncConvergenceScenario::Replay,
+            &messages,
+            &messages,
+            0,
+            5,
+        )
+        .expect("report");
+
+        assert_eq!(report.outcome, SyncConvergenceOutcome::EquivalentLocalSlice);
+        assert_eq!(report.comparison, BandwidthDigestComparison::ExactMatch);
+        assert_eq!(report.left.event_count, 0);
+        assert_eq!(report.right.event_count, 0);
+        assert!(!report.is_global_truth);
+        assert!(!report.is_authoritative_for_runtime);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
     fn sync_convergence_harness_rejoin_with_difference_is_divergent() {
         let left = sample_convergence_messages();
         let mut right = sample_convergence_messages();
@@ -783,6 +804,60 @@ mod tests {
 
         assert_eq!(report.outcome, SyncConvergenceOutcome::DivergentLocalSlice);
         assert_eq!(report.comparison, BandwidthDigestComparison::Different);
+        assert!(!report.is_global_truth);
+        assert!(!report.is_authoritative_for_runtime);
+        assert!(report.reason.contains("Read-only local window comparison"));
+        assert!(report.reason.contains("not global convergence"));
+        assert!(report.reason.contains("not runtime sync authority"));
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn sync_convergence_harness_order_difference_in_same_window_is_divergent() {
+        let left = sample_convergence_messages();
+        let mut right = sample_convergence_messages();
+        right.reverse();
+
+        let report = build_sync_convergence_harness_report(
+            SyncConvergenceScenario::Restart,
+            &left,
+            &right,
+            0,
+            30,
+        )
+        .expect("report");
+
+        assert_eq!(report.outcome, SyncConvergenceOutcome::DivergentLocalSlice);
+        assert_eq!(report.comparison, BandwidthDigestComparison::Different);
+        assert_eq!(report.left.event_count, report.right.event_count);
+        assert_ne!(report.left.state_digest, report.right.state_digest);
+        assert!(!report.is_global_truth);
+        assert!(!report.is_authoritative_for_runtime);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn sync_convergence_harness_exact_match_stays_non_authoritative_and_local() {
+        let messages = sample_convergence_messages();
+        let report = build_sync_convergence_harness_report(
+            SyncConvergenceScenario::Restart,
+            &messages,
+            &messages,
+            0,
+            30,
+        )
+        .expect("report");
+
+        assert_eq!(report.comparison, BandwidthDigestComparison::ExactMatch);
+        assert_eq!(report.outcome, SyncConvergenceOutcome::EquivalentLocalSlice);
+        assert!(!report.is_global_truth);
+        assert!(!report.is_authoritative_for_runtime);
+        assert!(report.reason.contains("Read-only local window comparison"));
+        assert!(report.reason.contains("not global convergence"));
+        assert!(report.reason.contains("not runtime sync authority"));
+        assert!(!report.reason.to_ascii_lowercase().contains("consensus"));
+        assert!(!report.reason.to_ascii_lowercase().contains("global truth"));
+        assert!(!report.reason.to_ascii_lowercase().contains("automatic"));
     }
 
     #[cfg(feature = "network")]
