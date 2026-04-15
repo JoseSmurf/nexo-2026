@@ -638,7 +638,10 @@ pub(crate) fn build_recovery_witness(
         })?;
     let (relay_since_ts_ms, invalid_relay_state) = match raw_relay_since {
         Some(raw) => match raw.parse::<u64>() {
-            Ok(parsed) => (Some(parsed), false),
+            Ok(parsed) => {
+                validate_persistable_mesh_timestamp("relay_since_ts_ms", parsed)?;
+                (Some(parsed), false)
+            }
             Err(_) => (None, true),
         },
         None => (None, false),
@@ -1874,6 +1877,36 @@ mod tests {
 
         assert_eq!(witness.classification, RecoveryClassification::Invalid);
         assert_eq!(witness.identity_fingerprint, None);
+        drop(store);
+        fs::remove_file(path).expect("cleanup");
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn recovery_witness_rejects_relay_since_out_of_persistable_range() {
+        let path = temp_db_path("nexo_recovery_invalid_relay_since");
+        {
+            let store = OfflineStore::open(path.to_str().expect("path")).expect("store");
+            drop(store);
+        }
+        let conn = Connection::open(&path).expect("conn");
+        conn.execute(
+            "INSERT OR REPLACE INTO relay_state(key, value) VALUES (?1, ?2)",
+            params![RECOVERY_WITNESS_RELAY_SINCE_KEY, u64::MAX.to_string()],
+        )
+        .expect("insert relay state");
+        drop(conn);
+
+        let store = OfflineStore::open(path.to_str().expect("path")).expect("store");
+        let witness = build_recovery_witness(&store, &[], 0);
+
+        assert_eq!(
+            witness,
+            Err(MeshContractError::TimestampOutOfPersistableRange {
+                field: "relay_since_ts_ms",
+                value: u64::MAX,
+            })
+        );
         drop(store);
         fs::remove_file(path).expect("cleanup");
     }
