@@ -14,6 +14,12 @@ use super::types::OperationalTruthSurface;
 #[cfg(feature = "network")]
 use super::types::RecoveryClassification;
 #[cfg(feature = "network")]
+use super::types::SyncConvergenceHarnessReport;
+#[cfg(feature = "network")]
+use super::types::SyncConvergenceOutcome;
+#[cfg(feature = "network")]
+use super::types::SyncConvergenceScenario;
+#[cfg(feature = "network")]
 use super::types::SyncCursor;
 use super::types::{
     AcceptedEventRef, AcceptedStateWitness, BandwidthMinimalSyncDigest, MeshEventKind,
@@ -408,6 +414,39 @@ pub(crate) fn compare_bandwidth_minimal_sync_digest(
     }
 }
 
+/// Builds a read-only local convergence report for a controlled scenario and window.
+/// This helper does not mutate runtime, protocol, relay state, or storage.
+#[cfg(feature = "network")]
+#[allow(dead_code)]
+pub(crate) fn build_sync_convergence_harness_report(
+    scenario: SyncConvergenceScenario,
+    left_messages: &[StoredMessage],
+    right_messages: &[StoredMessage],
+    since_ts_ms: u64,
+    until_ts_ms: u64,
+) -> Result<SyncConvergenceHarnessReport, MeshContractError> {
+    let left = build_bandwidth_minimal_sync_digest(left_messages, since_ts_ms, until_ts_ms)?;
+    let right = build_bandwidth_minimal_sync_digest(right_messages, since_ts_ms, until_ts_ms)?;
+    let comparison = compare_bandwidth_minimal_sync_digest(&left, &right);
+    let outcome = match comparison {
+        BandwidthDigestComparison::ExactMatch => SyncConvergenceOutcome::EquivalentLocalSlice,
+        BandwidthDigestComparison::Different => SyncConvergenceOutcome::DivergentLocalSlice,
+    };
+
+    Ok(SyncConvergenceHarnessReport {
+        scenario,
+        since_ts_ms,
+        until_ts_ms,
+        left,
+        right,
+        comparison,
+        outcome,
+        is_authoritative_for_runtime: false,
+        is_global_truth: false,
+        reason: "Read-only local window comparison for simulated replay/restart/rejoin; not global convergence and not runtime sync authority.".to_string(),
+    })
+}
+
 fn operational_truth_surface(
     kind: OperationalTruthKind,
     source_label: &'static str,
@@ -605,6 +644,30 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "network")]
+    fn sample_convergence_messages() -> Vec<StoredMessage> {
+        vec![
+            StoredMessage {
+                event_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+                    .to_string(),
+                sender_id: "node_a".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 10,
+                nonce: 1,
+                content: b"one".to_vec(),
+            },
+            StoredMessage {
+                event_hash: "2222222222222222222222222222222222222222222222222222222222222222"
+                    .to_string(),
+                sender_id: "node_b".to_string(),
+                channel: "global".to_string(),
+                timestamp_utc_ms: 20,
+                nonce: 2,
+                content: b"two".to_vec(),
+            },
+        ]
+    }
+
     #[test]
     fn operational_truth_surface_keeps_witnesses_out_of_global_truth() {
         let accepted_surface =
@@ -678,6 +741,114 @@ mod tests {
         assert!(derived_surface
             .reason
             .contains("Reserved derived-diagnostic surface"));
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn sync_convergence_harness_replay_identical_snapshots_are_equivalent() {
+        let messages = sample_convergence_messages();
+        let report = build_sync_convergence_harness_report(
+            SyncConvergenceScenario::Replay,
+            &messages,
+            &messages,
+            0,
+            30,
+        )
+        .expect("report");
+
+        assert_eq!(report.outcome, SyncConvergenceOutcome::EquivalentLocalSlice);
+        assert_eq!(report.comparison, BandwidthDigestComparison::ExactMatch);
+        assert!(!report.is_global_truth);
+        assert!(!report.is_authoritative_for_runtime);
+        assert!(report.reason.contains("not global convergence"));
+        assert!(report.reason.contains("not runtime sync authority"));
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn sync_convergence_harness_rejoin_with_difference_is_divergent() {
+        let left = sample_convergence_messages();
+        let mut right = sample_convergence_messages();
+        right[1].event_hash =
+            "3333333333333333333333333333333333333333333333333333333333333333".to_string();
+
+        let report = build_sync_convergence_harness_report(
+            SyncConvergenceScenario::Rejoin,
+            &left,
+            &right,
+            0,
+            30,
+        )
+        .expect("report");
+
+        assert_eq!(report.outcome, SyncConvergenceOutcome::DivergentLocalSlice);
+        assert_eq!(report.comparison, BandwidthDigestComparison::Different);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn sync_convergence_harness_restart_same_input_is_deterministic() {
+        let messages = sample_convergence_messages();
+
+        let report_a = build_sync_convergence_harness_report(
+            SyncConvergenceScenario::Restart,
+            &messages,
+            &messages,
+            0,
+            30,
+        )
+        .expect("report a");
+        let report_b = build_sync_convergence_harness_report(
+            SyncConvergenceScenario::Restart,
+            &messages,
+            &messages,
+            0,
+            30,
+        )
+        .expect("report b");
+
+        assert_eq!(report_a, report_b);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn sync_convergence_harness_invalid_cursor_propagates_error() {
+        let messages = sample_convergence_messages();
+        let report = build_sync_convergence_harness_report(
+            SyncConvergenceScenario::Replay,
+            &messages,
+            &messages,
+            u64::MAX,
+            u64::MAX,
+        );
+
+        assert_eq!(
+            report,
+            Err(MeshContractError::InvalidSyncCursor {
+                since_ts_ms: u64::MAX
+            })
+        );
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn sync_convergence_harness_invalid_window_propagates_error() {
+        let messages = sample_convergence_messages();
+        let report = build_sync_convergence_harness_report(
+            SyncConvergenceScenario::Replay,
+            &messages,
+            &messages,
+            30,
+            20,
+        );
+
+        assert_eq!(
+            report,
+            Err(MeshContractError::InvalidSyncWindow {
+                since_ts_ms: 30,
+                until_ts_ms: 20,
+            })
+        );
     }
 
     #[cfg(feature = "network")]
