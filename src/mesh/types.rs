@@ -174,10 +174,21 @@ pub enum SyncConvergenceScenario {
 
 /// Local-only outcome of comparing two accepted-history slices in the same window.
 #[allow(dead_code)]
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SyncConvergenceOutcome {
     EquivalentLocalSlice,
     DivergentLocalSlice,
+    NotComparableLocalSlice,
+}
+
+/// Declares whether two local sync slices can be compared semantically.
+/// Comparability is intentionally minimal and based on shared ordering + window context.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SyncSliceComparability {
+    Comparable,
+    NotComparable,
 }
 
 /// Read-only report produced by the sync-convergence harness for controlled scenarios.
@@ -190,6 +201,7 @@ pub struct SyncConvergenceHarnessReport {
     pub until_ts_ms: u64,
     pub left: BandwidthMinimalSyncDigest,
     pub right: BandwidthMinimalSyncDigest,
+    pub comparability: SyncSliceComparability,
     pub comparison: BandwidthDigestComparison,
     pub outcome: SyncConvergenceOutcome,
     pub is_authoritative_for_runtime: bool,
