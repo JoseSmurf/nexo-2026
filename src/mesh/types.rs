@@ -138,3 +138,27 @@ pub enum BandwidthDigestComparison {
     ExactMatch,
     Different,
 }
+
+/// Classifies the semantic confidence level of a mesh-facing surface.
+/// This keeps contract truth separate from local evidence and operational diagnostics.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OperationalTruthKind {
+    ContractTruth,
+    LocalEvidence,
+    OperationalSignal,
+    DerivedDiagnostic,
+}
+
+/// Describes how a mesh surface should be interpreted by operators and future runtime integration.
+/// This is intentionally conservative: it prevents local/diagnostic artifacts from being treated as
+/// global truth or automatic runtime authority.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationalTruthSurface {
+    pub kind: OperationalTruthKind,
+    pub source_label: String,
+    pub is_authoritative_for_runtime: bool,
+    pub is_global_truth: bool,
+    pub reason: String,
+}
