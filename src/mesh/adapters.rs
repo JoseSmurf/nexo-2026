@@ -6,20 +6,19 @@ use super::errors::MeshContractError;
 use super::policy::validate_sync_cursor;
 use super::policy::{DEFAULT_NODE_ORDERING, DEFAULT_RELAY_ORDERING};
 #[cfg(feature = "network")]
-use super::types::AcceptedStateWitness;
-#[cfg(feature = "network")]
 use super::types::BandwidthDigestComparison;
 #[cfg(feature = "network")]
-use super::types::BandwidthMinimalSyncDigest;
-#[cfg(feature = "network")]
 use super::types::MeshAcceptance;
+use super::types::OperationalTruthKind;
+use super::types::OperationalTruthSurface;
 #[cfg(feature = "network")]
 use super::types::RecoveryClassification;
 #[cfg(feature = "network")]
-use super::types::RecoveryWitness;
-#[cfg(feature = "network")]
 use super::types::SyncCursor;
-use super::types::{AcceptedEventRef, MeshEventKind, OrderingMode};
+use super::types::{
+    AcceptedEventRef, AcceptedStateWitness, BandwidthMinimalSyncDigest, MeshEventKind,
+    OrderingMode, RecoveryWitness,
+};
 
 #[cfg(feature = "network")]
 use crate::offline_store::{OfflineStore, StoreInsertStatus, StoredMessage};
@@ -409,6 +408,77 @@ pub(crate) fn compare_bandwidth_minimal_sync_digest(
     }
 }
 
+fn operational_truth_surface(
+    kind: OperationalTruthKind,
+    source_label: &'static str,
+    reason: &'static str,
+) -> OperationalTruthSurface {
+    OperationalTruthSurface {
+        kind,
+        source_label: source_label.to_string(),
+        is_authoritative_for_runtime: false,
+        is_global_truth: false,
+        reason: reason.to_string(),
+    }
+}
+
+/// Classifies accepted-state witness output as local evidence only.
+#[allow(dead_code)]
+pub(crate) fn classify_accepted_state_witness_truth_surface(
+    _witness: &AcceptedStateWitness,
+) -> OperationalTruthSurface {
+    operational_truth_surface(
+        OperationalTruthKind::LocalEvidence,
+        "mesh.accepted_state_witness",
+        "Deterministic local accepted-history evidence; not runtime authority and not global truth.",
+    )
+}
+
+/// Classifies recovery witness output as local continuity evidence only.
+#[allow(dead_code)]
+pub(crate) fn classify_recovery_witness_truth_surface(
+    _witness: &RecoveryWitness,
+) -> OperationalTruthSurface {
+    operational_truth_surface(
+        OperationalTruthKind::LocalEvidence,
+        "mesh.recovery_witness",
+        "Conservative local continuity evidence; does not enforce restore/rejoin runtime behavior.",
+    )
+}
+
+/// Classifies bandwidth-minimal digests as operational signaling, not convergence proof.
+#[allow(dead_code)]
+pub(crate) fn classify_bandwidth_minimal_sync_digest_truth_surface(
+    _digest: &BandwidthMinimalSyncDigest,
+) -> OperationalTruthSurface {
+    operational_truth_surface(
+        OperationalTruthKind::OperationalSignal,
+        "mesh.bandwidth_minimal_sync_digest",
+        "Operational comparison signal only; not runtime authority and not a global convergence proof.",
+    )
+}
+
+/// Classifies the relay neutrality harness as a contract surface category.
+/// This is not an execution-status signal for a specific proof run.
+#[allow(dead_code)]
+pub(crate) fn classify_relay_neutrality_contract_surface() -> OperationalTruthSurface {
+    operational_truth_surface(
+        OperationalTruthKind::ContractTruth,
+        "mesh.relay_neutrality_contract_surface",
+        "Contract-surface classification only for relay neutrality harness; not proof-run execution status and does not make relay an authority.",
+    )
+}
+
+/// Reserves a classification slot for future derived diagnostics.
+#[allow(dead_code)]
+pub(crate) fn classify_reserved_derived_diagnostic_surface() -> OperationalTruthSurface {
+    operational_truth_surface(
+        OperationalTruthKind::DerivedDiagnostic,
+        "mesh.derived_diagnostic.reserved",
+        "Reserved derived-diagnostic surface; not contract truth and not runtime authority.",
+    )
+}
+
 /// Builds the smallest read-only continuity witness for local recovery inspection in v0.
 /// This helper never creates identity, never writes store state, and never emits `RestoredValid`
 /// automatically without explicit external continuity evidence.
@@ -502,6 +572,112 @@ mod tests {
         assert_eq!(accepted.kind, MeshEventKind::LiveIngress);
         assert_eq!(ordering, DEFAULT_NODE_ORDERING);
         assert_eq!(relay_pull_ordering_mode(), DEFAULT_RELAY_ORDERING);
+    }
+
+    fn sample_accepted_state_witness() -> AcceptedStateWitness {
+        AcceptedStateWitness {
+            ordering: OrderingMode::TimestampAscLocalTieBreak,
+            since_ts_ms: 10,
+            event_count: 2,
+            first_event_hash: Some([0x11; 32]),
+            last_event_hash: Some([0x22; 32]),
+            state_digest: [0x33; 32],
+        }
+    }
+
+    fn sample_recovery_witness() -> RecoveryWitness {
+        RecoveryWitness {
+            classification: crate::mesh::types::RecoveryClassification::Ambiguous,
+            identity_fingerprint: Some([0x44; 32]),
+            relay_since_ts_ms: Some(20),
+            accepted_state: sample_accepted_state_witness(),
+            continuity_digest: [0x55; 32],
+        }
+    }
+
+    fn sample_bandwidth_digest() -> BandwidthMinimalSyncDigest {
+        BandwidthMinimalSyncDigest {
+            ordering: OrderingMode::TimestampAscLocalTieBreak,
+            since_ts_ms: 10,
+            until_ts_ms: 30,
+            event_count: 2,
+            state_digest: [0x66; 32],
+        }
+    }
+
+    #[test]
+    fn operational_truth_surface_keeps_witnesses_out_of_global_truth() {
+        let accepted_surface =
+            classify_accepted_state_witness_truth_surface(&sample_accepted_state_witness());
+        let recovery_surface = classify_recovery_witness_truth_surface(&sample_recovery_witness());
+
+        assert_eq!(accepted_surface.kind, OperationalTruthKind::LocalEvidence);
+        assert!(!accepted_surface.is_global_truth);
+        assert!(!accepted_surface.is_authoritative_for_runtime);
+        assert_eq!(recovery_surface.kind, OperationalTruthKind::LocalEvidence);
+        assert!(!recovery_surface.is_global_truth);
+        assert!(!recovery_surface.is_authoritative_for_runtime);
+    }
+
+    #[test]
+    fn operational_truth_surface_marks_digest_as_signal_only() {
+        let digest_surface =
+            classify_bandwidth_minimal_sync_digest_truth_surface(&sample_bandwidth_digest());
+
+        assert_eq!(digest_surface.kind, OperationalTruthKind::OperationalSignal);
+        assert!(!digest_surface.is_global_truth);
+        assert!(!digest_surface.is_authoritative_for_runtime);
+        assert!(digest_surface
+            .reason
+            .contains("not a global convergence proof"));
+    }
+
+    #[test]
+    fn operational_truth_surface_contract_truth_is_explicit_and_limited() {
+        let relay_surface = classify_relay_neutrality_contract_surface();
+
+        assert_eq!(relay_surface.kind, OperationalTruthKind::ContractTruth);
+        assert!(!relay_surface.is_global_truth);
+        assert!(!relay_surface.is_authoritative_for_runtime);
+        assert!(relay_surface
+            .reason
+            .contains("does not make relay an authority"));
+    }
+
+    #[test]
+    fn operational_truth_surface_classification_is_deterministic() {
+        let accepted_a =
+            classify_accepted_state_witness_truth_surface(&sample_accepted_state_witness());
+        let accepted_b =
+            classify_accepted_state_witness_truth_surface(&sample_accepted_state_witness());
+        let recovery_a = classify_recovery_witness_truth_surface(&sample_recovery_witness());
+        let recovery_b = classify_recovery_witness_truth_surface(&sample_recovery_witness());
+        let digest_a =
+            classify_bandwidth_minimal_sync_digest_truth_surface(&sample_bandwidth_digest());
+        let digest_b =
+            classify_bandwidth_minimal_sync_digest_truth_surface(&sample_bandwidth_digest());
+        let relay_a = classify_relay_neutrality_contract_surface();
+        let relay_b = classify_relay_neutrality_contract_surface();
+
+        assert_eq!(accepted_a, accepted_b);
+        assert_eq!(recovery_a, recovery_b);
+        assert_eq!(digest_a, digest_b);
+        assert_eq!(relay_a, relay_b);
+    }
+
+    #[test]
+    fn operational_truth_surface_has_reserved_derived_diagnostic_slot() {
+        let derived_surface = classify_reserved_derived_diagnostic_surface();
+
+        assert_eq!(
+            derived_surface.kind,
+            OperationalTruthKind::DerivedDiagnostic
+        );
+        assert!(!derived_surface.is_global_truth);
+        assert!(!derived_surface.is_authoritative_for_runtime);
+        assert!(derived_surface
+            .reason
+            .contains("Reserved derived-diagnostic surface"));
     }
 
     #[cfg(feature = "network")]
