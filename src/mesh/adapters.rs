@@ -14,8 +14,6 @@ use super::types::OperationalTruthSurface;
 #[cfg(feature = "network")]
 use super::types::RecoveryClassification;
 #[cfg(feature = "network")]
-use super::types::SyncConvergenceHarnessReport;
-#[cfg(feature = "network")]
 use super::types::SyncConvergenceOutcome;
 #[cfg(feature = "network")]
 use super::types::SyncConvergenceScenario;
@@ -23,7 +21,7 @@ use super::types::SyncConvergenceScenario;
 use super::types::SyncCursor;
 use super::types::{
     AcceptedEventRef, AcceptedStateWitness, BandwidthMinimalSyncDigest, MeshEventKind,
-    OrderingMode, RecoveryWitness,
+    OrderingMode, RecoveryWitness, SyncConvergenceHarnessReport,
 };
 
 #[cfg(feature = "network")]
@@ -497,6 +495,20 @@ pub(crate) fn classify_bandwidth_minimal_sync_digest_truth_surface(
     )
 }
 
+/// Classifies sync-convergence harness reports strictly as derived diagnostics.
+/// This classification is local and read-only; it is not runtime authority and
+/// does not claim global convergence.
+#[allow(dead_code)]
+pub(crate) fn classify_sync_convergence_harness_truth_surface(
+    _report: &SyncConvergenceHarnessReport,
+) -> OperationalTruthSurface {
+    operational_truth_surface(
+        OperationalTruthKind::DerivedDiagnostic,
+        "mesh.sync_convergence_harness_report",
+        "Derived diagnostic from local slice comparison only; not global convergence, not runtime authority, and not an automatic sync decision.",
+    )
+}
+
 /// Classifies the relay neutrality harness as a contract surface category.
 /// This is not an execution-status signal for a specific proof run.
 #[allow(dead_code)]
@@ -644,6 +656,42 @@ mod tests {
         }
     }
 
+    fn sample_sync_convergence_equivalent_report() -> SyncConvergenceHarnessReport {
+        let digest = sample_bandwidth_digest();
+        SyncConvergenceHarnessReport {
+            scenario: crate::mesh::types::SyncConvergenceScenario::Replay,
+            since_ts_ms: digest.since_ts_ms,
+            until_ts_ms: digest.until_ts_ms,
+            left: digest.clone(),
+            right: digest,
+            comparison: crate::mesh::types::BandwidthDigestComparison::ExactMatch,
+            outcome: crate::mesh::types::SyncConvergenceOutcome::EquivalentLocalSlice,
+            is_authoritative_for_runtime: false,
+            is_global_truth: false,
+            reason: "Read-only local window comparison for simulated replay/restart/rejoin; not global convergence and not runtime sync authority.".to_string(),
+        }
+    }
+
+    fn sample_sync_convergence_divergent_report() -> SyncConvergenceHarnessReport {
+        let left = sample_bandwidth_digest();
+        let mut right = sample_bandwidth_digest();
+        right.state_digest = [0x77; 32];
+        right.event_count = 3;
+
+        SyncConvergenceHarnessReport {
+            scenario: crate::mesh::types::SyncConvergenceScenario::Rejoin,
+            since_ts_ms: left.since_ts_ms,
+            until_ts_ms: left.until_ts_ms,
+            left,
+            right,
+            comparison: crate::mesh::types::BandwidthDigestComparison::Different,
+            outcome: crate::mesh::types::SyncConvergenceOutcome::DivergentLocalSlice,
+            is_authoritative_for_runtime: false,
+            is_global_truth: false,
+            reason: "Read-only local window comparison for simulated replay/restart/rejoin; not global convergence and not runtime sync authority.".to_string(),
+        }
+    }
+
     #[cfg(feature = "network")]
     fn sample_convergence_messages() -> Vec<StoredMessage> {
         vec![
@@ -696,6 +744,33 @@ mod tests {
     }
 
     #[test]
+    fn operational_truth_surface_sync_convergence_equivalent_is_derived_diagnostic() {
+        let surface = classify_sync_convergence_harness_truth_surface(
+            &sample_sync_convergence_equivalent_report(),
+        );
+
+        assert_eq!(surface.kind, OperationalTruthKind::DerivedDiagnostic);
+        assert!(!surface.is_global_truth);
+        assert!(!surface.is_authoritative_for_runtime);
+        assert!(surface.reason.contains("local slice comparison"));
+        assert!(surface.reason.contains("not global convergence"));
+        assert!(surface.reason.contains("not runtime authority"));
+    }
+
+    #[test]
+    fn operational_truth_surface_sync_convergence_divergent_is_derived_diagnostic() {
+        let surface = classify_sync_convergence_harness_truth_surface(
+            &sample_sync_convergence_divergent_report(),
+        );
+
+        assert_eq!(surface.kind, OperationalTruthKind::DerivedDiagnostic);
+        assert!(!surface.is_global_truth);
+        assert!(!surface.is_authoritative_for_runtime);
+        assert!(surface.reason.contains("local slice comparison"));
+        assert!(surface.reason.contains("not global convergence"));
+    }
+
+    #[test]
     fn operational_truth_surface_contract_truth_is_explicit_and_limited() {
         let relay_surface = classify_relay_neutrality_contract_surface();
 
@@ -721,11 +796,15 @@ mod tests {
             classify_bandwidth_minimal_sync_digest_truth_surface(&sample_bandwidth_digest());
         let relay_a = classify_relay_neutrality_contract_surface();
         let relay_b = classify_relay_neutrality_contract_surface();
+        let sync_report = sample_sync_convergence_equivalent_report();
+        let sync_a = classify_sync_convergence_harness_truth_surface(&sync_report);
+        let sync_b = classify_sync_convergence_harness_truth_surface(&sync_report);
 
         assert_eq!(accepted_a, accepted_b);
         assert_eq!(recovery_a, recovery_b);
         assert_eq!(digest_a, digest_b);
         assert_eq!(relay_a, relay_b);
+        assert_eq!(sync_a, sync_b);
     }
 
     #[test]
@@ -741,6 +820,18 @@ mod tests {
         assert!(derived_surface
             .reason
             .contains("Reserved derived-diagnostic surface"));
+    }
+
+    #[test]
+    fn operational_truth_surface_sync_convergence_reason_avoids_overclaim() {
+        let surface = classify_sync_convergence_harness_truth_surface(
+            &sample_sync_convergence_equivalent_report(),
+        );
+        let lower = surface.reason.to_ascii_lowercase();
+
+        assert!(!lower.contains("consensus"));
+        assert!(!lower.contains("global truth"));
+        assert!(!lower.contains("automatic runtime"));
     }
 
     #[cfg(feature = "network")]
