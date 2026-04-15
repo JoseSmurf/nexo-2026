@@ -17,6 +17,10 @@ pub enum MeshContractError {
         since_ts_ms: u64,
         until_ts_ms: u64,
     },
+    TimestampOutOfPersistableRange {
+        field: &'static str,
+        value: u64,
+    },
     InvalidAcceptedEventHash {
         event_hash: String,
     },

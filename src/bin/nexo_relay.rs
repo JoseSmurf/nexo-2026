@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 #[cfg(feature = "network")]
 use syntax_engine::message::{
-    event_hash_bytes_from_parts, signed_envelope_hash_bytes, verify_event_hash_signature,
+    event_hash_bytes_from_parts, signed_envelope_hash_bytes, validate_persistable_timestamp_ms,
+    verify_event_hash_signature,
 };
 #[cfg(feature = "network")]
 use syntax_engine::network_udp::SignedEvent;
@@ -231,6 +232,7 @@ fn push_items(db_path: &str, items: Vec<Value>) -> Result<PushResponse, RelayErr
 
     for raw in items {
         let item = signed_event_from_json_value(raw.clone()).map_err(RelayError::BadRequest)?;
+        let timestamp_ms = to_persistable_timestamp_i64(item.timestamp_utc_ms, "timestamp_utc_ms")?;
         let event_hash = validate_and_event_hash(&item)?;
         let blob_json = serde_json::to_string(&raw)
             .map_err(|e| RelayError::Internal(format!("json encode failed: {e}")))?;
@@ -238,7 +240,7 @@ fn push_items(db_path: &str, items: Vec<Value>) -> Result<PushResponse, RelayErr
             .execute(
                 "INSERT OR IGNORE INTO relay_events(event_hash, timestamp_ms, blob_json)
                  VALUES (?1, ?2, ?3)",
-                params![event_hash, item.timestamp_utc_ms as i64, blob_json],
+                params![event_hash, timestamp_ms, blob_json],
             )
             .map_err(|e| RelayError::Internal(format!("insert failed: {e}")))?;
         if changed == 0 {
@@ -258,6 +260,7 @@ fn push_items(db_path: &str, items: Vec<Value>) -> Result<PushResponse, RelayErr
 
 #[cfg(feature = "network")]
 fn pull_items(db_path: &str, since_ms: u64, limit: usize) -> Result<Vec<Value>, RelayError> {
+    let since_ms = to_persistable_timestamp_i64(since_ms, "since_ms")?;
     let conn = Connection::open(db_path)
         .map_err(|e| RelayError::Internal(format!("db open failed: {e}")))?;
     init_relay_schema(&conn)?;
@@ -271,7 +274,7 @@ fn pull_items(db_path: &str, since_ms: u64, limit: usize) -> Result<Vec<Value>, 
         )
         .map_err(|e| RelayError::Internal(format!("prepare failed: {e}")))?;
     let mut rows = stmt
-        .query(params![since_ms as i64, limit as i64])
+        .query(params![since_ms, limit as i64])
         .map_err(|e| RelayError::Internal(format!("query failed: {e}")))?;
 
     let mut out = Vec::new();
@@ -310,6 +313,8 @@ fn validate_and_event_hash(item: &SignedEvent) -> Result<String, RelayError> {
     if item.sender_id.trim().is_empty() {
         return Err(RelayError::BadRequest("invalid sender_id".to_string()));
     }
+    validate_persistable_timestamp_ms(item.timestamp_utc_ms)
+        .map_err(|_| RelayError::BadRequest("timestamp_out_of_persistable_range".to_string()))?;
     let signed_hash = signed_envelope_hash_bytes(
         &item.sender_id,
         item.timestamp_utc_ms,
@@ -328,6 +333,13 @@ fn validate_and_event_hash(item: &SignedEvent) -> Result<String, RelayError> {
         &item.content_hash,
     );
     Ok(blake3::Hash::from(event_hash_bytes).to_hex().to_string())
+}
+
+#[cfg(feature = "network")]
+fn to_persistable_timestamp_i64(value: u64, field: &str) -> Result<i64, RelayError> {
+    validate_persistable_timestamp_ms(value)
+        .map_err(|_| RelayError::BadRequest(format!("{field}_out_of_persistable_range")))?;
+    Ok(value as i64)
 }
 
 #[cfg(feature = "network")]
@@ -462,6 +474,72 @@ mod tests {
 
         let pulled = pull_items(db_path.to_str().expect("db path"), 0, 200).expect("pull");
         assert!(pulled.is_empty());
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn relay_push_accepts_i64_max_timestamp() {
+        let db_path = temp_db_path("nexo_relay_ts_max_ok");
+        let event = make_signed_event("node_max", i64::MAX as u64, 1, b"ok", 4);
+
+        let result = push_items(
+            db_path.to_str().expect("db path"),
+            vec![signed_event_to_json_value(&event)],
+        )
+        .expect("push");
+        assert_eq!(result.inserted, 1);
+        assert_eq!(result.duplicates, 0);
+
+        let pulled =
+            pull_items(db_path.to_str().expect("db path"), i64::MAX as u64, 200).expect("pull");
+        assert_eq!(pulled.len(), 1);
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn relay_push_rejects_timestamp_above_i64_max_without_storing_event() {
+        let db_path = temp_db_path("nexo_relay_ts_overflow");
+        let invalid = make_signed_event(
+            "node_overflow",
+            (i64::MAX as u64).saturating_add(1),
+            1,
+            b"bad-ts",
+            4,
+        );
+
+        let result = push_items(
+            db_path.to_str().expect("db path"),
+            vec![signed_event_to_json_value(&invalid)],
+        );
+
+        match result {
+            Err(RelayError::BadRequest(msg)) => {
+                assert_eq!(msg, "timestamp_utc_ms_out_of_persistable_range")
+            }
+            other => panic!("expected timestamp rejection, got {other:?}"),
+        }
+
+        let pulled = pull_items(db_path.to_str().expect("db path"), 0, 200).expect("pull");
+        assert!(pulled.is_empty());
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn relay_pull_rejects_since_above_i64_max() {
+        let db_path = temp_db_path("nexo_relay_since_overflow");
+        let err = pull_items(
+            db_path.to_str().expect("db path"),
+            (i64::MAX as u64).saturating_add(1),
+            200,
+        )
+        .expect_err("must fail");
+        match err {
+            RelayError::BadRequest(msg) => {
+                assert_eq!(msg, "since_ms_out_of_persistable_range");
+            }
+            other => panic!("expected bad request, got {other:?}"),
+        }
         let _ = fs::remove_file(db_path);
     }
 
