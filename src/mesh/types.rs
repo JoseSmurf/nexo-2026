@@ -1,3 +1,4 @@
+use crate::message::validate_persistable_timestamp_ms;
 use serde::{Deserialize, Serialize};
 
 /// Declares the operational role a node may hold in the v0 mesh contract.
@@ -64,6 +65,64 @@ impl SyncCursor {
     #[allow(dead_code)]
     pub const fn new(since_ts_ms: u64) -> Self {
         Self { since_ts_ms }
+    }
+}
+
+/// Validation failure for a sync-window shape.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncWindowValidationError {
+    SinceOutOfPersistableRange { value: u64 },
+    UntilOutOfPersistableRange { value: u64 },
+    UntilBeforeSince { since_ts_ms: u64, until_ts_ms: u64 },
+}
+
+/// Minimal validated time window used for local sync diagnostics.
+/// This keeps invalid window shapes out of internal mesh helpers.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncWindow {
+    since_ts_ms: u64,
+    until_ts_ms: u64,
+}
+
+impl SyncWindow {
+    #[allow(dead_code)]
+    pub fn new(since_ts_ms: u64, until_ts_ms: u64) -> Result<Self, SyncWindowValidationError> {
+        validate_persistable_timestamp_ms(since_ts_ms).map_err(|_| {
+            SyncWindowValidationError::SinceOutOfPersistableRange { value: since_ts_ms }
+        })?;
+        validate_persistable_timestamp_ms(until_ts_ms).map_err(|_| {
+            SyncWindowValidationError::UntilOutOfPersistableRange { value: until_ts_ms }
+        })?;
+        if until_ts_ms < since_ts_ms {
+            return Err(SyncWindowValidationError::UntilBeforeSince {
+                since_ts_ms,
+                until_ts_ms,
+            });
+        }
+        Ok(Self {
+            since_ts_ms,
+            until_ts_ms,
+        })
+    }
+
+    #[allow(dead_code)]
+    pub const fn since_ts_ms(&self) -> u64 {
+        self.since_ts_ms
+    }
+
+    #[allow(dead_code)]
+    pub const fn until_ts_ms(&self) -> u64 {
+        self.until_ts_ms
+    }
+}
+
+impl TryFrom<(u64, u64)> for SyncWindow {
+    type Error = SyncWindowValidationError;
+
+    fn try_from(value: (u64, u64)) -> Result<Self, Self::Error> {
+        Self::new(value.0, value.1)
     }
 }
 
@@ -239,4 +298,57 @@ pub struct SyncConvergenceHarnessReport {
     pub is_authoritative_for_runtime: bool,
     pub is_global_truth: bool,
     pub reason: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SyncWindow, SyncWindowValidationError};
+
+    #[test]
+    fn sync_window_accepts_equal_bounds() {
+        let window = SyncWindow::new(10, 10).expect("window");
+        assert_eq!(window.since_ts_ms(), 10);
+        assert_eq!(window.until_ts_ms(), 10);
+    }
+
+    #[test]
+    fn sync_window_accepts_increasing_bounds() {
+        let window = SyncWindow::new(10, 20).expect("window");
+        assert_eq!(window.since_ts_ms(), 10);
+        assert_eq!(window.until_ts_ms(), 20);
+    }
+
+    #[test]
+    fn sync_window_rejects_until_before_since() {
+        let result = SyncWindow::new(20, 10);
+        assert_eq!(
+            result,
+            Err(SyncWindowValidationError::UntilBeforeSince {
+                since_ts_ms: 20,
+                until_ts_ms: 10
+            })
+        );
+    }
+
+    #[test]
+    fn sync_window_rejects_since_out_of_persistable_range() {
+        let result = SyncWindow::new((i64::MAX as u64).saturating_add(1), i64::MAX as u64);
+        assert_eq!(
+            result,
+            Err(SyncWindowValidationError::SinceOutOfPersistableRange {
+                value: (i64::MAX as u64).saturating_add(1)
+            })
+        );
+    }
+
+    #[test]
+    fn sync_window_rejects_until_out_of_persistable_range() {
+        let result = SyncWindow::new(0, (i64::MAX as u64).saturating_add(1));
+        assert_eq!(
+            result,
+            Err(SyncWindowValidationError::UntilOutOfPersistableRange {
+                value: (i64::MAX as u64).saturating_add(1)
+            })
+        );
+    }
 }
