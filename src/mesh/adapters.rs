@@ -1269,6 +1269,18 @@ mod tests {
     }
 
     #[test]
+    fn local_evidence_actionability_is_not_automatic_action() {
+        let surface =
+            classify_accepted_state_witness_truth_surface(&sample_accepted_state_witness());
+        let actionability = classify_operational_truth_surface_actionability(&surface);
+
+        assert_eq!(surface.kind, OperationalTruthKind::LocalEvidence);
+        assert_eq!(actionability, MeshDiagnosticActionability::DiagnosticOnly);
+        assert!(!surface.is_authoritative_for_runtime);
+        assert!(!surface.is_global_truth);
+    }
+
+    #[test]
     fn contract_truth_actionability_requires_explicit_runtime_contract() {
         let surface = classify_relay_neutrality_contract_surface();
         let actionability = classify_operational_truth_surface_actionability(&surface);
