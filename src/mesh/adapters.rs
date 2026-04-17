@@ -1,3 +1,5 @@
+#[cfg(feature = "network")]
+use crate::message::validate_persistable_timestamp_ms;
 use crate::message::{event_hash, CanonicalMessage};
 
 #[cfg(feature = "network")]
@@ -100,6 +102,9 @@ pub(crate) fn project_stored_message_for_sync(
     since_ts_ms: u64,
 ) -> Option<(OrderingMode, AcceptedEventRef)> {
     validate_sync_cursor(SyncCursor::new(since_ts_ms)).ok()?;
+    validate_persistable_mesh_timestamp("since_ts_ms", since_ts_ms).ok()?;
+    validate_persistable_mesh_timestamp("message.timestamp_utc_ms", message.timestamp_utc_ms)
+        .ok()?;
     Some((
         relay_pull_ordering_mode(),
         accepted_event_ref_from_stored_message(message, MeshEventKind::SyncItem),
@@ -116,16 +121,22 @@ pub(crate) fn project_local_accepted_history(
     since_ts_ms: u64,
 ) -> Result<(OrderingMode, Vec<AcceptedEventRef>), MeshContractError> {
     validate_sync_cursor(SyncCursor::new(since_ts_ms))?;
-    Ok((
-        local_node_ordering_mode(),
-        messages
-            .iter()
-            .filter(|message| message.timestamp_utc_ms >= since_ts_ms)
-            .map(|message| {
-                accepted_event_ref_from_stored_message(message, MeshEventKind::LocalReplay)
-            })
-            .collect(),
-    ))
+    validate_persistable_mesh_timestamp("since_ts_ms", since_ts_ms)?;
+    let projected = messages
+        .iter()
+        .filter(|message| message.timestamp_utc_ms >= since_ts_ms)
+        .map(|message| -> Result<AcceptedEventRef, MeshContractError> {
+            validate_persistable_mesh_timestamp(
+                "message.timestamp_utc_ms",
+                message.timestamp_utc_ms,
+            )?;
+            Ok(accepted_event_ref_from_stored_message(
+                message,
+                MeshEventKind::LocalReplay,
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((local_node_ordering_mode(), projected))
 }
 
 #[cfg(feature = "network")]
@@ -134,6 +145,15 @@ fn witness_hash_field(hasher: &mut blake3::Hasher, tag: &[u8], data: &[u8]) {
     hasher.update(tag);
     hasher.update(&(data.len() as u32).to_le_bytes());
     hasher.update(data);
+}
+
+#[cfg(feature = "network")]
+fn validate_persistable_mesh_timestamp(
+    field: &'static str,
+    value: u64,
+) -> Result<(), MeshContractError> {
+    validate_persistable_timestamp_ms(value)
+        .map_err(|_| MeshContractError::TimestampOutOfPersistableRange { field, value })
 }
 
 #[cfg(feature = "network")]
@@ -337,6 +357,7 @@ pub(crate) fn build_accepted_state_witness(
     since_ts_ms: u64,
 ) -> Result<AcceptedStateWitness, MeshContractError> {
     validate_sync_cursor(SyncCursor::new(since_ts_ms))?;
+    validate_persistable_mesh_timestamp("since_ts_ms", since_ts_ms)?;
     let (ordering, projected) = project_local_accepted_history(messages, since_ts_ms)?;
     let event_hashes = projected
         .iter()
@@ -364,6 +385,8 @@ pub(crate) fn build_bandwidth_minimal_sync_digest(
 ) -> Result<BandwidthMinimalSyncDigest, MeshContractError> {
     validate_sync_cursor(SyncCursor::new(since_ts_ms))?;
     validate_sync_cursor(SyncCursor::new(until_ts_ms))?;
+    validate_persistable_mesh_timestamp("since_ts_ms", since_ts_ms)?;
+    validate_persistable_mesh_timestamp("until_ts_ms", until_ts_ms)?;
     if until_ts_ms < since_ts_ms {
         return Err(MeshContractError::InvalidSyncWindow {
             since_ts_ms,
@@ -615,7 +638,10 @@ pub(crate) fn build_recovery_witness(
         })?;
     let (relay_since_ts_ms, invalid_relay_state) = match raw_relay_since {
         Some(raw) => match raw.parse::<u64>() {
-            Ok(parsed) => (Some(parsed), false),
+            Ok(parsed) => {
+                validate_persistable_mesh_timestamp("relay_since_ts_ms", parsed)?;
+                (Some(parsed), false)
+            }
             Err(_) => (None, true),
         },
         None => (None, false),
@@ -1182,6 +1208,27 @@ mod tests {
 
     #[cfg(feature = "network")]
     #[test]
+    fn sync_convergence_harness_rejects_until_out_of_persistable_range() {
+        let messages = sample_convergence_messages();
+        let report = build_sync_convergence_harness_report(
+            SyncConvergenceScenario::Replay,
+            &messages,
+            &messages,
+            0,
+            (i64::MAX as u64).saturating_add(1),
+        );
+
+        assert_eq!(
+            report,
+            Err(MeshContractError::TimestampOutOfPersistableRange {
+                field: "until_ts_ms",
+                value: (i64::MAX as u64).saturating_add(1),
+            })
+        );
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
     fn network_adapters_preserve_existing_runtime_shapes() {
         let message = StoredMessage {
             event_hash: "ehash".to_string(),
@@ -1210,6 +1257,11 @@ mod tests {
             MeshAcceptance::Duplicate
         );
         assert!(project_stored_message_for_sync(&message, u64::MAX).is_none());
+        let out_of_range = StoredMessage {
+            timestamp_utc_ms: (i64::MAX as u64).saturating_add(1),
+            ..message.clone()
+        };
+        assert!(project_stored_message_for_sync(&out_of_range, 0).is_none());
     }
 
     #[cfg(feature = "network")]
@@ -1389,6 +1441,30 @@ mod tests {
             witness,
             Err(MeshContractError::InvalidSyncCursor {
                 since_ts_ms: u64::MAX,
+            })
+        );
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn accepted_state_witness_rejects_timestamp_out_of_persistable_range() {
+        let messages = vec![StoredMessage {
+            event_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            sender_id: "node_a".to_string(),
+            channel: "global".to_string(),
+            timestamp_utc_ms: (i64::MAX as u64).saturating_add(1),
+            nonce: 1,
+            content: b"overflow".to_vec(),
+        }];
+
+        let witness = build_accepted_state_witness(&messages, 0);
+
+        assert_eq!(
+            witness,
+            Err(MeshContractError::TimestampOutOfPersistableRange {
+                field: "message.timestamp_utc_ms",
+                value: (i64::MAX as u64).saturating_add(1),
             })
         );
     }
@@ -1632,6 +1708,21 @@ mod tests {
 
     #[cfg(feature = "network")]
     #[test]
+    fn bandwidth_minimal_sync_digest_rejects_until_out_of_persistable_range() {
+        let digest =
+            build_bandwidth_minimal_sync_digest(&[], 0, (i64::MAX as u64).saturating_add(1));
+
+        assert_eq!(
+            digest,
+            Err(MeshContractError::TimestampOutOfPersistableRange {
+                field: "until_ts_ms",
+                value: (i64::MAX as u64).saturating_add(1),
+            })
+        );
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
     fn bandwidth_minimal_sync_digest_compare_equal_returns_exact_match() {
         let messages = vec![StoredMessage {
             event_hash: "4444444444444444444444444444444444444444444444444444444444444444"
@@ -1786,6 +1877,36 @@ mod tests {
 
         assert_eq!(witness.classification, RecoveryClassification::Invalid);
         assert_eq!(witness.identity_fingerprint, None);
+        drop(store);
+        fs::remove_file(path).expect("cleanup");
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn recovery_witness_rejects_relay_since_out_of_persistable_range() {
+        let path = temp_db_path("nexo_recovery_invalid_relay_since");
+        {
+            let store = OfflineStore::open(path.to_str().expect("path")).expect("store");
+            drop(store);
+        }
+        let conn = Connection::open(&path).expect("conn");
+        conn.execute(
+            "INSERT OR REPLACE INTO relay_state(key, value) VALUES (?1, ?2)",
+            params![RECOVERY_WITNESS_RELAY_SINCE_KEY, u64::MAX.to_string()],
+        )
+        .expect("insert relay state");
+        drop(conn);
+
+        let store = OfflineStore::open(path.to_str().expect("path")).expect("store");
+        let witness = build_recovery_witness(&store, &[], 0);
+
+        assert_eq!(
+            witness,
+            Err(MeshContractError::TimestampOutOfPersistableRange {
+                field: "relay_since_ts_ms",
+                value: u64::MAX,
+            })
+        );
         drop(store);
         fs::remove_file(path).expect("cleanup");
     }

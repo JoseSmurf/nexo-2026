@@ -1,6 +1,20 @@
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
+pub const MAX_PERSISTABLE_TIMESTAMP_MS: u64 = i64::MAX as u64;
+
+pub const fn is_persistable_timestamp_ms(timestamp_utc_ms: u64) -> bool {
+    timestamp_utc_ms <= MAX_PERSISTABLE_TIMESTAMP_MS
+}
+
+pub fn validate_persistable_timestamp_ms(timestamp_utc_ms: u64) -> Result<(), &'static str> {
+    if is_persistable_timestamp_ms(timestamp_utc_ms) {
+        Ok(())
+    } else {
+        Err("REJECTED: timestamp_out_of_persistable_range")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalMessage {
     pub sender_id: String,
@@ -30,6 +44,7 @@ impl CanonicalMessage {
         if sender_id.trim().is_empty() {
             return Err("REJECTED: empty sender_id");
         }
+        validate_persistable_timestamp_ms(timestamp_utc_ms)?;
         let content = content.as_ref();
         if content.is_empty() {
             return Err("REJECTED: empty content");
@@ -229,5 +244,28 @@ mod tests {
             &verifying.to_bytes(),
             &sig
         ));
+    }
+
+    #[test]
+    fn persistable_timestamp_allows_i64_max() {
+        assert_eq!(validate_persistable_timestamp_ms(i64::MAX as u64), Ok(()));
+        assert!(is_persistable_timestamp_ms(i64::MAX as u64));
+    }
+
+    #[test]
+    fn persistable_timestamp_rejects_above_i64_max() {
+        let invalid = (i64::MAX as u64).saturating_add(1);
+        assert_eq!(
+            validate_persistable_timestamp_ms(invalid),
+            Err("REJECTED: timestamp_out_of_persistable_range")
+        );
+        assert_eq!(
+            CanonicalMessage::new_with_nonce("alice", invalid, 1, b"hello"),
+            Err("REJECTED: timestamp_out_of_persistable_range")
+        );
+        assert_eq!(
+            validate_persistable_timestamp_ms(u64::MAX),
+            Err("REJECTED: timestamp_out_of_persistable_range")
+        );
     }
 }

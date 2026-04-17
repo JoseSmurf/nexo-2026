@@ -3,7 +3,8 @@ use getrandom::getrandom;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::message::{
-    content_hash, content_hash_bytes, event_hash, event_hash_bytes_from_parts, CanonicalMessage,
+    content_hash, content_hash_bytes, event_hash, event_hash_bytes_from_parts,
+    validate_persistable_timestamp_ms, CanonicalMessage,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +67,10 @@ impl OfflineStore {
         seen_ttl_ms: u64,
     ) -> Result<StoreInsertStatus, rusqlite::Error> {
         validate_channel(channel)?;
+        let msg_timestamp = to_persistable_timestamp_i64(msg.timestamp_utc_ms, "timestamp_utc_ms")?;
+        let msg_nonce = to_persistable_i64(msg.nonce, "nonce")?;
+        let seen_expires_at =
+            to_persistable_timestamp_i64(now_ms.saturating_add(seen_ttl_ms), "expires_at_utc_ms")?;
         self.purge_seen_expired(now_ms)?;
         let ehash = event_hash(msg);
         let chash = content_hash(&msg.content);
@@ -77,8 +82,8 @@ impl OfflineStore {
                 chash,
                 msg.sender_id,
                 channel,
-                msg.timestamp_utc_ms as i64,
-                msg.nonce as i64,
+                msg_timestamp,
+                msg_nonce,
                 msg.content
             ],
         )?;
@@ -87,7 +92,7 @@ impl OfflineStore {
         }
         self.conn.execute(
             "INSERT OR REPLACE INTO seen_hashes(event_hash, expires_at_utc_ms) VALUES (?1, ?2)",
-            params![ehash, now_ms.saturating_add(seen_ttl_ms) as i64],
+            params![ehash, seen_expires_at],
         )?;
         Ok(StoreInsertStatus::Inserted)
     }
@@ -99,6 +104,11 @@ impl OfflineStore {
         seen_ttl_ms: u64,
     ) -> Result<StoreInsertStatus, rusqlite::Error> {
         validate_channel(input.channel)?;
+        let input_timestamp =
+            to_persistable_timestamp_i64(input.timestamp_utc_ms, "timestamp_utc_ms")?;
+        let input_nonce = to_persistable_i64(input.nonce, "nonce")?;
+        let seen_expires_at =
+            to_persistable_timestamp_i64(now_ms.saturating_add(seen_ttl_ms), "expires_at_utc_ms")?;
         self.purge_seen_expired(now_ms)?;
         let chash = content_hash(input.content);
         let chash_bytes = content_hash_bytes(input.content);
@@ -117,8 +127,8 @@ impl OfflineStore {
                 chash,
                 input.sender_id,
                 input.channel,
-                input.timestamp_utc_ms as i64,
-                input.nonce as i64,
+                input_timestamp,
+                input_nonce,
                 input.content
             ],
         )?;
@@ -127,7 +137,7 @@ impl OfflineStore {
         }
         self.conn.execute(
             "INSERT OR REPLACE INTO seen_hashes(event_hash, expires_at_utc_ms) VALUES (?1, ?2)",
-            params![ehash, now_ms.saturating_add(seen_ttl_ms) as i64],
+            params![ehash, seen_expires_at],
         )?;
         Ok(StoreInsertStatus::Inserted)
     }
@@ -151,9 +161,10 @@ impl OfflineStore {
                 "event_hash".to_string(),
             ));
         }
+        let expires_at = to_persistable_timestamp_i64(expires_at_utc_ms, "expires_at_utc_ms")?;
         self.conn.execute(
             "INSERT OR REPLACE INTO seen_hashes(event_hash, expires_at_utc_ms) VALUES (?1, ?2)",
-            params![event_hash, expires_at_utc_ms as i64],
+            params![event_hash, expires_at],
         )?;
         Ok(())
     }
@@ -176,9 +187,10 @@ impl OfflineStore {
                 "event_hash".to_string(),
             ));
         }
+        let forwarded_at = to_persistable_timestamp_i64(forwarded_at_ms, "forwarded_at_ms")?;
         self.conn.execute(
             "INSERT OR REPLACE INTO forwarded_hashes(event_hash, forwarded_at_ms) VALUES (?1, ?2)",
-            params![event_hash, forwarded_at_ms as i64],
+            params![event_hash, forwarded_at],
         )?;
         Ok(())
     }
@@ -249,6 +261,7 @@ impl OfflineStore {
         if limit == 0 {
             return Err(rusqlite::Error::InvalidParameterName("limit".to_string()));
         }
+        let since_ts_ms = to_persistable_timestamp_i64(since_ts_ms, "since_ts_ms")?;
         let limit = limit.min(1000);
         let mut stmt = self.conn.prepare(
             "SELECT event_hash, sender_id, channel, timestamp_utc_ms, nonce, content_blob
@@ -257,7 +270,7 @@ impl OfflineStore {
              ORDER BY timestamp_utc_ms ASC, rowid ASC
              LIMIT ?2",
         )?;
-        let mut rows = stmt.query(params![since_ts_ms as i64, limit as i64])?;
+        let mut rows = stmt.query(params![since_ts_ms, limit as i64])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             out.push(StoredMessage {
@@ -418,9 +431,10 @@ impl OfflineStore {
     }
 
     fn purge_seen_expired(&self, now_ms: u64) -> Result<(), rusqlite::Error> {
+        let now_ms = to_persistable_timestamp_i64(now_ms, "now_ms")?;
         self.conn.execute(
             "DELETE FROM seen_hashes WHERE expires_at_utc_ms <= ?1",
-            params![now_ms as i64],
+            params![now_ms],
         )?;
         Ok(())
     }
@@ -488,6 +502,19 @@ fn validate_channel(channel: &str) -> Result<(), rusqlite::Error> {
         return Ok(());
     }
     Err(rusqlite::Error::InvalidParameterName("channel".to_string()))
+}
+
+fn to_persistable_timestamp_i64(value: u64, field: &str) -> Result<i64, rusqlite::Error> {
+    validate_persistable_timestamp_ms(value).map_err(|_| {
+        rusqlite::Error::InvalidParameterName(format!("{field}_out_of_persistable_range"))
+    })?;
+    Ok(value as i64)
+}
+
+fn to_persistable_i64(value: u64, field: &str) -> Result<i64, rusqlite::Error> {
+    i64::try_from(value).map_err(|_| {
+        rusqlite::Error::InvalidParameterName(format!("{field}_out_of_persistable_range"))
+    })
 }
 
 #[cfg(test)]
@@ -617,6 +644,63 @@ mod tests {
                 .get_relay_state_u64("last_relay_pull_since_ms")
                 .expect("get"),
             Some(1234)
+        );
+    }
+
+    #[test]
+    fn raw_insert_accepts_i64_max_timestamp() {
+        let store = OfflineStore::open_in_memory().expect("store");
+        let status = store
+            .insert_raw_message_with_channel(
+                RawMessageInput {
+                    sender_id: "alice",
+                    timestamp_utc_ms: i64::MAX as u64,
+                    nonce: 1,
+                    content: b"ok",
+                    channel: "global",
+                },
+                1_000,
+                1_000,
+            )
+            .expect("insert");
+        assert_eq!(status, StoreInsertStatus::Inserted);
+    }
+
+    #[test]
+    fn raw_insert_rejects_timestamp_above_i64_max() {
+        let store = OfflineStore::open_in_memory().expect("store");
+        let err = store
+            .insert_raw_message_with_channel(
+                RawMessageInput {
+                    sender_id: "alice",
+                    timestamp_utc_ms: (i64::MAX as u64).saturating_add(1),
+                    nonce: 1,
+                    content: b"bad",
+                    channel: "global",
+                },
+                1_000,
+                1_000,
+            )
+            .expect_err("must fail");
+        assert_eq!(
+            err,
+            rusqlite::Error::InvalidParameterName(
+                "timestamp_utc_ms_out_of_persistable_range".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn messages_since_rejects_timestamp_above_i64_max() {
+        let store = OfflineStore::open_in_memory().expect("store");
+        let err = store
+            .messages_since((i64::MAX as u64).saturating_add(1), 10)
+            .expect_err("must fail");
+        assert_eq!(
+            err,
+            rusqlite::Error::InvalidParameterName(
+                "since_ts_ms_out_of_persistable_range".to_string()
+            )
         );
     }
 }
