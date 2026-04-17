@@ -191,6 +191,16 @@ pub enum SyncSliceComparability {
     NotComparable,
 }
 
+/// Describes whether a local convergence diagnostic is still recent enough to be useful.
+/// Freshness is diagnostic-only and must not be treated as runtime authority or global truth.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SyncDiagnosticFreshness {
+    FreshEnoughLocalDiagnostic,
+    StaleLocalDiagnostic,
+    FreshnessNotAssessable,
+}
+
 /// Read-only report produced by the sync-convergence harness for controlled scenarios.
 /// This shape is intentionally conservative and does not claim global convergence.
 #[allow(dead_code)]

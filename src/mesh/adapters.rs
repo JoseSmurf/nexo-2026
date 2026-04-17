@@ -1,8 +1,6 @@
-#[cfg(feature = "network")]
 use crate::message::validate_persistable_timestamp_ms;
 use crate::message::{event_hash, CanonicalMessage};
 
-#[cfg(feature = "network")]
 use super::errors::MeshContractError;
 #[cfg(feature = "network")]
 use super::policy::validate_sync_cursor;
@@ -19,7 +17,7 @@ use super::types::SyncCursor;
 use super::types::{
     AcceptedEventRef, AcceptedStateWitness, BandwidthMinimalSyncDigest, MeshEventKind,
     OrderingMode, RecoveryWitness, SyncConvergenceHarnessReport, SyncConvergenceOutcome,
-    SyncConvergenceScenario, SyncSliceComparability,
+    SyncConvergenceScenario, SyncDiagnosticFreshness, SyncSliceComparability,
 };
 
 #[cfg(feature = "network")]
@@ -147,7 +145,6 @@ fn witness_hash_field(hasher: &mut blake3::Hasher, tag: &[u8], data: &[u8]) {
     hasher.update(data);
 }
 
-#[cfg(feature = "network")]
 fn validate_persistable_mesh_timestamp(
     field: &'static str,
     value: u64,
@@ -459,6 +456,34 @@ pub(crate) fn classify_sync_convergence_diagnostic(
             BandwidthDigestComparison::Different => SyncConvergenceOutcome::DivergentLocalSlice,
         },
         SyncSliceComparability::NotComparable => SyncConvergenceOutcome::NotComparableLocalSlice,
+    }
+}
+
+/// Classifies whether a local convergence diagnostic is recent enough for operator use.
+/// Freshness is diagnostic-only, not runtime authority, not global truth, and not a sync decision.
+#[allow(dead_code)]
+pub(crate) fn classify_sync_convergence_diagnostic_freshness(
+    report: &SyncConvergenceHarnessReport,
+    observed_at_ts_ms: u64,
+    max_staleness_ms: u64,
+) -> Result<SyncDiagnosticFreshness, MeshContractError> {
+    validate_persistable_mesh_timestamp("observed_at_ts_ms", observed_at_ts_ms)?;
+    validate_persistable_mesh_timestamp("report.since_ts_ms", report.since_ts_ms)?;
+    validate_persistable_mesh_timestamp("report.until_ts_ms", report.until_ts_ms)?;
+
+    if report.until_ts_ms < report.since_ts_ms {
+        return Ok(SyncDiagnosticFreshness::FreshnessNotAssessable);
+    }
+
+    if observed_at_ts_ms < report.until_ts_ms {
+        return Ok(SyncDiagnosticFreshness::FreshnessNotAssessable);
+    }
+
+    let staleness_ms = observed_at_ts_ms - report.until_ts_ms;
+    if staleness_ms <= max_staleness_ms {
+        Ok(SyncDiagnosticFreshness::FreshEnoughLocalDiagnostic)
+    } else {
+        Ok(SyncDiagnosticFreshness::StaleLocalDiagnostic)
     }
 }
 
@@ -1014,6 +1039,119 @@ mod tests {
         assert!(!lower.contains("consensus"));
         assert!(!lower.contains("global truth"));
         assert!(!lower.contains("network error"));
+    }
+
+    #[test]
+    fn sync_convergence_freshness_equivalent_within_window_is_fresh_enough() {
+        let report = sample_sync_convergence_equivalent_report();
+        let freshness =
+            classify_sync_convergence_diagnostic_freshness(&report, report.until_ts_ms + 5, 10)
+                .expect("freshness");
+
+        assert_eq!(report.outcome, SyncConvergenceOutcome::EquivalentLocalSlice);
+        assert_eq!(
+            freshness,
+            SyncDiagnosticFreshness::FreshEnoughLocalDiagnostic
+        );
+    }
+
+    #[test]
+    fn sync_convergence_freshness_equivalent_outside_window_is_stale() {
+        let report = sample_sync_convergence_equivalent_report();
+        let freshness =
+            classify_sync_convergence_diagnostic_freshness(&report, report.until_ts_ms + 25, 10)
+                .expect("freshness");
+
+        assert_eq!(report.outcome, SyncConvergenceOutcome::EquivalentLocalSlice);
+        assert_eq!(freshness, SyncDiagnosticFreshness::StaleLocalDiagnostic);
+    }
+
+    #[test]
+    fn sync_convergence_freshness_divergent_outside_window_stays_divergent_local() {
+        let report = sample_sync_convergence_divergent_report();
+        let freshness =
+            classify_sync_convergence_diagnostic_freshness(&report, report.until_ts_ms + 50, 10)
+                .expect("freshness");
+
+        assert_eq!(report.outcome, SyncConvergenceOutcome::DivergentLocalSlice);
+        assert_eq!(freshness, SyncDiagnosticFreshness::StaleLocalDiagnostic);
+        assert!(!report.is_global_truth);
+        assert!(!report.is_authoritative_for_runtime);
+    }
+
+    #[test]
+    fn sync_convergence_freshness_not_comparable_remains_not_comparable() {
+        let report = sample_sync_convergence_not_comparable_report();
+        let freshness =
+            classify_sync_convergence_diagnostic_freshness(&report, report.until_ts_ms + 50, 10)
+                .expect("freshness");
+
+        assert_eq!(
+            report.outcome,
+            SyncConvergenceOutcome::NotComparableLocalSlice
+        );
+        assert_ne!(report.outcome, SyncConvergenceOutcome::DivergentLocalSlice);
+        assert_eq!(freshness, SyncDiagnosticFreshness::StaleLocalDiagnostic);
+    }
+
+    #[test]
+    fn sync_convergence_freshness_before_window_end_is_not_assessable() {
+        let report = sample_sync_convergence_equivalent_report();
+        let freshness = classify_sync_convergence_diagnostic_freshness(
+            &report,
+            report.until_ts_ms.saturating_sub(1),
+            10,
+        )
+        .expect("freshness");
+
+        assert_eq!(freshness, SyncDiagnosticFreshness::FreshnessNotAssessable);
+    }
+
+    #[test]
+    fn sync_convergence_freshness_rejects_observed_timestamp_out_of_persistable_range() {
+        let report = sample_sync_convergence_equivalent_report();
+        let result = classify_sync_convergence_diagnostic_freshness(
+            &report,
+            (i64::MAX as u64).saturating_add(1),
+            10,
+        );
+
+        assert_eq!(
+            result,
+            Err(MeshContractError::TimestampOutOfPersistableRange {
+                field: "observed_at_ts_ms",
+                value: (i64::MAX as u64).saturating_add(1),
+            })
+        );
+    }
+
+    #[test]
+    fn sync_convergence_freshness_classification_is_deterministic() {
+        let report = sample_sync_convergence_divergent_report();
+        let freshness_a =
+            classify_sync_convergence_diagnostic_freshness(&report, report.until_ts_ms + 7, 10)
+                .expect("freshness a");
+        let freshness_b =
+            classify_sync_convergence_diagnostic_freshness(&report, report.until_ts_ms + 7, 10)
+                .expect("freshness b");
+
+        assert_eq!(freshness_a, freshness_b);
+    }
+
+    #[test]
+    fn sync_convergence_freshness_stays_diagnostic_only_not_authoritative() {
+        let report = sample_sync_convergence_equivalent_report();
+        let freshness =
+            classify_sync_convergence_diagnostic_freshness(&report, report.until_ts_ms + 5, 10)
+                .expect("freshness");
+        let surface = classify_sync_convergence_harness_truth_surface(&report);
+
+        assert_eq!(
+            freshness,
+            SyncDiagnosticFreshness::FreshEnoughLocalDiagnostic
+        );
+        assert!(!surface.is_authoritative_for_runtime);
+        assert!(!surface.is_global_truth);
     }
 
     #[cfg(feature = "network")]
