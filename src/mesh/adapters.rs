@@ -18,7 +18,7 @@ use super::types::{
     AcceptedEventRef, AcceptedStateWitness, BandwidthMinimalSyncDigest,
     MeshDiagnosticActionability, MeshEventKind, MeshReplayDedupDiagnostic, OrderingMode,
     RecoveryWitness, SyncConvergenceHarnessReport, SyncConvergenceOutcome, SyncConvergenceScenario,
-    SyncDiagnosticFreshness, SyncSliceComparability,
+    SyncDiagnosticFreshness, SyncSliceComparability, SyncWindow, SyncWindowValidationError,
 };
 
 #[cfg(feature = "network")]
@@ -152,6 +152,43 @@ fn validate_persistable_mesh_timestamp(
 ) -> Result<(), MeshContractError> {
     validate_persistable_timestamp_ms(value)
         .map_err(|_| MeshContractError::TimestampOutOfPersistableRange { field, value })
+}
+
+fn mesh_error_from_sync_window_validation(
+    err: SyncWindowValidationError,
+    since_field: &'static str,
+    until_field: &'static str,
+) -> MeshContractError {
+    match err {
+        SyncWindowValidationError::SinceOutOfPersistableRange { value } => {
+            MeshContractError::TimestampOutOfPersistableRange {
+                field: since_field,
+                value,
+            }
+        }
+        SyncWindowValidationError::UntilOutOfPersistableRange { value } => {
+            MeshContractError::TimestampOutOfPersistableRange {
+                field: until_field,
+                value,
+            }
+        }
+        SyncWindowValidationError::UntilBeforeSince {
+            since_ts_ms,
+            until_ts_ms,
+        } => MeshContractError::InvalidSyncWindow {
+            since_ts_ms,
+            until_ts_ms,
+        },
+    }
+}
+
+#[cfg(feature = "network")]
+fn validated_sync_window(
+    since_ts_ms: u64,
+    until_ts_ms: u64,
+) -> Result<SyncWindow, MeshContractError> {
+    SyncWindow::new(since_ts_ms, until_ts_ms)
+        .map_err(|err| mesh_error_from_sync_window_validation(err, "since_ts_ms", "until_ts_ms"))
 }
 
 #[cfg(feature = "network")]
@@ -383,26 +420,19 @@ pub(crate) fn build_bandwidth_minimal_sync_digest(
 ) -> Result<BandwidthMinimalSyncDigest, MeshContractError> {
     validate_sync_cursor(SyncCursor::new(since_ts_ms))?;
     validate_sync_cursor(SyncCursor::new(until_ts_ms))?;
-    validate_persistable_mesh_timestamp("since_ts_ms", since_ts_ms)?;
-    validate_persistable_mesh_timestamp("until_ts_ms", until_ts_ms)?;
-    if until_ts_ms < since_ts_ms {
-        return Err(MeshContractError::InvalidSyncWindow {
-            since_ts_ms,
-            until_ts_ms,
-        });
-    }
+    let window = validated_sync_window(since_ts_ms, until_ts_ms)?;
 
     let windowed = messages
         .iter()
-        .filter(|message| message.timestamp_utc_ms <= until_ts_ms)
+        .filter(|message| message.timestamp_utc_ms <= window.until_ts_ms())
         .cloned()
         .collect::<Vec<_>>();
-    let accepted = build_accepted_state_witness(&windowed, since_ts_ms)?;
+    let accepted = build_accepted_state_witness(&windowed, window.since_ts_ms())?;
 
     Ok(BandwidthMinimalSyncDigest {
         ordering: accepted.ordering,
-        since_ts_ms,
-        until_ts_ms,
+        since_ts_ms: window.since_ts_ms(),
+        until_ts_ms: window.until_ts_ms(),
         event_count: accepted.event_count,
         state_digest: accepted.state_digest,
     })
@@ -435,13 +465,16 @@ pub(crate) fn classify_sync_slice_comparability(
     left: &BandwidthMinimalSyncDigest,
     right: &BandwidthMinimalSyncDigest,
 ) -> SyncSliceComparability {
-    if left.ordering == right.ordering
-        && left.since_ts_ms == right.since_ts_ms
-        && left.until_ts_ms == right.until_ts_ms
-    {
-        SyncSliceComparability::Comparable
-    } else {
-        SyncSliceComparability::NotComparable
+    let left_window = SyncWindow::new(left.since_ts_ms, left.until_ts_ms);
+    let right_window = SyncWindow::new(right.since_ts_ms, right.until_ts_ms);
+
+    match (left_window, right_window) {
+        (Ok(left_window), Ok(right_window))
+            if left.ordering == right.ordering && left_window == right_window =>
+        {
+            SyncSliceComparability::Comparable
+        }
+        _ => SyncSliceComparability::NotComparable,
     }
 }
 
@@ -469,18 +502,25 @@ pub(crate) fn classify_sync_convergence_diagnostic_freshness(
     max_staleness_ms: u64,
 ) -> Result<SyncDiagnosticFreshness, MeshContractError> {
     validate_persistable_mesh_timestamp("observed_at_ts_ms", observed_at_ts_ms)?;
-    validate_persistable_mesh_timestamp("report.since_ts_ms", report.since_ts_ms)?;
-    validate_persistable_mesh_timestamp("report.until_ts_ms", report.until_ts_ms)?;
+    let report_window = match SyncWindow::new(report.since_ts_ms, report.until_ts_ms) {
+        Ok(window) => window,
+        Err(SyncWindowValidationError::UntilBeforeSince { .. }) => {
+            return Ok(SyncDiagnosticFreshness::FreshnessNotAssessable);
+        }
+        Err(err) => {
+            return Err(mesh_error_from_sync_window_validation(
+                err,
+                "report.since_ts_ms",
+                "report.until_ts_ms",
+            ));
+        }
+    };
 
-    if report.until_ts_ms < report.since_ts_ms {
+    if observed_at_ts_ms < report_window.until_ts_ms() {
         return Ok(SyncDiagnosticFreshness::FreshnessNotAssessable);
     }
 
-    if observed_at_ts_ms < report.until_ts_ms {
-        return Ok(SyncDiagnosticFreshness::FreshnessNotAssessable);
-    }
-
-    let staleness_ms = observed_at_ts_ms - report.until_ts_ms;
+    let staleness_ms = observed_at_ts_ms - report_window.until_ts_ms();
     if staleness_ms <= max_staleness_ms {
         Ok(SyncDiagnosticFreshness::FreshEnoughLocalDiagnostic)
     } else {
@@ -1126,6 +1166,26 @@ mod tests {
         let left = sample_bandwidth_digest();
         let mut right = sample_bandwidth_digest();
         right.ordering = OrderingMode::TimestampAscRelayRowTieBreak;
+
+        let report = build_sync_convergence_harness_report_from_digests(
+            SyncConvergenceScenario::Restart,
+            left,
+            right,
+        );
+
+        assert_eq!(report.comparability, SyncSliceComparability::NotComparable);
+        assert_eq!(
+            report.outcome,
+            SyncConvergenceOutcome::NotComparableLocalSlice
+        );
+    }
+
+    #[test]
+    fn sync_convergence_diagnostic_same_invalid_window_is_not_comparable() {
+        let mut left = sample_bandwidth_digest();
+        left.since_ts_ms = 20;
+        left.until_ts_ms = 10;
+        let right = left.clone();
 
         let report = build_sync_convergence_harness_report_from_digests(
             SyncConvergenceScenario::Restart,
