@@ -16,8 +16,8 @@ use super::types::RecoveryClassification;
 use super::types::SyncCursor;
 use super::types::{
     AcceptedEventRef, AcceptedStateWitness, BandwidthMinimalSyncDigest,
-    MeshDiagnosticActionability, MeshEventKind, OrderingMode, RecoveryWitness,
-    SyncConvergenceHarnessReport, SyncConvergenceOutcome, SyncConvergenceScenario,
+    MeshDiagnosticActionability, MeshEventKind, MeshReplayDedupDiagnostic, OrderingMode,
+    RecoveryWitness, SyncConvergenceHarnessReport, SyncConvergenceOutcome, SyncConvergenceScenario,
     SyncDiagnosticFreshness, SyncSliceComparability,
 };
 
@@ -522,6 +522,75 @@ pub(crate) fn classify_operational_truth_surface_actionability(
     }
 }
 
+/// Classifies replay/dedup/sequencing from local evidence only.
+/// This diagnostic is local evidence only, not runtime authority, not global truth,
+/// and not automatic enforcement.
+#[allow(dead_code)]
+pub(crate) fn classify_mesh_replay_dedup_sequencing(
+    known_events: &[AcceptedEventRef],
+    candidate: &AcceptedEventRef,
+) -> Result<MeshReplayDedupDiagnostic, MeshContractError> {
+    validate_persistable_mesh_timestamp("candidate.timestamp_utc_ms", candidate.timestamp_utc_ms)?;
+    for known in known_events {
+        validate_persistable_mesh_timestamp(
+            "known_event.timestamp_utc_ms",
+            known.timestamp_utc_ms,
+        )?;
+    }
+
+    if known_events
+        .iter()
+        .any(|known| known.event_hash == candidate.event_hash)
+    {
+        return Ok(MeshReplayDedupDiagnostic::DuplicateKnownEvent);
+    }
+
+    if known_events.iter().any(|known| {
+        known.sender_id == candidate.sender_id
+            && known.nonce == candidate.nonce
+            && known.event_hash != candidate.event_hash
+    }) {
+        return Ok(MeshReplayDedupDiagnostic::ReplaySuspected);
+    }
+
+    let max_known_nonce = known_events
+        .iter()
+        .filter(|known| known.sender_id == candidate.sender_id)
+        .map(|known| known.nonce)
+        .max();
+
+    match max_known_nonce {
+        None => Ok(MeshReplayDedupDiagnostic::SequencingNotAssessable),
+        Some(max_nonce) if candidate.nonce < max_nonce => {
+            Ok(MeshReplayDedupDiagnostic::SequenceRegressionSuspected)
+        }
+        Some(max_nonce) if candidate.nonce > max_nonce.saturating_add(1) => {
+            Ok(MeshReplayDedupDiagnostic::SequenceGapDetected)
+        }
+        _ => Ok(MeshReplayDedupDiagnostic::UniqueLocalCandidate),
+    }
+}
+
+/// Classifies replay/dedup/sequencing diagnostics as local-evidence truth surface only.
+#[allow(dead_code)]
+pub(crate) fn classify_mesh_replay_dedup_sequencing_truth_surface(
+    _diagnostic: MeshReplayDedupDiagnostic,
+) -> OperationalTruthSurface {
+    operational_truth_surface(
+        OperationalTruthKind::LocalEvidence,
+        "mesh.replay_dedup_sequencing_diagnostic",
+        "Replay/dedup/sequencing diagnostic is local evidence only, not runtime authority, not global truth, and not automatic enforcement.",
+    )
+}
+
+/// Classifies replay/dedup/sequencing diagnostics as diagnostic-only outputs.
+#[allow(dead_code)]
+pub(crate) fn classify_mesh_replay_dedup_sequencing_actionability(
+    _diagnostic: MeshReplayDedupDiagnostic,
+) -> MeshDiagnosticActionability {
+    MeshDiagnosticActionability::DiagnosticOnly
+}
+
 fn sync_convergence_diagnostic_reason(outcome: SyncConvergenceOutcome) -> &'static str {
     match outcome {
         SyncConvergenceOutcome::EquivalentLocalSlice => {
@@ -849,6 +918,21 @@ mod tests {
                 content: b"two".to_vec(),
             },
         ]
+    }
+
+    fn sample_accepted_event(
+        event_hash: &str,
+        sender_id: &str,
+        timestamp_utc_ms: u64,
+        nonce: u64,
+    ) -> AcceptedEventRef {
+        AcceptedEventRef {
+            event_hash: event_hash.to_string(),
+            sender_id: sender_id.to_string(),
+            timestamp_utc_ms,
+            nonce,
+            kind: MeshEventKind::LocalReplay,
+        }
     }
 
     #[test]
@@ -1314,6 +1398,143 @@ mod tests {
         assert_eq!(report_a, report_b);
         assert_eq!(freshness_a, freshness_b);
         assert_eq!(surface_a, surface_b);
+    }
+
+    #[test]
+    fn replay_dedup_known_hash_is_duplicate_known_event() {
+        let known = vec![sample_accepted_event("hash-1", "node_a", 100, 1)];
+        let candidate = sample_accepted_event("hash-1", "node_b", 120, 4);
+
+        let diagnostic =
+            classify_mesh_replay_dedup_sequencing(&known, &candidate).expect("diagnostic");
+
+        assert_eq!(diagnostic, MeshReplayDedupDiagnostic::DuplicateKnownEvent);
+    }
+
+    #[test]
+    fn replay_dedup_new_hash_with_next_nonce_is_unique_local_candidate() {
+        let known = vec![sample_accepted_event("hash-1", "node_a", 100, 1)];
+        let candidate = sample_accepted_event("hash-2", "node_a", 120, 2);
+
+        let diagnostic =
+            classify_mesh_replay_dedup_sequencing(&known, &candidate).expect("diagnostic");
+
+        assert_eq!(diagnostic, MeshReplayDedupDiagnostic::UniqueLocalCandidate);
+    }
+
+    #[test]
+    fn replay_dedup_same_sender_nonce_different_hash_is_replay_suspected() {
+        let known = vec![sample_accepted_event("hash-1", "node_a", 100, 9)];
+        let candidate = sample_accepted_event("hash-2", "node_a", 120, 9);
+
+        let diagnostic =
+            classify_mesh_replay_dedup_sequencing(&known, &candidate).expect("diagnostic");
+
+        assert_eq!(diagnostic, MeshReplayDedupDiagnostic::ReplaySuspected);
+    }
+
+    #[test]
+    fn replay_dedup_candidate_timestamp_out_of_persistable_range_fails_closed() {
+        let known = vec![sample_accepted_event("hash-1", "node_a", 100, 1)];
+        let candidate =
+            sample_accepted_event("hash-2", "node_a", (i64::MAX as u64).saturating_add(1), 2);
+
+        let diagnostic = classify_mesh_replay_dedup_sequencing(&known, &candidate);
+
+        assert_eq!(
+            diagnostic,
+            Err(MeshContractError::TimestampOutOfPersistableRange {
+                field: "candidate.timestamp_utc_ms",
+                value: (i64::MAX as u64).saturating_add(1),
+            })
+        );
+    }
+
+    #[test]
+    fn replay_dedup_without_sender_sequence_is_not_assessable() {
+        let known = vec![sample_accepted_event("hash-1", "node_b", 100, 1)];
+        let candidate = sample_accepted_event("hash-2", "node_a", 120, 1);
+
+        let diagnostic =
+            classify_mesh_replay_dedup_sequencing(&known, &candidate).expect("diagnostic");
+
+        assert_eq!(
+            diagnostic,
+            MeshReplayDedupDiagnostic::SequencingNotAssessable
+        );
+    }
+
+    #[test]
+    fn replay_dedup_classification_is_deterministic() {
+        let known = vec![
+            sample_accepted_event("hash-1", "node_a", 100, 1),
+            sample_accepted_event("hash-2", "node_a", 120, 2),
+        ];
+        let candidate = sample_accepted_event("hash-3", "node_a", 140, 3);
+
+        let first = classify_mesh_replay_dedup_sequencing(&known, &candidate)
+            .expect("first classification");
+        let second = classify_mesh_replay_dedup_sequencing(&known, &candidate)
+            .expect("second classification");
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn replay_dedup_truth_surface_is_local_only_non_authoritative() {
+        let surface = classify_mesh_replay_dedup_sequencing_truth_surface(
+            MeshReplayDedupDiagnostic::ReplaySuspected,
+        );
+
+        assert_eq!(surface.kind, OperationalTruthKind::LocalEvidence);
+        assert!(!surface.is_authoritative_for_runtime);
+        assert!(!surface.is_global_truth);
+        assert!(surface.reason.contains("local evidence only"));
+        assert!(surface.reason.contains("not runtime authority"));
+        assert!(surface.reason.contains("not global truth"));
+        assert!(surface.reason.contains("not automatic enforcement"));
+    }
+
+    #[test]
+    fn replay_dedup_actionability_is_always_diagnostic_only() {
+        let variants = [
+            MeshReplayDedupDiagnostic::UniqueLocalCandidate,
+            MeshReplayDedupDiagnostic::DuplicateKnownEvent,
+            MeshReplayDedupDiagnostic::ReplaySuspected,
+            MeshReplayDedupDiagnostic::SequenceRegressionSuspected,
+            MeshReplayDedupDiagnostic::SequenceGapDetected,
+            MeshReplayDedupDiagnostic::SequencingNotAssessable,
+        ];
+
+        for variant in variants {
+            let actionability = classify_mesh_replay_dedup_sequencing_actionability(variant);
+            assert_eq!(actionability, MeshDiagnosticActionability::DiagnosticOnly);
+        }
+    }
+
+    #[test]
+    fn replay_dedup_nonce_regression_is_sequence_regression_suspected() {
+        let known = vec![sample_accepted_event("hash-1", "node_a", 100, 10)];
+        let candidate = sample_accepted_event("hash-2", "node_a", 120, 8);
+
+        let diagnostic =
+            classify_mesh_replay_dedup_sequencing(&known, &candidate).expect("diagnostic");
+
+        assert_eq!(
+            diagnostic,
+            MeshReplayDedupDiagnostic::SequenceRegressionSuspected
+        );
+    }
+
+    #[test]
+    fn replay_dedup_nonce_gap_is_sequence_gap_detected() {
+        let known = vec![sample_accepted_event("hash-1", "node_a", 100, 10)];
+        let candidate = sample_accepted_event("hash-2", "node_a", 120, 13);
+
+        let diagnostic =
+            classify_mesh_replay_dedup_sequencing(&known, &candidate).expect("diagnostic");
+
+        assert_eq!(diagnostic, MeshReplayDedupDiagnostic::SequenceGapDetected);
     }
 
     #[cfg(feature = "network")]

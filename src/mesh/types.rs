@@ -210,6 +210,19 @@ pub enum MeshDiagnosticActionability {
     RequiresExplicitRuntimeContract,
 }
 
+/// Conservative replay/dedup/sequencing diagnostic for local mesh evidence.
+/// This diagnostic is local evidence only and cannot be interpreted as runtime authority.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MeshReplayDedupDiagnostic {
+    UniqueLocalCandidate,
+    DuplicateKnownEvent,
+    ReplaySuspected,
+    SequenceRegressionSuspected,
+    SequenceGapDetected,
+    SequencingNotAssessable,
+}
+
 /// Read-only report produced by the sync-convergence harness for controlled scenarios.
 /// This shape is intentionally conservative and does not claim global convergence.
 #[allow(dead_code)]
