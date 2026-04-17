@@ -15,9 +15,10 @@ use super::types::RecoveryClassification;
 #[cfg(feature = "network")]
 use super::types::SyncCursor;
 use super::types::{
-    AcceptedEventRef, AcceptedStateWitness, BandwidthMinimalSyncDigest, MeshEventKind,
-    OrderingMode, RecoveryWitness, SyncConvergenceHarnessReport, SyncConvergenceOutcome,
-    SyncConvergenceScenario, SyncDiagnosticFreshness, SyncSliceComparability,
+    AcceptedEventRef, AcceptedStateWitness, BandwidthMinimalSyncDigest,
+    MeshDiagnosticActionability, MeshEventKind, OrderingMode, RecoveryWitness,
+    SyncConvergenceHarnessReport, SyncConvergenceOutcome, SyncConvergenceScenario,
+    SyncDiagnosticFreshness, SyncSliceComparability,
 };
 
 #[cfg(feature = "network")]
@@ -484,6 +485,40 @@ pub(crate) fn classify_sync_convergence_diagnostic_freshness(
         Ok(SyncDiagnosticFreshness::FreshEnoughLocalDiagnostic)
     } else {
         Ok(SyncDiagnosticFreshness::StaleLocalDiagnostic)
+    }
+}
+
+/// Classifies sync-convergence harness outputs as diagnostic-only surfaces.
+/// Diagnostic output is not a runtime decision, not sync authority, and not global truth.
+#[allow(dead_code)]
+pub(crate) fn classify_sync_convergence_harness_actionability(
+    _report: &SyncConvergenceHarnessReport,
+) -> MeshDiagnosticActionability {
+    MeshDiagnosticActionability::DiagnosticOnly
+}
+
+/// Classifies freshness outputs as diagnostic-only surfaces.
+/// Diagnostic output is not a runtime decision, not sync authority, and not global truth.
+#[allow(dead_code)]
+pub(crate) fn classify_sync_diagnostic_freshness_actionability(
+    _freshness: SyncDiagnosticFreshness,
+) -> MeshDiagnosticActionability {
+    MeshDiagnosticActionability::DiagnosticOnly
+}
+
+/// Classifies OperationalTruthSurface actionability in a conservative, fail-closed way.
+/// No surface here directly authorizes runtime actions.
+#[allow(dead_code)]
+pub(crate) fn classify_operational_truth_surface_actionability(
+    surface: &OperationalTruthSurface,
+) -> MeshDiagnosticActionability {
+    match surface.kind {
+        OperationalTruthKind::ContractTruth => {
+            MeshDiagnosticActionability::RequiresExplicitRuntimeContract
+        }
+        OperationalTruthKind::LocalEvidence
+        | OperationalTruthKind::OperationalSignal
+        | OperationalTruthKind::DerivedDiagnostic => MeshDiagnosticActionability::DiagnosticOnly,
     }
 }
 
@@ -1152,6 +1187,121 @@ mod tests {
         );
         assert!(!surface.is_authoritative_for_runtime);
         assert!(!surface.is_global_truth);
+    }
+
+    #[test]
+    fn sync_convergence_actionability_equivalent_local_slice_is_not_automatic_action() {
+        let report = sample_sync_convergence_equivalent_report();
+        let actionability = classify_sync_convergence_harness_actionability(&report);
+
+        assert_eq!(actionability, MeshDiagnosticActionability::DiagnosticOnly);
+        assert!(!report.is_authoritative_for_runtime);
+        assert!(!report.is_global_truth);
+    }
+
+    #[test]
+    fn sync_convergence_actionability_divergent_local_slice_is_not_automatic_action() {
+        let report = sample_sync_convergence_divergent_report();
+        let actionability = classify_sync_convergence_harness_actionability(&report);
+
+        assert_eq!(actionability, MeshDiagnosticActionability::DiagnosticOnly);
+        assert_eq!(report.outcome, SyncConvergenceOutcome::DivergentLocalSlice);
+    }
+
+    #[test]
+    fn sync_convergence_actionability_not_comparable_local_slice_is_not_automatic_action() {
+        let report = sample_sync_convergence_not_comparable_report();
+        let actionability = classify_sync_convergence_harness_actionability(&report);
+
+        assert_eq!(actionability, MeshDiagnosticActionability::DiagnosticOnly);
+        assert_eq!(
+            report.outcome,
+            SyncConvergenceOutcome::NotComparableLocalSlice
+        );
+    }
+
+    #[test]
+    fn sync_freshness_actionability_fresh_enough_is_not_automatic_action() {
+        let actionability = classify_sync_diagnostic_freshness_actionability(
+            SyncDiagnosticFreshness::FreshEnoughLocalDiagnostic,
+        );
+
+        assert_eq!(actionability, MeshDiagnosticActionability::DiagnosticOnly);
+    }
+
+    #[test]
+    fn sync_freshness_actionability_stale_is_not_automatic_action() {
+        let actionability = classify_sync_diagnostic_freshness_actionability(
+            SyncDiagnosticFreshness::StaleLocalDiagnostic,
+        );
+
+        assert_eq!(actionability, MeshDiagnosticActionability::DiagnosticOnly);
+    }
+
+    #[test]
+    fn sync_freshness_actionability_not_assessable_is_not_automatic_action() {
+        let actionability = classify_sync_diagnostic_freshness_actionability(
+            SyncDiagnosticFreshness::FreshnessNotAssessable,
+        );
+
+        assert_eq!(actionability, MeshDiagnosticActionability::DiagnosticOnly);
+    }
+
+    #[test]
+    fn operational_signal_actionability_is_not_automatic_action() {
+        let surface =
+            classify_bandwidth_minimal_sync_digest_truth_surface(&sample_bandwidth_digest());
+        let actionability = classify_operational_truth_surface_actionability(&surface);
+
+        assert_eq!(surface.kind, OperationalTruthKind::OperationalSignal);
+        assert_eq!(actionability, MeshDiagnosticActionability::DiagnosticOnly);
+    }
+
+    #[test]
+    fn derived_diagnostic_actionability_is_not_automatic_action() {
+        let surface = classify_sync_convergence_harness_truth_surface(
+            &sample_sync_convergence_equivalent_report(),
+        );
+        let actionability = classify_operational_truth_surface_actionability(&surface);
+
+        assert_eq!(surface.kind, OperationalTruthKind::DerivedDiagnostic);
+        assert_eq!(actionability, MeshDiagnosticActionability::DiagnosticOnly);
+    }
+
+    #[test]
+    fn contract_truth_actionability_requires_explicit_runtime_contract() {
+        let surface = classify_relay_neutrality_contract_surface();
+        let actionability = classify_operational_truth_surface_actionability(&surface);
+
+        assert_eq!(surface.kind, OperationalTruthKind::ContractTruth);
+        assert_eq!(
+            actionability,
+            MeshDiagnosticActionability::RequiresExplicitRuntimeContract
+        );
+        assert!(!surface.is_authoritative_for_runtime);
+        assert!(!surface.is_global_truth);
+    }
+
+    #[test]
+    fn diagnostic_actionability_classification_is_deterministic() {
+        let report = sample_sync_convergence_equivalent_report();
+        let report_a = classify_sync_convergence_harness_actionability(&report);
+        let report_b = classify_sync_convergence_harness_actionability(&report);
+
+        let freshness_a = classify_sync_diagnostic_freshness_actionability(
+            SyncDiagnosticFreshness::StaleLocalDiagnostic,
+        );
+        let freshness_b = classify_sync_diagnostic_freshness_actionability(
+            SyncDiagnosticFreshness::StaleLocalDiagnostic,
+        );
+
+        let surface = classify_sync_convergence_harness_truth_surface(&report);
+        let surface_a = classify_operational_truth_surface_actionability(&surface);
+        let surface_b = classify_operational_truth_surface_actionability(&surface);
+
+        assert_eq!(report_a, report_b);
+        assert_eq!(freshness_a, freshness_b);
+        assert_eq!(surface_a, surface_b);
     }
 
     #[cfg(feature = "network")]

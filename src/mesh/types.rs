@@ -201,6 +201,15 @@ pub enum SyncDiagnosticFreshness {
     FreshnessNotAssessable,
 }
 
+/// Declares whether a mesh diagnostic output can drive runtime behavior.
+/// Diagnostic output is not a runtime decision, not sync authority, and not global truth.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MeshDiagnosticActionability {
+    DiagnosticOnly,
+    RequiresExplicitRuntimeContract,
+}
+
 /// Read-only report produced by the sync-convergence harness for controlled scenarios.
 /// This shape is intentionally conservative and does not claim global convergence.
 #[allow(dead_code)]
