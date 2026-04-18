@@ -1,12 +1,28 @@
 using JSON3
 using Statistics
 
+const REPO_ROOT_PATH = normpath(joinpath(@__DIR__, ".."))
+const SYNC_ECONOMICS_ARTIFACT_ENV_VAR = "NEXO_SYNC_ECONOMICS_ARTIFACT_PATH"
+const SYNC_ECONOMICS_SUMMARY_CSV_ENV_VAR = "NEXO_SYNC_ECONOMICS_SUMMARY_CSV_PATH"
+
 const DEFAULT_SYNC_ECONOMICS_JSONL_PATH = joinpath(
     "artifacts",
     "sync_economics",
     "two_snapshot_sync_economics.jsonl",
 )
 const DEFAULT_SYNC_ECONOMICS_SUMMARY_CSV_PATH = joinpath(
+    "artifacts",
+    "sync_economics",
+    "two_snapshot_sync_economics_summary.csv",
+)
+const REPO_DEFAULT_SYNC_ECONOMICS_JSONL_PATH = joinpath(
+    REPO_ROOT_PATH,
+    "artifacts",
+    "sync_economics",
+    "two_snapshot_sync_economics.jsonl",
+)
+const REPO_DEFAULT_SYNC_ECONOMICS_SUMMARY_CSV_PATH = joinpath(
+    REPO_ROOT_PATH,
     "artifacts",
     "sync_economics",
     "two_snapshot_sync_economics_summary.csv",
@@ -142,6 +158,42 @@ function read_two_snapshot_sync_economics_jsonl(path::AbstractString)
 
     isempty(records) && throw(ArgumentError("sync economics artifact is empty: $(path)"))
     return records
+end
+
+function _non_empty_string_or_nothing(value)::Union{Nothing, String}
+    text = strip(String(value))
+    isempty(text) && return nothing
+    return text
+end
+
+function resolve_sync_economics_input_path(
+    explicit_path::Union{Nothing, AbstractString}=nothing,
+)::String
+    explicit = explicit_path === nothing ? nothing : _non_empty_string_or_nothing(explicit_path)
+    explicit !== nothing && return explicit
+
+    from_env = _non_empty_string_or_nothing(get(ENV, SYNC_ECONOMICS_ARTIFACT_ENV_VAR, ""))
+    from_env !== nothing && return from_env
+
+    if isfile(DEFAULT_SYNC_ECONOMICS_JSONL_PATH)
+        return DEFAULT_SYNC_ECONOMICS_JSONL_PATH
+    end
+    return REPO_DEFAULT_SYNC_ECONOMICS_JSONL_PATH
+end
+
+function resolve_sync_economics_output_csv_path(
+    explicit_path::Union{Nothing, AbstractString}=nothing,
+)::String
+    explicit = explicit_path === nothing ? nothing : _non_empty_string_or_nothing(explicit_path)
+    explicit !== nothing && return explicit
+
+    from_env = _non_empty_string_or_nothing(get(ENV, SYNC_ECONOMICS_SUMMARY_CSV_ENV_VAR, ""))
+    from_env !== nothing && return from_env
+
+    if ispath(dirname(DEFAULT_SYNC_ECONOMICS_SUMMARY_CSV_PATH))
+        return DEFAULT_SYNC_ECONOMICS_SUMMARY_CSV_PATH
+    end
+    return REPO_DEFAULT_SYNC_ECONOMICS_SUMMARY_CSV_PATH
 end
 
 function safe_saved_full_ratio(saved_bytes::Integer, full_bytes::Integer)
@@ -323,8 +375,10 @@ function observe_sync_economics(
 end
 
 function main(args=ARGS)
-    input_path = length(args) >= 1 ? args[1] : DEFAULT_SYNC_ECONOMICS_JSONL_PATH
-    output_csv_path = length(args) >= 2 ? args[2] : DEFAULT_SYNC_ECONOMICS_SUMMARY_CSV_PATH
+    explicit_input = length(args) >= 1 ? args[1] : nothing
+    explicit_output = length(args) >= 2 ? args[2] : nothing
+    input_path = resolve_sync_economics_input_path(explicit_input)
+    output_csv_path = resolve_sync_economics_output_csv_path(explicit_output)
 
     result = observe_sync_economics(input_path; output_csv_path=output_csv_path)
     println(result.summary_text)
