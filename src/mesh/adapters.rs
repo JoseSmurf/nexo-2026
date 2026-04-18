@@ -31,6 +31,7 @@ use crate::offline_store::{OfflineStore, StoreInsertStatus, StoredMessage};
 const RECOVERY_WITNESS_RELAY_SINCE_KEY: &str = "last_relay_pull_since_ms";
 pub(crate) const TWO_SNAPSHOT_SYNC_ECONOMICS_ARTIFACT_PATH: &str =
     "artifacts/sync_economics/two_snapshot_sync_economics.jsonl";
+const TWO_SNAPSHOT_SYNC_ECONOMICS_SCHEMA_VERSION: &str = "v1";
 const DIGEST_ORDERING_BYTES: u64 = 1;
 const DIGEST_TIMESTAMP_BYTES: u64 = 8;
 const DIGEST_EVENT_COUNT_BYTES: u64 = 8;
@@ -594,12 +595,16 @@ pub(crate) fn build_two_snapshot_sync_economics_record(
     let diagnostic_actionability = classify_sync_convergence_harness_actionability(report);
 
     Ok(TwoSnapshotSyncEconomicsRecord {
+        schema_version: TWO_SNAPSHOT_SYNC_ECONOMICS_SCHEMA_VERSION.to_string(),
         scenario_id: scenario_id.into(),
+        since_ts_ms: report.since_ts_ms,
+        until_ts_ms: report.until_ts_ms,
         left_event_count: report.left.event_count,
         right_event_count: report.right.event_count,
         left_digest_bytes,
         right_digest_bytes,
         compared_digest_bytes_total,
+        estimated_bytes_per_event: ESTIMATED_FULL_SYNC_BYTES_PER_EVENT,
         estimated_full_sync_bytes,
         saved_bytes_if_sync_skipped,
         comparability: report.comparability,
@@ -1691,11 +1696,21 @@ mod tests {
         assert_eq!(record.comparability, SyncSliceComparability::Comparable);
         assert_eq!(record.outcome, SyncConvergenceOutcome::EquivalentLocalSlice);
         assert_eq!(
+            record.schema_version,
+            TWO_SNAPSHOT_SYNC_ECONOMICS_SCHEMA_VERSION
+        );
+        assert_eq!(record.since_ts_ms, report.since_ts_ms);
+        assert_eq!(record.until_ts_ms, report.until_ts_ms);
+        assert_eq!(
             record.freshness,
             Some(SyncDiagnosticFreshness::FreshEnoughLocalDiagnostic)
         );
         assert_eq!(record.left_digest_bytes, digest_summary_bytes());
         assert_eq!(record.right_digest_bytes, digest_summary_bytes());
+        assert_eq!(
+            record.estimated_bytes_per_event,
+            ESTIMATED_FULL_SYNC_BYTES_PER_EVENT
+        );
         assert_eq!(
             record.compared_digest_bytes_total,
             record.left_digest_bytes + record.right_digest_bytes
@@ -1725,6 +1740,8 @@ mod tests {
 
         assert_eq!(record.comparability, SyncSliceComparability::Comparable);
         assert_eq!(record.outcome, SyncConvergenceOutcome::DivergentLocalSlice);
+        assert_eq!(record.since_ts_ms, report.since_ts_ms);
+        assert_eq!(record.until_ts_ms, report.until_ts_ms);
         assert_eq!(
             record.diagnostic_actionability,
             MeshDiagnosticActionability::DiagnosticOnly
@@ -1747,6 +1764,8 @@ mod tests {
             record.outcome,
             SyncConvergenceOutcome::NotComparableLocalSlice
         );
+        assert_eq!(record.since_ts_ms, report.since_ts_ms);
+        assert_eq!(record.until_ts_ms, report.until_ts_ms);
         assert_eq!(record.saved_bytes_if_sync_skipped, 0);
         assert_eq!(
             record.diagnostic_actionability,
@@ -1771,6 +1790,10 @@ mod tests {
         assert_eq!(
             record.freshness,
             Some(SyncDiagnosticFreshness::StaleLocalDiagnostic)
+        );
+        assert_eq!(
+            record.estimated_bytes_per_event,
+            ESTIMATED_FULL_SYNC_BYTES_PER_EVENT
         );
         assert_eq!(record.saved_bytes_if_sync_skipped, 0);
     }
@@ -1825,12 +1848,16 @@ mod tests {
         let object = value.as_object().expect("json object");
 
         for field in [
+            "schema_version",
             "scenario_id",
+            "since_ts_ms",
+            "until_ts_ms",
             "left_event_count",
             "right_event_count",
             "left_digest_bytes",
             "right_digest_bytes",
             "compared_digest_bytes_total",
+            "estimated_bytes_per_event",
             "estimated_full_sync_bytes",
             "saved_bytes_if_sync_skipped",
             "comparability",
@@ -1843,6 +1870,12 @@ mod tests {
         ] {
             assert!(object.contains_key(field), "missing field {field}");
         }
+        assert_eq!(
+            object
+                .get("schema_version")
+                .and_then(serde_json::Value::as_str),
+            Some(TWO_SNAPSHOT_SYNC_ECONOMICS_SCHEMA_VERSION)
+        );
     }
 
     #[test]

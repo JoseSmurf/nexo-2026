@@ -307,12 +307,16 @@ pub struct SyncConvergenceHarnessReport {
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TwoSnapshotSyncEconomicsRecord {
+    pub schema_version: String,
     pub scenario_id: String,
+    pub since_ts_ms: u64,
+    pub until_ts_ms: u64,
     pub left_event_count: u64,
     pub right_event_count: u64,
     pub left_digest_bytes: u64,
     pub right_digest_bytes: u64,
     pub compared_digest_bytes_total: u64,
+    pub estimated_bytes_per_event: u64,
     pub estimated_full_sync_bytes: u64,
     pub saved_bytes_if_sync_skipped: u64,
     pub comparability: SyncSliceComparability,
