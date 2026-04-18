@@ -81,6 +81,19 @@ end
         @test_throws ArgumentError normalize_two_snapshot_sync_economics_record(record)
     end
 
+    @testset "missing required field fails closed in parser" begin
+        dir = mktempdir()
+        path = joinpath(dir, "two_snapshot_sync_economics_missing_required.jsonl")
+
+        malformed = _sync_economics_sample_record()
+        delete!(malformed, "outcome")
+        _write_jsonl(path, [malformed])
+
+        @test_throws ArgumentError read_two_snapshot_sync_economics_jsonl(path)
+
+        rm(dir; recursive=true, force=true)
+    end
+
     @testset "computes mean/median/percentiles deterministically" begin
         records = [
             normalize_two_snapshot_sync_economics_record(
