@@ -300,6 +300,34 @@ pub struct SyncConvergenceHarnessReport {
     pub reason: String,
 }
 
+/// Canonical read-only artifact record for two-snapshot sync economics.
+/// Rust is the source of truth for this schema and exported values.
+/// Julia consumers should only read/analyze these records (means/medians/percentiles/ratios),
+/// without reinterpreting them as runtime authority or global truth.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TwoSnapshotSyncEconomicsRecord {
+    pub schema_version: String,
+    pub scenario_id: String,
+    pub since_ts_ms: u64,
+    pub until_ts_ms: u64,
+    pub left_event_count: u64,
+    pub right_event_count: u64,
+    pub left_digest_bytes: u64,
+    pub right_digest_bytes: u64,
+    pub compared_digest_bytes_total: u64,
+    pub estimated_bytes_per_event: u64,
+    pub estimated_full_sync_bytes: u64,
+    pub saved_bytes_if_sync_skipped: u64,
+    pub comparability: SyncSliceComparability,
+    pub outcome: SyncConvergenceOutcome,
+    pub freshness: Option<SyncDiagnosticFreshness>,
+    pub diagnostic_actionability: MeshDiagnosticActionability,
+    pub is_runtime_authority: bool,
+    pub is_global_truth: bool,
+    pub reason: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{SyncWindow, SyncWindowValidationError};

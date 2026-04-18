@@ -1,5 +1,7 @@
 use crate::message::validate_persistable_timestamp_ms;
 use crate::message::{event_hash, CanonicalMessage};
+use std::fs;
+use std::path::Path;
 
 use super::errors::MeshContractError;
 #[cfg(feature = "network")]
@@ -19,6 +21,7 @@ use super::types::{
     MeshDiagnosticActionability, MeshEventKind, MeshReplayDedupDiagnostic, OrderingMode,
     RecoveryWitness, SyncConvergenceHarnessReport, SyncConvergenceOutcome, SyncConvergenceScenario,
     SyncDiagnosticFreshness, SyncSliceComparability, SyncWindow, SyncWindowValidationError,
+    TwoSnapshotSyncEconomicsRecord,
 };
 
 #[cfg(feature = "network")]
@@ -26,6 +29,14 @@ use crate::offline_store::{OfflineStore, StoreInsertStatus, StoredMessage};
 
 #[cfg(feature = "network")]
 const RECOVERY_WITNESS_RELAY_SINCE_KEY: &str = "last_relay_pull_since_ms";
+pub(crate) const TWO_SNAPSHOT_SYNC_ECONOMICS_ARTIFACT_PATH: &str =
+    "artifacts/sync_economics/two_snapshot_sync_economics.jsonl";
+const TWO_SNAPSHOT_SYNC_ECONOMICS_SCHEMA_VERSION: &str = "v1";
+const DIGEST_ORDERING_BYTES: u64 = 1;
+const DIGEST_TIMESTAMP_BYTES: u64 = 8;
+const DIGEST_EVENT_COUNT_BYTES: u64 = 8;
+const DIGEST_STATE_BYTES: u64 = 32;
+const ESTIMATED_FULL_SYNC_BYTES_PER_EVENT: u64 = 128;
 
 /// Returns the conservative ordering mode for accepted local node history in v0.
 #[allow(dead_code)]
@@ -182,7 +193,6 @@ fn mesh_error_from_sync_window_validation(
     }
 }
 
-#[cfg(feature = "network")]
 fn validated_sync_window(
     since_ts_ms: u64,
     until_ts_ms: u64,
@@ -537,6 +547,217 @@ pub(crate) fn classify_sync_convergence_harness_actionability(
     MeshDiagnosticActionability::DiagnosticOnly
 }
 
+const fn digest_summary_bytes() -> u64 {
+    DIGEST_ORDERING_BYTES
+        + DIGEST_TIMESTAMP_BYTES
+        + DIGEST_TIMESTAMP_BYTES
+        + DIGEST_EVENT_COUNT_BYTES
+        + DIGEST_STATE_BYTES
+}
+
+fn conservative_estimated_full_sync_bytes(left_event_count: u64, right_event_count: u64) -> u64 {
+    left_event_count
+        .max(right_event_count)
+        .saturating_mul(ESTIMATED_FULL_SYNC_BYTES_PER_EVENT)
+}
+
+fn sync_economics_can_skip_heavy_sync(
+    report: &SyncConvergenceHarnessReport,
+    freshness: Option<SyncDiagnosticFreshness>,
+) -> bool {
+    report.comparability == SyncSliceComparability::Comparable
+        && report.outcome == SyncConvergenceOutcome::EquivalentLocalSlice
+        && freshness != Some(SyncDiagnosticFreshness::StaleLocalDiagnostic)
+}
+
+/// Builds a deterministic two-snapshot economics record for local comparison-first diagnostics.
+/// This helper is read-only and does not perform sync, merge, or runtime actions.
+#[allow(dead_code)]
+pub(crate) fn build_two_snapshot_sync_economics_record(
+    scenario_id: impl Into<String>,
+    report: &SyncConvergenceHarnessReport,
+    freshness: Option<SyncDiagnosticFreshness>,
+) -> Result<TwoSnapshotSyncEconomicsRecord, MeshContractError> {
+    validated_sync_window(report.since_ts_ms, report.until_ts_ms)?;
+    validated_sync_window(report.left.since_ts_ms, report.left.until_ts_ms)?;
+    validated_sync_window(report.right.since_ts_ms, report.right.until_ts_ms)?;
+
+    let left_digest_bytes = digest_summary_bytes();
+    let right_digest_bytes = digest_summary_bytes();
+    let compared_digest_bytes_total = left_digest_bytes.saturating_add(right_digest_bytes);
+    let estimated_full_sync_bytes =
+        conservative_estimated_full_sync_bytes(report.left.event_count, report.right.event_count);
+    let saved_bytes_if_sync_skipped = if sync_economics_can_skip_heavy_sync(report, freshness) {
+        estimated_full_sync_bytes.saturating_sub(compared_digest_bytes_total)
+    } else {
+        0
+    };
+    let diagnostic_actionability = classify_sync_convergence_harness_actionability(report);
+
+    Ok(TwoSnapshotSyncEconomicsRecord {
+        schema_version: TWO_SNAPSHOT_SYNC_ECONOMICS_SCHEMA_VERSION.to_string(),
+        scenario_id: scenario_id.into(),
+        since_ts_ms: report.since_ts_ms,
+        until_ts_ms: report.until_ts_ms,
+        left_event_count: report.left.event_count,
+        right_event_count: report.right.event_count,
+        left_digest_bytes,
+        right_digest_bytes,
+        compared_digest_bytes_total,
+        estimated_bytes_per_event: ESTIMATED_FULL_SYNC_BYTES_PER_EVENT,
+        estimated_full_sync_bytes,
+        saved_bytes_if_sync_skipped,
+        comparability: report.comparability,
+        outcome: report.outcome,
+        freshness,
+        diagnostic_actionability,
+        is_runtime_authority: false,
+        is_global_truth: false,
+        reason: format!(
+            "Two-snapshot local economics diagnostic only; compared bytes are direct digest-summary bytes, full-sync bytes are conservative estimate ({} bytes/event). {}",
+            ESTIMATED_FULL_SYNC_BYTES_PER_EVENT, report.reason
+        ),
+    })
+}
+
+fn synthetic_bandwidth_digest(
+    ordering: OrderingMode,
+    since_ts_ms: u64,
+    until_ts_ms: u64,
+    event_count: u64,
+    digest_fill_byte: u8,
+) -> BandwidthMinimalSyncDigest {
+    BandwidthMinimalSyncDigest {
+        ordering,
+        since_ts_ms,
+        until_ts_ms,
+        event_count,
+        state_digest: [digest_fill_byte; 32],
+    }
+}
+
+/// Builds deterministic local economics scenarios for two-snapshot sync diagnostics.
+/// Rust is the source of truth for these artifacts; downstream analysis should only read/analyze.
+#[allow(dead_code)]
+pub(crate) fn build_two_snapshot_sync_economics_harness_records(
+) -> Result<Vec<TwoSnapshotSyncEconomicsRecord>, MeshContractError> {
+    let base_left =
+        synthetic_bandwidth_digest(OrderingMode::TimestampAscLocalTieBreak, 100, 200, 4, 0x11);
+    let report_equivalent_fresh = build_sync_convergence_harness_report_from_digests(
+        SyncConvergenceScenario::Replay,
+        base_left.clone(),
+        base_left.clone(),
+    );
+    let freshness_equivalent_fresh = Some(classify_sync_convergence_diagnostic_freshness(
+        &report_equivalent_fresh,
+        report_equivalent_fresh.until_ts_ms + 5,
+        20,
+    )?);
+
+    let mut divergent_right = base_left.clone();
+    divergent_right.event_count = 5;
+    divergent_right.state_digest = [0x22; 32];
+    let report_divergent_fresh = build_sync_convergence_harness_report_from_digests(
+        SyncConvergenceScenario::Rejoin,
+        base_left.clone(),
+        divergent_right,
+    );
+    let freshness_divergent_fresh = Some(classify_sync_convergence_diagnostic_freshness(
+        &report_divergent_fresh,
+        report_divergent_fresh.until_ts_ms + 5,
+        20,
+    )?);
+
+    let not_comparable_right =
+        synthetic_bandwidth_digest(OrderingMode::TimestampAscLocalTieBreak, 120, 220, 4, 0x11);
+    let report_not_comparable = build_sync_convergence_harness_report_from_digests(
+        SyncConvergenceScenario::Restart,
+        base_left.clone(),
+        not_comparable_right,
+    );
+
+    let report_equivalent_stale = build_sync_convergence_harness_report_from_digests(
+        SyncConvergenceScenario::Restart,
+        base_left.clone(),
+        base_left,
+    );
+    let freshness_equivalent_stale = Some(classify_sync_convergence_diagnostic_freshness(
+        &report_equivalent_stale,
+        report_equivalent_stale.until_ts_ms + 500,
+        20,
+    )?);
+
+    Ok(vec![
+        build_two_snapshot_sync_economics_record(
+            "comparable_equivalent_fresh",
+            &report_equivalent_fresh,
+            freshness_equivalent_fresh,
+        )?,
+        build_two_snapshot_sync_economics_record(
+            "comparable_divergent_fresh",
+            &report_divergent_fresh,
+            freshness_divergent_fresh,
+        )?,
+        build_two_snapshot_sync_economics_record(
+            "not_comparable_context_mismatch",
+            &report_not_comparable,
+            None,
+        )?,
+        build_two_snapshot_sync_economics_record(
+            "comparable_equivalent_stale",
+            &report_equivalent_stale,
+            freshness_equivalent_stale,
+        )?,
+    ])
+}
+
+/// Serializes one economics record to canonical JSON.
+#[allow(dead_code)]
+pub(crate) fn serialize_two_snapshot_sync_economics_record_json(
+    record: &TwoSnapshotSyncEconomicsRecord,
+) -> Result<String, serde_json::Error> {
+    serde_json::to_string(record)
+}
+
+/// Serializes economics records as canonical JSONL in stable input order.
+#[allow(dead_code)]
+pub(crate) fn serialize_two_snapshot_sync_economics_records_jsonl(
+    records: &[TwoSnapshotSyncEconomicsRecord],
+) -> Result<String, serde_json::Error> {
+    let mut out = String::new();
+    for record in records {
+        out.push_str(&serialize_two_snapshot_sync_economics_record_json(record)?);
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+/// Writes economics records to JSONL artifact path.
+#[allow(dead_code)]
+pub(crate) fn write_two_snapshot_sync_economics_artifact_jsonl(
+    path: &Path,
+    records: &[TwoSnapshotSyncEconomicsRecord],
+) -> std::io::Result<()> {
+    let jsonl = serialize_two_snapshot_sync_economics_records_jsonl(records)
+        .map_err(std::io::Error::other)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, jsonl)
+}
+
+/// Exports deterministic two-snapshot sync economics artifacts.
+/// The artifact is diagnostic-only: it does not prove global convergence and does not decide sync.
+#[allow(dead_code)]
+pub(crate) fn export_two_snapshot_sync_economics_harness_artifact() -> std::io::Result<()> {
+    let records = build_two_snapshot_sync_economics_harness_records()
+        .map_err(|err| std::io::Error::other(format!("mesh economics harness failed: {err:?}")))?;
+    write_two_snapshot_sync_economics_artifact_jsonl(
+        Path::new(TWO_SNAPSHOT_SYNC_ECONOMICS_ARTIFACT_PATH),
+        &records,
+    )
+}
+
 /// Classifies freshness outputs as diagnostic-only surfaces.
 /// Diagnostic output is not a runtime decision, not sync authority, and not global truth.
 #[allow(dead_code)]
@@ -843,9 +1064,7 @@ mod tests {
     use super::*;
     #[cfg(feature = "network")]
     use rusqlite::{params, Connection};
-    #[cfg(feature = "network")]
     use std::fs;
-    #[cfg(feature = "network")]
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[cfg(feature = "network")]
@@ -1458,6 +1677,264 @@ mod tests {
         assert_eq!(report_a, report_b);
         assert_eq!(freshness_a, freshness_b);
         assert_eq!(surface_a, surface_b);
+    }
+
+    #[test]
+    fn two_snapshot_sync_economics_equivalent_record_is_conservative_and_non_authoritative() {
+        let report = sample_sync_convergence_equivalent_report();
+        let freshness =
+            classify_sync_convergence_diagnostic_freshness(&report, report.until_ts_ms + 5, 10)
+                .expect("freshness");
+
+        let record = build_two_snapshot_sync_economics_record(
+            "comparable_equivalent_fresh",
+            &report,
+            Some(freshness),
+        )
+        .expect("record");
+
+        assert_eq!(record.comparability, SyncSliceComparability::Comparable);
+        assert_eq!(record.outcome, SyncConvergenceOutcome::EquivalentLocalSlice);
+        assert_eq!(
+            record.schema_version,
+            TWO_SNAPSHOT_SYNC_ECONOMICS_SCHEMA_VERSION
+        );
+        assert_eq!(record.since_ts_ms, report.since_ts_ms);
+        assert_eq!(record.until_ts_ms, report.until_ts_ms);
+        assert_eq!(
+            record.freshness,
+            Some(SyncDiagnosticFreshness::FreshEnoughLocalDiagnostic)
+        );
+        assert_eq!(record.left_digest_bytes, digest_summary_bytes());
+        assert_eq!(record.right_digest_bytes, digest_summary_bytes());
+        assert_eq!(
+            record.estimated_bytes_per_event,
+            ESTIMATED_FULL_SYNC_BYTES_PER_EVENT
+        );
+        assert_eq!(
+            record.compared_digest_bytes_total,
+            record.left_digest_bytes + record.right_digest_bytes
+        );
+        assert!(record.saved_bytes_if_sync_skipped <= record.estimated_full_sync_bytes);
+        assert_eq!(
+            record.diagnostic_actionability,
+            MeshDiagnosticActionability::DiagnosticOnly
+        );
+        assert!(!record.is_runtime_authority);
+        assert!(!record.is_global_truth);
+    }
+
+    #[test]
+    fn two_snapshot_sync_economics_divergent_record_preserves_outcome_and_stays_diagnostic_only() {
+        let report = sample_sync_convergence_divergent_report();
+        let freshness =
+            classify_sync_convergence_diagnostic_freshness(&report, report.until_ts_ms + 5, 10)
+                .expect("freshness");
+
+        let record = build_two_snapshot_sync_economics_record(
+            "comparable_divergent_fresh",
+            &report,
+            Some(freshness),
+        )
+        .expect("record");
+
+        assert_eq!(record.comparability, SyncSliceComparability::Comparable);
+        assert_eq!(record.outcome, SyncConvergenceOutcome::DivergentLocalSlice);
+        assert_eq!(record.since_ts_ms, report.since_ts_ms);
+        assert_eq!(record.until_ts_ms, report.until_ts_ms);
+        assert_eq!(
+            record.diagnostic_actionability,
+            MeshDiagnosticActionability::DiagnosticOnly
+        );
+        assert_eq!(record.saved_bytes_if_sync_skipped, 0);
+    }
+
+    #[test]
+    fn two_snapshot_sync_economics_not_comparable_record_preserves_not_comparable() {
+        let report = sample_sync_convergence_not_comparable_report();
+        let record = build_two_snapshot_sync_economics_record(
+            "not_comparable_context_mismatch",
+            &report,
+            None,
+        )
+        .expect("record");
+
+        assert_eq!(record.comparability, SyncSliceComparability::NotComparable);
+        assert_eq!(
+            record.outcome,
+            SyncConvergenceOutcome::NotComparableLocalSlice
+        );
+        assert_eq!(record.since_ts_ms, report.since_ts_ms);
+        assert_eq!(record.until_ts_ms, report.until_ts_ms);
+        assert_eq!(record.saved_bytes_if_sync_skipped, 0);
+        assert_eq!(
+            record.diagnostic_actionability,
+            MeshDiagnosticActionability::DiagnosticOnly
+        );
+    }
+
+    #[test]
+    fn two_snapshot_sync_economics_stale_diagnostic_is_recorded_conservatively() {
+        let report = sample_sync_convergence_equivalent_report();
+        let freshness =
+            classify_sync_convergence_diagnostic_freshness(&report, report.until_ts_ms + 500, 10)
+                .expect("freshness");
+        let record = build_two_snapshot_sync_economics_record(
+            "comparable_equivalent_stale",
+            &report,
+            Some(freshness),
+        )
+        .expect("record");
+
+        assert_eq!(freshness, SyncDiagnosticFreshness::StaleLocalDiagnostic);
+        assert_eq!(
+            record.freshness,
+            Some(SyncDiagnosticFreshness::StaleLocalDiagnostic)
+        );
+        assert_eq!(
+            record.estimated_bytes_per_event,
+            ESTIMATED_FULL_SYNC_BYTES_PER_EVENT
+        );
+        assert_eq!(record.saved_bytes_if_sync_skipped, 0);
+    }
+
+    #[test]
+    fn two_snapshot_sync_economics_saved_bytes_uses_saturating_math_without_underflow() {
+        let digest = BandwidthMinimalSyncDigest {
+            ordering: OrderingMode::TimestampAscLocalTieBreak,
+            since_ts_ms: 10,
+            until_ts_ms: 20,
+            event_count: 0,
+            state_digest: [0xAA; 32],
+        };
+        let report = build_sync_convergence_harness_report_from_digests(
+            SyncConvergenceScenario::Replay,
+            digest.clone(),
+            digest,
+        );
+        let freshness =
+            classify_sync_convergence_diagnostic_freshness(&report, report.until_ts_ms + 1, 10)
+                .expect("freshness");
+        let record = build_two_snapshot_sync_economics_record(
+            "zero_estimate_no_underflow",
+            &report,
+            Some(freshness),
+        )
+        .expect("record");
+
+        assert_eq!(record.estimated_full_sync_bytes, 0);
+        assert_eq!(record.saved_bytes_if_sync_skipped, 0);
+    }
+
+    #[test]
+    fn two_snapshot_sync_economics_serialization_is_deterministic() {
+        let records = build_two_snapshot_sync_economics_harness_records().expect("records");
+        let jsonl_a =
+            serialize_two_snapshot_sync_economics_records_jsonl(&records).expect("jsonl a");
+        let jsonl_b =
+            serialize_two_snapshot_sync_economics_records_jsonl(&records).expect("jsonl b");
+
+        assert_eq!(jsonl_a, jsonl_b);
+        assert!(jsonl_a.ends_with('\n'));
+        assert_eq!(jsonl_a.lines().count(), records.len());
+    }
+
+    #[test]
+    fn two_snapshot_sync_economics_artifact_schema_is_stable_and_legible() {
+        let records = build_two_snapshot_sync_economics_harness_records().expect("records");
+        let jsonl = serialize_two_snapshot_sync_economics_records_jsonl(&records).expect("jsonl");
+        let first = jsonl.lines().next().expect("first line");
+        let value: serde_json::Value = serde_json::from_str(first).expect("json");
+        let object = value.as_object().expect("json object");
+
+        for field in [
+            "schema_version",
+            "scenario_id",
+            "since_ts_ms",
+            "until_ts_ms",
+            "left_event_count",
+            "right_event_count",
+            "left_digest_bytes",
+            "right_digest_bytes",
+            "compared_digest_bytes_total",
+            "estimated_bytes_per_event",
+            "estimated_full_sync_bytes",
+            "saved_bytes_if_sync_skipped",
+            "comparability",
+            "outcome",
+            "freshness",
+            "diagnostic_actionability",
+            "is_runtime_authority",
+            "is_global_truth",
+            "reason",
+        ] {
+            assert!(object.contains_key(field), "missing field {field}");
+        }
+        assert_eq!(
+            object
+                .get("schema_version")
+                .and_then(serde_json::Value::as_str),
+            Some(TWO_SNAPSHOT_SYNC_ECONOMICS_SCHEMA_VERSION)
+        );
+    }
+
+    #[test]
+    fn two_snapshot_sync_economics_harness_covers_expected_scenarios() {
+        let records = build_two_snapshot_sync_economics_harness_records().expect("records");
+        let ids = records
+            .iter()
+            .map(|record| record.scenario_id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            ids,
+            vec![
+                "comparable_equivalent_fresh",
+                "comparable_divergent_fresh",
+                "not_comparable_context_mismatch",
+                "comparable_equivalent_stale"
+            ]
+        );
+    }
+
+    #[test]
+    fn two_snapshot_sync_economics_harness_is_deterministic_and_non_authoritative() {
+        let records_a = build_two_snapshot_sync_economics_harness_records().expect("records a");
+        let records_b = build_two_snapshot_sync_economics_harness_records().expect("records b");
+
+        assert_eq!(records_a, records_b);
+        assert!(records_a
+            .iter()
+            .all(|record| !record.is_runtime_authority && !record.is_global_truth));
+        assert!(records_a
+            .iter()
+            .all(|record| record.diagnostic_actionability
+                == MeshDiagnosticActionability::DiagnosticOnly));
+    }
+
+    #[test]
+    fn two_snapshot_sync_economics_artifact_writer_emits_jsonl() {
+        let records = build_two_snapshot_sync_economics_harness_records().expect("records");
+        let uniq = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("nexo_sync_economics_{uniq}.jsonl"));
+        write_two_snapshot_sync_economics_artifact_jsonl(&path, &records).expect("write");
+
+        let jsonl = fs::read_to_string(&path).expect("read");
+        assert_eq!(jsonl.lines().count(), records.len());
+        assert!(jsonl.contains("comparable_equivalent_fresh"));
+
+        fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn two_snapshot_sync_economics_default_artifact_path_is_explicit() {
+        assert_eq!(
+            TWO_SNAPSHOT_SYNC_ECONOMICS_ARTIFACT_PATH,
+            "artifacts/sync_economics/two_snapshot_sync_economics.jsonl"
+        );
     }
 
     #[test]
