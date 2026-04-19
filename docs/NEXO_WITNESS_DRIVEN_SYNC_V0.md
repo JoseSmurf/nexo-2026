@@ -104,6 +104,15 @@ Nao-claims obrigatorios:
 
 Qualquer integracao futura com decisao real de sync precisa de contrato explicito antes de codigo operacional.
 
+## Contrato minimo: erro estrutural vs diagnostico
+
+Para evitar ambiguidade semantica no Sync v0:
+
+- violacao estrutural de contrato (ex.: janela invalida, timestamp fora do dominio persistivel) deve falhar em modo fail-closed e nao deve ser reclassificada como diagnostico;
+- `NotComparableLocalSlice` so se aplica a slices estruturalmente validas com contexto de comparacao incompatível (ordering/since/until);
+- `FreshnessNotAssessable` so se aplica a report estruturalmente valido com base temporal insuficiente para classificar freshness;
+- nenhum desses estados implica autoridade de runtime, verdade global ou decisao automatica de sync.
+
 ## O que ainda nao existe
 
 - pull/delta runtime orientado por digest;
