@@ -18,6 +18,8 @@ use super::types::RecoveryClassification;
 use super::types::SyncCursor;
 use super::types::{
     AcceptedEventRef, AcceptedStateWitness, BandwidthMinimalSyncDigest,
+    DecisionCycleComparabilityState, DecisionCycleFreshnessState, DecisionCycleIntent,
+    DecisionCyclePolicyMode, DecisionCycleStructuralState, DecisionCycleV0Record,
     MeshDiagnosticActionability, MeshEventKind, MeshReplayDedupDiagnostic, OrderingMode,
     RecoveryWitness, SyncConvergenceHarnessReport, SyncConvergenceOutcome, SyncConvergenceScenario,
     SyncDiagnosticFreshness, SyncSliceComparability, SyncWindow, SyncWindowValidationError,
@@ -31,7 +33,10 @@ use crate::offline_store::{OfflineStore, StoreInsertStatus, StoredMessage};
 const RECOVERY_WITNESS_RELAY_SINCE_KEY: &str = "last_relay_pull_since_ms";
 pub(crate) const TWO_SNAPSHOT_SYNC_ECONOMICS_ARTIFACT_PATH: &str =
     "artifacts/sync_economics/two_snapshot_sync_economics.jsonl";
+pub(crate) const DECISION_CYCLE_V0_ARTIFACT_PATH: &str =
+    "artifacts/bitcoin_logistics_experiment/decision_cycles.jsonl";
 const TWO_SNAPSHOT_SYNC_ECONOMICS_SCHEMA_VERSION: &str = "v1";
+const DECISION_CYCLE_V0_SCHEMA_VERSION: &str = "v1";
 const DIGEST_ORDERING_BYTES: u64 = 1;
 const DIGEST_TIMESTAMP_BYTES: u64 = 8;
 const DIGEST_EVENT_COUNT_BYTES: u64 = 8;
@@ -822,6 +827,283 @@ pub(crate) fn export_two_snapshot_sync_economics_harness_artifact() -> std::io::
     )
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SyntheticDecisionCycleInput {
+    cycle_id: &'static str,
+    work_item_id: &'static str,
+    observed_at_ts_ms: u64,
+    structural_state: DecisionCycleStructuralState,
+    comparability_state: DecisionCycleComparabilityState,
+    freshness_state: DecisionCycleFreshnessState,
+}
+
+fn synthetic_decision_cycle_inputs() -> [SyntheticDecisionCycleInput; 5] {
+    [
+        SyntheticDecisionCycleInput {
+            cycle_id: "cycle_001_comparable_fresh",
+            work_item_id: "work_001",
+            observed_at_ts_ms: 1_000,
+            structural_state: DecisionCycleStructuralState::StructurallyValid,
+            comparability_state: DecisionCycleComparabilityState::Comparable,
+            freshness_state: DecisionCycleFreshnessState::FreshEnough,
+        },
+        SyntheticDecisionCycleInput {
+            cycle_id: "cycle_002_comparable_stale",
+            work_item_id: "work_002",
+            observed_at_ts_ms: 2_000,
+            structural_state: DecisionCycleStructuralState::StructurallyValid,
+            comparability_state: DecisionCycleComparabilityState::Comparable,
+            freshness_state: DecisionCycleFreshnessState::Stale,
+        },
+        SyntheticDecisionCycleInput {
+            cycle_id: "cycle_003_not_comparable",
+            work_item_id: "work_003",
+            observed_at_ts_ms: 3_000,
+            structural_state: DecisionCycleStructuralState::StructurallyValid,
+            comparability_state: DecisionCycleComparabilityState::NotComparable,
+            freshness_state: DecisionCycleFreshnessState::FreshEnough,
+        },
+        SyntheticDecisionCycleInput {
+            cycle_id: "cycle_004_freshness_not_assessable",
+            work_item_id: "work_004",
+            observed_at_ts_ms: 4_000,
+            structural_state: DecisionCycleStructuralState::StructurallyValid,
+            comparability_state: DecisionCycleComparabilityState::Comparable,
+            freshness_state: DecisionCycleFreshnessState::FreshnessNotAssessable,
+        },
+        SyntheticDecisionCycleInput {
+            cycle_id: "cycle_005_structural_invalid",
+            work_item_id: "work_005",
+            observed_at_ts_ms: 5_000,
+            structural_state: DecisionCycleStructuralState::StructuralInvalid,
+            comparability_state: DecisionCycleComparabilityState::NotComparable,
+            freshness_state: DecisionCycleFreshnessState::FreshnessNotAssessable,
+        },
+    ]
+}
+
+fn normalized_decision_cycle_states(
+    input: SyntheticDecisionCycleInput,
+) -> (
+    DecisionCycleStructuralState,
+    DecisionCycleComparabilityState,
+    DecisionCycleFreshnessState,
+) {
+    match input.structural_state {
+        DecisionCycleStructuralState::StructuralInvalid => (
+            DecisionCycleStructuralState::StructuralInvalid,
+            DecisionCycleComparabilityState::NotEvaluated,
+            DecisionCycleFreshnessState::NotEvaluated,
+        ),
+        DecisionCycleStructuralState::StructurallyValid => (
+            DecisionCycleStructuralState::StructurallyValid,
+            input.comparability_state,
+            input.freshness_state,
+        ),
+    }
+}
+
+fn checked_decision_cycle_timestamp(
+    field: &'static str,
+    base_ts_ms: u64,
+    delta_ms: u64,
+) -> Result<u64, MeshContractError> {
+    let value = base_ts_ms.checked_add(delta_ms).ok_or(
+        MeshContractError::TimestampOutOfPersistableRange {
+            field,
+            value: u64::MAX,
+        },
+    )?;
+    validate_persistable_mesh_timestamp(field, value)?;
+    Ok(value)
+}
+
+fn blind_decision_intent(
+    structural_state: DecisionCycleStructuralState,
+    stale_detected: bool,
+) -> (DecisionCycleIntent, &'static str, u64) {
+    if structural_state == DecisionCycleStructuralState::StructuralInvalid {
+        return (
+            DecisionCycleIntent::Discard,
+            "structural_invalid_fail_closed",
+            1,
+        );
+    }
+
+    if stale_detected {
+        (
+            DecisionCycleIntent::Refresh,
+            "blind_fixed_refresh_on_stale",
+            1,
+        )
+    } else {
+        (DecisionCycleIntent::Continue, "blind_fixed_continue", 1)
+    }
+}
+
+fn evidence_guided_decision_intent(
+    structural_state: DecisionCycleStructuralState,
+    comparability_state: DecisionCycleComparabilityState,
+    freshness_state: DecisionCycleFreshnessState,
+) -> (DecisionCycleIntent, &'static str, u64) {
+    if structural_state == DecisionCycleStructuralState::StructuralInvalid {
+        return (
+            DecisionCycleIntent::Discard,
+            "structural_invalid_fail_closed",
+            2,
+        );
+    }
+
+    if comparability_state == DecisionCycleComparabilityState::NotEvaluated {
+        return (
+            DecisionCycleIntent::Abandon,
+            "evidence_comparability_not_evaluated_conservative",
+            2,
+        );
+    }
+    if comparability_state == DecisionCycleComparabilityState::NotComparable {
+        return (
+            DecisionCycleIntent::Rebuild,
+            "evidence_context_mismatch_rebuild",
+            2,
+        );
+    }
+
+    match freshness_state {
+        DecisionCycleFreshnessState::FreshEnough => (
+            DecisionCycleIntent::Continue,
+            "evidence_fresh_enough_continue",
+            2,
+        ),
+        DecisionCycleFreshnessState::Stale => {
+            (DecisionCycleIntent::Refresh, "evidence_stale_refresh", 2)
+        }
+        DecisionCycleFreshnessState::FreshnessNotAssessable => (
+            DecisionCycleIntent::Abandon,
+            "evidence_freshness_not_assessable_conservative",
+            2,
+        ),
+        DecisionCycleFreshnessState::NotEvaluated => (
+            DecisionCycleIntent::Abandon,
+            "evidence_freshness_not_evaluated_conservative",
+            2,
+        ),
+    }
+}
+
+fn build_decision_cycle_v0_record_from_input(
+    run_id: &str,
+    policy_mode: DecisionCyclePolicyMode,
+    input: SyntheticDecisionCycleInput,
+) -> Result<DecisionCycleV0Record, MeshContractError> {
+    validate_persistable_mesh_timestamp("observed_at_ts_ms", input.observed_at_ts_ms)?;
+    let (structural_state, comparability_state, freshness_state) =
+        normalized_decision_cycle_states(input);
+    let stale_detected = freshness_state == DecisionCycleFreshnessState::Stale;
+
+    let (decision_intent, reason_code, decision_overhead_ms) = match policy_mode {
+        DecisionCyclePolicyMode::Blind => blind_decision_intent(structural_state, stale_detected),
+        DecisionCyclePolicyMode::EvidenceGuided => {
+            evidence_guided_decision_intent(structural_state, comparability_state, freshness_state)
+        }
+    };
+
+    let decision_at_ts_ms = checked_decision_cycle_timestamp(
+        "decision_at_ts_ms",
+        input.observed_at_ts_ms,
+        decision_overhead_ms,
+    )?;
+    let cycle_closed_at_ts_ms =
+        checked_decision_cycle_timestamp("cycle_closed_at_ts_ms", decision_at_ts_ms, 1)?;
+
+    Ok(DecisionCycleV0Record {
+        schema_version: DECISION_CYCLE_V0_SCHEMA_VERSION.to_string(),
+        run_id: run_id.to_string(),
+        cycle_id: input.cycle_id.to_string(),
+        policy_mode,
+        work_item_id: input.work_item_id.to_string(),
+        observed_at_ts_ms: input.observed_at_ts_ms,
+        decision_at_ts_ms,
+        cycle_closed_at_ts_ms,
+        structural_state,
+        comparability_state,
+        freshness_state,
+        actionability: MeshDiagnosticActionability::DiagnosticOnly,
+        decision_intent,
+        decision_overhead_ms,
+        stale_detected,
+        is_runtime_authority: false,
+        is_global_truth: false,
+        reason_code: reason_code.to_string(),
+    })
+}
+
+/// Builds deterministic A/B decision-cycle artifacts for experimental v0 evaluation.
+/// This helper is read-only: it does not trigger runtime actions and does not integrate real mining.
+#[allow(dead_code)]
+pub(crate) fn build_decision_cycle_v0_harness_records(
+    run_id: impl Into<String>,
+) -> Result<Vec<DecisionCycleV0Record>, MeshContractError> {
+    let run_id = run_id.into();
+    let mut records = Vec::new();
+    for input in synthetic_decision_cycle_inputs() {
+        records.push(build_decision_cycle_v0_record_from_input(
+            &run_id,
+            DecisionCyclePolicyMode::Blind,
+            input,
+        )?);
+        records.push(build_decision_cycle_v0_record_from_input(
+            &run_id,
+            DecisionCyclePolicyMode::EvidenceGuided,
+            input,
+        )?);
+    }
+    Ok(records)
+}
+
+/// Serializes one decision-cycle record to canonical JSON.
+#[allow(dead_code)]
+pub(crate) fn serialize_decision_cycle_v0_record_json(
+    record: &DecisionCycleV0Record,
+) -> Result<String, serde_json::Error> {
+    serde_json::to_string(record)
+}
+
+/// Serializes decision-cycle records as canonical JSONL in stable input order.
+#[allow(dead_code)]
+pub(crate) fn serialize_decision_cycle_v0_records_jsonl(
+    records: &[DecisionCycleV0Record],
+) -> Result<String, serde_json::Error> {
+    let mut out = String::new();
+    for record in records {
+        out.push_str(&serialize_decision_cycle_v0_record_json(record)?);
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+/// Writes decision-cycle records to the JSONL artifact path.
+#[allow(dead_code)]
+pub(crate) fn write_decision_cycle_v0_artifact_jsonl(
+    path: &Path,
+    records: &[DecisionCycleV0Record],
+) -> std::io::Result<()> {
+    let jsonl =
+        serialize_decision_cycle_v0_records_jsonl(records).map_err(std::io::Error::other)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, jsonl)
+}
+
+/// Exports deterministic A/B decision-cycle artifacts for experimental v0.
+#[allow(dead_code)]
+pub(crate) fn export_decision_cycle_v0_harness_artifact() -> std::io::Result<()> {
+    let records = build_decision_cycle_v0_harness_records("decision_cycle_v0_default")
+        .map_err(|err| std::io::Error::other(format!("decision cycle harness failed: {err:?}")))?;
+    write_decision_cycle_v0_artifact_jsonl(Path::new(DECISION_CYCLE_V0_ARTIFACT_PATH), &records)
+}
+
 /// Classifies freshness outputs as diagnostic-only surfaces.
 /// Diagnostic output is not a runtime decision, not sync authority, and not global truth.
 #[allow(dead_code)]
@@ -1126,6 +1408,7 @@ mod tests {
     use super::*;
     #[cfg(feature = "network")]
     use rusqlite::{params, Connection};
+    use std::collections::BTreeMap;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2024,6 +2307,198 @@ mod tests {
         assert_eq!(
             TWO_SNAPSHOT_SYNC_ECONOMICS_ARTIFACT_PATH,
             "artifacts/sync_economics/two_snapshot_sync_economics.jsonl"
+        );
+    }
+
+    #[test]
+    fn decision_cycle_v0_harness_is_deterministic_and_ab_paired() {
+        let records_a = build_decision_cycle_v0_harness_records("run_v0").expect("records a");
+        let records_b = build_decision_cycle_v0_harness_records("run_v0").expect("records b");
+
+        assert_eq!(records_a, records_b);
+        let mut policy_count_by_cycle: BTreeMap<&str, Vec<DecisionCyclePolicyMode>> =
+            BTreeMap::new();
+        for record in &records_a {
+            policy_count_by_cycle
+                .entry(record.cycle_id.as_str())
+                .or_default()
+                .push(record.policy_mode);
+            assert_eq!(
+                record.actionability,
+                MeshDiagnosticActionability::DiagnosticOnly
+            );
+            assert!(!record.is_runtime_authority);
+            assert!(!record.is_global_truth);
+        }
+
+        assert!(!policy_count_by_cycle.is_empty());
+        for policies in policy_count_by_cycle.values() {
+            assert_eq!(policies.len(), 2);
+            assert!(policies.contains(&DecisionCyclePolicyMode::Blind));
+            assert!(policies.contains(&DecisionCyclePolicyMode::EvidenceGuided));
+        }
+    }
+
+    #[test]
+    fn decision_cycle_v0_structural_invalid_is_fail_closed_and_not_reclassified() {
+        let records = build_decision_cycle_v0_harness_records("run_v0").expect("records");
+        let structural_invalid_records = records
+            .iter()
+            .filter(|record| record.cycle_id == "cycle_005_structural_invalid")
+            .collect::<Vec<_>>();
+
+        assert_eq!(structural_invalid_records.len(), 2);
+        for record in structural_invalid_records {
+            assert_eq!(
+                record.structural_state,
+                DecisionCycleStructuralState::StructuralInvalid
+            );
+            assert_eq!(
+                record.comparability_state,
+                DecisionCycleComparabilityState::NotEvaluated
+            );
+            assert_eq!(
+                record.freshness_state,
+                DecisionCycleFreshnessState::NotEvaluated
+            );
+            assert_eq!(record.decision_intent, DecisionCycleIntent::Discard);
+            assert_eq!(record.reason_code, "structural_invalid_fail_closed");
+        }
+    }
+
+    #[test]
+    fn decision_cycle_v0_valid_context_mismatch_stays_not_comparable() {
+        let records = build_decision_cycle_v0_harness_records("run_v0").expect("records");
+        let evidence_record = records
+            .iter()
+            .find(|record| {
+                record.cycle_id == "cycle_003_not_comparable"
+                    && record.policy_mode == DecisionCyclePolicyMode::EvidenceGuided
+            })
+            .expect("evidence record");
+
+        assert_eq!(
+            evidence_record.structural_state,
+            DecisionCycleStructuralState::StructurallyValid
+        );
+        assert_eq!(
+            evidence_record.comparability_state,
+            DecisionCycleComparabilityState::NotComparable
+        );
+        assert_eq!(
+            evidence_record.freshness_state,
+            DecisionCycleFreshnessState::FreshEnough
+        );
+        assert_eq!(
+            evidence_record.decision_intent,
+            DecisionCycleIntent::Rebuild
+        );
+    }
+
+    #[test]
+    fn decision_cycle_v0_valid_freshness_not_assessable_is_preserved() {
+        let records = build_decision_cycle_v0_harness_records("run_v0").expect("records");
+        let evidence_record = records
+            .iter()
+            .find(|record| {
+                record.cycle_id == "cycle_004_freshness_not_assessable"
+                    && record.policy_mode == DecisionCyclePolicyMode::EvidenceGuided
+            })
+            .expect("evidence record");
+
+        assert_eq!(
+            evidence_record.structural_state,
+            DecisionCycleStructuralState::StructurallyValid
+        );
+        assert_eq!(
+            evidence_record.comparability_state,
+            DecisionCycleComparabilityState::Comparable
+        );
+        assert_eq!(
+            evidence_record.freshness_state,
+            DecisionCycleFreshnessState::FreshnessNotAssessable
+        );
+        assert_eq!(
+            evidence_record.decision_intent,
+            DecisionCycleIntent::Abandon
+        );
+    }
+
+    #[test]
+    fn decision_cycle_v0_record_rejects_observed_timestamp_out_of_persistable_range() {
+        let input = SyntheticDecisionCycleInput {
+            cycle_id: "cycle_invalid_observed_ts",
+            work_item_id: "work_invalid_ts",
+            observed_at_ts_ms: (i64::MAX as u64).saturating_add(1),
+            structural_state: DecisionCycleStructuralState::StructurallyValid,
+            comparability_state: DecisionCycleComparabilityState::Comparable,
+            freshness_state: DecisionCycleFreshnessState::FreshEnough,
+        };
+
+        let result = build_decision_cycle_v0_record_from_input(
+            "run_v0",
+            DecisionCyclePolicyMode::Blind,
+            input,
+        );
+
+        assert_eq!(
+            result,
+            Err(MeshContractError::TimestampOutOfPersistableRange {
+                field: "observed_at_ts_ms",
+                value: (i64::MAX as u64).saturating_add(1),
+            })
+        );
+    }
+
+    #[test]
+    fn decision_cycle_v0_jsonl_is_deterministic_and_schema_versioned() {
+        let records = build_decision_cycle_v0_harness_records("run_v0").expect("records");
+        let jsonl_a = serialize_decision_cycle_v0_records_jsonl(&records).expect("jsonl a");
+        let jsonl_b = serialize_decision_cycle_v0_records_jsonl(&records).expect("jsonl b");
+
+        assert_eq!(jsonl_a, jsonl_b);
+        assert!(jsonl_a.ends_with('\n'));
+        assert_eq!(jsonl_a.lines().count(), records.len());
+
+        let first = jsonl_a.lines().next().expect("first line");
+        let value: serde_json::Value = serde_json::from_str(first).expect("json");
+        assert_eq!(
+            value
+                .get("schema_version")
+                .and_then(serde_json::Value::as_str),
+            Some(DECISION_CYCLE_V0_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            value
+                .get("actionability")
+                .and_then(serde_json::Value::as_str),
+            Some("DiagnosticOnly")
+        );
+    }
+
+    #[test]
+    fn decision_cycle_v0_artifact_writer_emits_jsonl() {
+        let records = build_decision_cycle_v0_harness_records("run_v0").expect("records");
+        let uniq = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("nexo_decision_cycle_v0_{uniq}.jsonl"));
+        write_decision_cycle_v0_artifact_jsonl(&path, &records).expect("write");
+
+        let jsonl = fs::read_to_string(&path).expect("read");
+        assert_eq!(jsonl.lines().count(), records.len());
+        assert!(jsonl.contains("\"policy_mode\":\"Blind\""));
+        assert!(jsonl.contains("\"policy_mode\":\"EvidenceGuided\""));
+
+        fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn decision_cycle_v0_default_artifact_path_is_explicit() {
+        assert_eq!(
+            DECISION_CYCLE_V0_ARTIFACT_PATH,
+            "artifacts/bitcoin_logistics_experiment/decision_cycles.jsonl"
         );
     }
 
