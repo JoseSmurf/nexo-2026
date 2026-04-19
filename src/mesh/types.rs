@@ -1,5 +1,6 @@
 use crate::message::validate_persistable_timestamp_ms;
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Declares the operational role a node may hold in the v0 mesh contract.
 /// These roles describe policy and intent, not authority over the Rust core.
@@ -80,10 +81,33 @@ pub enum SyncWindowValidationError {
 /// Minimal validated time window used for local sync diagnostics.
 /// This keeps invalid window shapes out of internal mesh helpers.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct SyncWindow {
     since_ts_ms: u64,
     until_ts_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SyncWindowSerdeShape {
+    since_ts_ms: u64,
+    until_ts_ms: u64,
+}
+
+fn sync_window_validation_error_message(err: SyncWindowValidationError) -> String {
+    match err {
+        SyncWindowValidationError::SinceOutOfPersistableRange { value } => {
+            format!("since_ts_ms out of persistable range: {value}")
+        }
+        SyncWindowValidationError::UntilOutOfPersistableRange { value } => {
+            format!("until_ts_ms out of persistable range: {value}")
+        }
+        SyncWindowValidationError::UntilBeforeSince {
+            since_ts_ms,
+            until_ts_ms,
+        } => {
+            format!("until_ts_ms must be >= since_ts_ms (since={since_ts_ms}, until={until_ts_ms})")
+        }
+    }
 }
 
 impl SyncWindow {
@@ -123,6 +147,17 @@ impl TryFrom<(u64, u64)> for SyncWindow {
 
     fn try_from(value: (u64, u64)) -> Result<Self, Self::Error> {
         Self::new(value.0, value.1)
+    }
+}
+
+impl<'de> Deserialize<'de> for SyncWindow {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let shape = SyncWindowSerdeShape::deserialize(deserializer)?;
+        Self::new(shape.since_ts_ms, shape.until_ts_ms)
+            .map_err(|err| D::Error::custom(sync_window_validation_error_message(err)))
     }
 }
 
@@ -378,5 +413,24 @@ mod tests {
                 value: (i64::MAX as u64).saturating_add(1)
             })
         );
+    }
+
+    #[test]
+    fn sync_window_deserialize_rejects_until_before_since() {
+        let err = serde_json::from_str::<SyncWindow>(r#"{"since_ts_ms":20,"until_ts_ms":10}"#)
+            .expect_err("must fail");
+        assert!(err
+            .to_string()
+            .contains("until_ts_ms must be >= since_ts_ms"));
+    }
+
+    #[test]
+    fn sync_window_deserialize_rejects_since_out_of_persistable_range() {
+        let invalid = (i64::MAX as u64).saturating_add(1);
+        let json = format!(r#"{{"since_ts_ms":{invalid},"until_ts_ms":{}}}"#, i64::MAX);
+        let err = serde_json::from_str::<SyncWindow>(&json).expect_err("must fail");
+        assert!(err
+            .to_string()
+            .contains("since_ts_ms out of persistable range"));
     }
 }
