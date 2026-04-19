@@ -115,6 +115,12 @@ function validate_two_snapshot_sync_economics_record(record)
             "unsupported schema_version=$(schema_version), expected $(SYNC_ECONOMICS_SCHEMA_VERSION)",
         ),
     )
+    is_runtime_authority = _required_bool(record, :is_runtime_authority)
+    is_runtime_authority &&
+        throw(ArgumentError("field is_runtime_authority must be false for diagnostic artifacts"))
+    is_global_truth = _required_bool(record, :is_global_truth)
+    is_global_truth &&
+        throw(ArgumentError("field is_global_truth must be false for diagnostic artifacts"))
 
     return true
 end
