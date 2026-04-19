@@ -104,6 +104,23 @@ Nao-claims obrigatorios:
 
 Qualquer integracao futura com decisao real de sync precisa de contrato explicito antes de codigo operacional.
 
+## Mapa Operacional de Evidencia
+
+No estado atual do NEXO, "mapa" significa disciplina operacional de pre-condicoes de evidencia local antes de qualquer interpretacao mais forte ou custo operacional maior.
+
+Gates minimos:
+
+- estrutura: entradas e janelas devem ser estruturalmente validas;
+- comparabilidade: so comparar slices quando o contexto local for compativel;
+- freshness: classificar recencia apenas para report estruturalmente valido;
+- actionability: manter resultado como diagnostico (`DiagnosticOnly`) ate contrato explicito de runtime.
+
+Non-claims obrigatorios:
+
+- nao e verdade global;
+- nao e autoridade de runtime;
+- nao e sync automatico.
+
 ## Contrato minimo: erro estrutural vs diagnostico
 
 Para evitar ambiguidade semantica no Sync v0:
