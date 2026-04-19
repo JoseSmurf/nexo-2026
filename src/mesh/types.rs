@@ -363,6 +363,80 @@ pub struct TwoSnapshotSyncEconomicsRecord {
     pub reason: String,
 }
 
+/// Policy mode under test for the experimental decision-cycle harness.
+/// This remains diagnostic-only and is not runtime authority.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DecisionCyclePolicyMode {
+    Blind,
+    EvidenceGuided,
+}
+
+/// Structural validity state for one experimental decision cycle.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DecisionCycleStructuralState {
+    StructurallyValid,
+    StructuralInvalid,
+}
+
+/// Comparability state emitted by the experimental decision-cycle harness.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DecisionCycleComparabilityState {
+    Comparable,
+    NotComparable,
+    NotEvaluated,
+}
+
+/// Freshness state emitted by the experimental decision-cycle harness.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DecisionCycleFreshnessState {
+    FreshEnough,
+    Stale,
+    FreshnessNotAssessable,
+    NotEvaluated,
+}
+
+/// Diagnostic intent emitted by one experimental decision cycle.
+/// Intent is not an automatic runtime action.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DecisionCycleIntent {
+    Continue,
+    Refresh,
+    Rebuild,
+    Discard,
+    SubmitAttempt,
+    Abandon,
+}
+
+/// Canonical experimental record for one decision cycle in blind vs evidence-guided A/B runs.
+/// This record is diagnostic-only, not runtime authority, and not global truth.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionCycleV0Record {
+    pub schema_version: String,
+    pub run_id: String,
+    pub cycle_id: String,
+    pub policy_mode: DecisionCyclePolicyMode,
+    pub work_item_id: String,
+    pub observed_at_ts_ms: u64,
+    pub decision_at_ts_ms: u64,
+    pub cycle_closed_at_ts_ms: u64,
+    pub structural_state: DecisionCycleStructuralState,
+    pub comparability_state: DecisionCycleComparabilityState,
+    pub freshness_state: DecisionCycleFreshnessState,
+    pub actionability: MeshDiagnosticActionability,
+    pub decision_intent: DecisionCycleIntent,
+    pub decision_overhead_ms: u64,
+    pub stale_detected: bool,
+    pub is_runtime_authority: bool,
+    pub is_global_truth: bool,
+    pub reason_code: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{SyncWindow, SyncWindowValidationError};
