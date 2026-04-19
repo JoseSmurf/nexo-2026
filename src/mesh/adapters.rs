@@ -193,12 +193,21 @@ fn mesh_error_from_sync_window_validation(
     }
 }
 
+fn validated_sync_window_with_fields(
+    since_ts_ms: u64,
+    until_ts_ms: u64,
+    since_field: &'static str,
+    until_field: &'static str,
+) -> Result<SyncWindow, MeshContractError> {
+    SyncWindow::new(since_ts_ms, until_ts_ms)
+        .map_err(|err| mesh_error_from_sync_window_validation(err, since_field, until_field))
+}
+
 fn validated_sync_window(
     since_ts_ms: u64,
     until_ts_ms: u64,
 ) -> Result<SyncWindow, MeshContractError> {
-    SyncWindow::new(since_ts_ms, until_ts_ms)
-        .map_err(|err| mesh_error_from_sync_window_validation(err, "since_ts_ms", "until_ts_ms"))
+    validated_sync_window_with_fields(since_ts_ms, until_ts_ms, "since_ts_ms", "until_ts_ms")
 }
 
 #[cfg(feature = "network")]
@@ -488,6 +497,33 @@ pub(crate) fn classify_sync_slice_comparability(
     }
 }
 
+/// Strict comparability classification used by canonical harness/builders.
+/// Structural-invalid windows fail closed and are not reclassified as diagnostics.
+#[allow(dead_code)]
+pub(crate) fn classify_sync_slice_comparability_strict(
+    left: &BandwidthMinimalSyncDigest,
+    right: &BandwidthMinimalSyncDigest,
+) -> Result<SyncSliceComparability, MeshContractError> {
+    let left_window = validated_sync_window_with_fields(
+        left.since_ts_ms,
+        left.until_ts_ms,
+        "left.since_ts_ms",
+        "left.until_ts_ms",
+    )?;
+    let right_window = validated_sync_window_with_fields(
+        right.since_ts_ms,
+        right.until_ts_ms,
+        "right.since_ts_ms",
+        "right.until_ts_ms",
+    )?;
+
+    if left.ordering == right.ordering && left_window == right_window {
+        Ok(SyncSliceComparability::Comparable)
+    } else {
+        Ok(SyncSliceComparability::NotComparable)
+    }
+}
+
 /// Interprets digest comparison only after comparability is established.
 #[allow(dead_code)]
 pub(crate) fn classify_sync_convergence_diagnostic(
@@ -525,6 +561,34 @@ pub(crate) fn classify_sync_convergence_diagnostic_freshness(
             ));
         }
     };
+
+    if observed_at_ts_ms < report_window.until_ts_ms() {
+        return Ok(SyncDiagnosticFreshness::FreshnessNotAssessable);
+    }
+
+    let staleness_ms = observed_at_ts_ms - report_window.until_ts_ms();
+    if staleness_ms <= max_staleness_ms {
+        Ok(SyncDiagnosticFreshness::FreshEnoughLocalDiagnostic)
+    } else {
+        Ok(SyncDiagnosticFreshness::StaleLocalDiagnostic)
+    }
+}
+
+/// Strict freshness classification used by canonical harness/builders.
+/// Structural-invalid windows fail closed and are not reclassified as diagnostics.
+#[allow(dead_code)]
+pub(crate) fn classify_sync_convergence_diagnostic_freshness_strict(
+    report: &SyncConvergenceHarnessReport,
+    observed_at_ts_ms: u64,
+    max_staleness_ms: u64,
+) -> Result<SyncDiagnosticFreshness, MeshContractError> {
+    validate_persistable_mesh_timestamp("observed_at_ts_ms", observed_at_ts_ms)?;
+    let report_window = validated_sync_window_with_fields(
+        report.since_ts_ms,
+        report.until_ts_ms,
+        "report.since_ts_ms",
+        "report.until_ts_ms",
+    )?;
 
     if observed_at_ts_ms < report_window.until_ts_ms() {
         return Ok(SyncDiagnosticFreshness::FreshnessNotAssessable);
@@ -647,8 +711,8 @@ pub(crate) fn build_two_snapshot_sync_economics_harness_records(
         SyncConvergenceScenario::Replay,
         base_left.clone(),
         base_left.clone(),
-    );
-    let freshness_equivalent_fresh = Some(classify_sync_convergence_diagnostic_freshness(
+    )?;
+    let freshness_equivalent_fresh = Some(classify_sync_convergence_diagnostic_freshness_strict(
         &report_equivalent_fresh,
         report_equivalent_fresh.until_ts_ms + 5,
         20,
@@ -661,8 +725,8 @@ pub(crate) fn build_two_snapshot_sync_economics_harness_records(
         SyncConvergenceScenario::Rejoin,
         base_left.clone(),
         divergent_right,
-    );
-    let freshness_divergent_fresh = Some(classify_sync_convergence_diagnostic_freshness(
+    )?;
+    let freshness_divergent_fresh = Some(classify_sync_convergence_diagnostic_freshness_strict(
         &report_divergent_fresh,
         report_divergent_fresh.until_ts_ms + 5,
         20,
@@ -674,14 +738,14 @@ pub(crate) fn build_two_snapshot_sync_economics_harness_records(
         SyncConvergenceScenario::Restart,
         base_left.clone(),
         not_comparable_right,
-    );
+    )?;
 
     let report_equivalent_stale = build_sync_convergence_harness_report_from_digests(
         SyncConvergenceScenario::Restart,
         base_left.clone(),
         base_left,
-    );
-    let freshness_equivalent_stale = Some(classify_sync_convergence_diagnostic_freshness(
+    )?;
+    let freshness_equivalent_stale = Some(classify_sync_convergence_diagnostic_freshness_strict(
         &report_equivalent_stale,
         report_equivalent_stale.until_ts_ms + 500,
         20,
@@ -873,12 +937,12 @@ pub(crate) fn build_sync_convergence_harness_report_from_digests(
     scenario: SyncConvergenceScenario,
     left: BandwidthMinimalSyncDigest,
     right: BandwidthMinimalSyncDigest,
-) -> SyncConvergenceHarnessReport {
+) -> Result<SyncConvergenceHarnessReport, MeshContractError> {
     let comparison = compare_bandwidth_minimal_sync_digest(&left, &right);
-    let comparability = classify_sync_slice_comparability(&left, &right);
+    let comparability = classify_sync_slice_comparability_strict(&left, &right)?;
     let outcome = classify_sync_convergence_diagnostic(comparability, comparison);
 
-    SyncConvergenceHarnessReport {
+    Ok(SyncConvergenceHarnessReport {
         scenario,
         since_ts_ms: left.since_ts_ms,
         until_ts_ms: left.until_ts_ms,
@@ -890,7 +954,7 @@ pub(crate) fn build_sync_convergence_harness_report_from_digests(
         is_authoritative_for_runtime: false,
         is_global_truth: false,
         reason: sync_convergence_diagnostic_reason(outcome).to_string(),
-    }
+    })
 }
 
 /// Builds a read-only local convergence report for a controlled scenario and window.
@@ -906,9 +970,7 @@ pub(crate) fn build_sync_convergence_harness_report(
 ) -> Result<SyncConvergenceHarnessReport, MeshContractError> {
     let left = build_bandwidth_minimal_sync_digest(left_messages, since_ts_ms, until_ts_ms)?;
     let right = build_bandwidth_minimal_sync_digest(right_messages, since_ts_ms, until_ts_ms)?;
-    Ok(build_sync_convergence_harness_report_from_digests(
-        scenario, left, right,
-    ))
+    build_sync_convergence_harness_report_from_digests(scenario, left, right)
 }
 
 fn operational_truth_surface(
@@ -1129,6 +1191,7 @@ mod tests {
             sample_bandwidth_digest(),
             sample_bandwidth_digest(),
         )
+        .expect("equivalent report")
     }
 
     fn sample_sync_convergence_divergent_report() -> SyncConvergenceHarnessReport {
@@ -1141,6 +1204,7 @@ mod tests {
             left,
             right,
         )
+        .expect("divergent report")
     }
 
     fn sample_sync_convergence_not_comparable_report() -> SyncConvergenceHarnessReport {
@@ -1153,6 +1217,7 @@ mod tests {
             left,
             right,
         )
+        .expect("not comparable report")
     }
 
     #[cfg(feature = "network")]
@@ -1318,7 +1383,8 @@ mod tests {
             SyncConvergenceScenario::Replay,
             sample_bandwidth_digest(),
             sample_bandwidth_digest(),
-        );
+        )
+        .expect("report");
 
         assert_eq!(report.comparability, SyncSliceComparability::Comparable);
         assert_eq!(report.comparison, BandwidthDigestComparison::ExactMatch);
@@ -1335,7 +1401,8 @@ mod tests {
             SyncConvergenceScenario::Rejoin,
             left,
             right,
-        );
+        )
+        .expect("report");
 
         assert_eq!(report.comparability, SyncSliceComparability::Comparable);
         assert_eq!(report.comparison, BandwidthDigestComparison::Different);
@@ -1352,7 +1419,8 @@ mod tests {
             SyncConvergenceScenario::Restart,
             left,
             right,
-        );
+        )
+        .expect("report");
 
         assert_eq!(report.comparability, SyncSliceComparability::NotComparable);
         assert_eq!(
@@ -1371,7 +1439,8 @@ mod tests {
             SyncConvergenceScenario::Restart,
             left,
             right,
-        );
+        )
+        .expect("report");
 
         assert_eq!(report.comparability, SyncSliceComparability::NotComparable);
         assert_eq!(
@@ -1390,7 +1459,8 @@ mod tests {
             SyncConvergenceScenario::Restart,
             left,
             right,
-        );
+        )
+        .expect("report");
 
         assert_eq!(report.comparability, SyncSliceComparability::NotComparable);
         assert_eq!(
@@ -1400,7 +1470,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_convergence_diagnostic_same_invalid_window_is_not_comparable() {
+    fn sync_convergence_diagnostic_same_invalid_window_fails_closed() {
         let mut left = sample_bandwidth_digest();
         left.since_ts_ms = 20;
         left.until_ts_ms = 10;
@@ -1412,10 +1482,12 @@ mod tests {
             right,
         );
 
-        assert_eq!(report.comparability, SyncSliceComparability::NotComparable);
         assert_eq!(
-            report.outcome,
-            SyncConvergenceOutcome::NotComparableLocalSlice
+            report,
+            Err(MeshContractError::InvalidSyncWindow {
+                since_ts_ms: 20,
+                until_ts_ms: 10,
+            })
         );
     }
 
@@ -1503,6 +1575,23 @@ mod tests {
         .expect("freshness");
 
         assert_eq!(freshness, SyncDiagnosticFreshness::FreshnessNotAssessable);
+    }
+
+    #[test]
+    fn sync_convergence_freshness_strict_invalid_window_fails_closed() {
+        let mut report = sample_sync_convergence_equivalent_report();
+        report.since_ts_ms = 20;
+        report.until_ts_ms = 10;
+
+        let result = classify_sync_convergence_diagnostic_freshness_strict(&report, 30, 10);
+
+        assert_eq!(
+            result,
+            Err(MeshContractError::InvalidSyncWindow {
+                since_ts_ms: 20,
+                until_ts_ms: 10,
+            })
+        );
     }
 
     #[test]
@@ -1811,7 +1900,8 @@ mod tests {
             SyncConvergenceScenario::Replay,
             digest.clone(),
             digest,
-        );
+        )
+        .expect("report");
         let freshness =
             classify_sync_convergence_diagnostic_freshness(&report, report.until_ts_ms + 1, 10)
                 .expect("freshness");
