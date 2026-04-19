@@ -81,6 +81,16 @@ end
         @test_throws ArgumentError normalize_two_snapshot_sync_economics_record(record)
     end
 
+    @testset "runtime authority invariant fails closed" begin
+        record = _sync_economics_sample_record(is_runtime_authority=true)
+        @test_throws ArgumentError normalize_two_snapshot_sync_economics_record(record)
+    end
+
+    @testset "global truth invariant fails closed" begin
+        record = _sync_economics_sample_record(is_global_truth=true)
+        @test_throws ArgumentError normalize_two_snapshot_sync_economics_record(record)
+    end
+
     @testset "missing required field fails closed in parser" begin
         dir = mktempdir()
         path = joinpath(dir, "two_snapshot_sync_economics_missing_required.jsonl")
