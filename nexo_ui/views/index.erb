@@ -3,202 +3,148 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>NEXO UI v1</title>
+    <title>NEXO Interface V0</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
+    <% final_decision = case @state[:event_type].to_s
+      when 'system_event:approved' then 'Approved'
+      when 'system_event:flagged' then 'Flagged For Review'
+      when 'system_event:blocked' then 'Blocked'
+      else 'No Decision Observed'
+    end %>
+
     <main class="shell">
       <header class="hero">
-        <p class="eyebrow">NEXO / UI Layer</p>
-        <h1>Dragon skin status matrix</h1>
-        <p class="subline">Live status surface with first core adapter path.</p>
+        <p class="eyebrow">NEXO / Interface V0</p>
+        <h1>Core-first, edges-visible operator surface</h1>
+        <p class="subline">
+          Final decision and auditability stay at the center. Edge diagnostics are visible as secondary context only.
+        </p>
+        <div class="hero-tags">
+          <span class="tag tag-core">Primary / Authoritative operator view</span>
+          <span class="tag tag-context">Secondary / Diagnostic context only</span>
+        </div>
       </header>
 
-      <section class="controls" aria-label="dashboard controls">
+      <section class="toolbar" aria-label="status controls">
         <button id="refresh-btn" type="button">Refresh now</button>
         <span class="muted">Auto polling every 3s</span>
-        <span class="muted surface-mode-label" id="data-source">mode: <%= @surface_mode_label %></span>
-        <span class="health-banner health-state-<%= @health[:ui_status] %>" id="health-banner">
-          <span class="health-dot" id="health-dot"></span>
-          <span class="health-policy">Health:</span>
-          <strong id="health-policy-state"><%= @surface_mode_label %></strong>
-          <span class="muted" id="health-policy-source">Source: <%= @health[:source_type] %></span>
-        </span>
+        <span class="muted" id="source-mode">mode: <%= @surface_mode_label %></span>
+        <span class="muted">source_type: <span id="source-type"><%= @source_type %></span></span>
+        <span class="muted">last updated: <span id="last-updated"><%= Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC') %></span></span>
       </section>
 
-      <section class="controls simulate-controls" aria-label="simulate controls">
-        <button class="simulate-button" data-action="event" type="button">Simulate Event</button>
-        <button class="simulate-button" data-action="peer_join" type="button">Simulate Peer Join</button>
-        <button class="simulate-button" data-action="relay_toggle" type="button">Toggle Relay</button>
-        <button class="simulate-button" data-action="ai_insight" type="button">Simulate AI Insight</button>
-        <span class="hint">Demo mode active for simulation actions.</span>
-      </section>
+      <section class="zone zone-core" aria-label="Primary/Core Surface">
+        <div class="zone-head">
+          <h2>Primary/Core Surface</h2>
+          <p>Center closed on deterministic evaluate, final decision, trace, audit trail, and offline verification path.</p>
+        </div>
 
-      <section class="chat-controls" aria-label="global chat controls">
-        <input id="chat-message-input" type="text" maxlength="32" placeholder="Type a global chat message" aria-describedby="chat-help-text chat-byte-counter chat-send-status" />
-        <button id="send-chat-message" type="button">Send</button>
-        <span class="muted chat-send-mode chat-send-mode-<%= @chat_send_mode %>" id="chat-send-mode">
-          send mode: <%= @chat_send_mode_label %>
-        </span>
-        <span class="muted chat-byte-counter" id="chat-byte-counter">0 / 32 bytes</span>
-        <span class="muted chat-help-text" id="chat-help-text">Local dashboard chat accepts up to 32 bytes.</span>
-        <span class="muted chat-send-status" id="chat-send-status" role="status" aria-live="polite">Ready.</span>
-      </section>
-
-      <section class="dragon-grid" aria-label="System cards">
-        <% @cards.each_with_index do |card, i| %>
-          <% motion = @seed[i] || { drift_x: 0, drift_y: 0, opacity: 0.85, flicker: 1.0 } %>
-          <article
-            class="card card-<%= card[:tone] %>"
-            id="card-<%= card[:name].downcase.delete(' ') %>"
-            data-key="<%= card[:key] %>"
-            data-label="<%= card[:label] || '' %>"
-            style="--dx: <%= motion[:drift_x] %>; --dy: <%= motion[:drift_y] %>; --alpha: <%= motion[:opacity] %>; --flicker: <%= motion[:flicker] %>;"
-          >
-            <h2><%= card[:name] %></h2>
-            <% if card[:key] == :health %>
-              <p class="value health-lines" id="value-health">
-                source: <%= @health[:data_source] %><br />
-                adapter: <%= @health[:adapter_status] %><br />
-                integrity: <%= @health[:integrity_message] %><br />
-                write_status: <%= @health[:write_status] %><br />
-                latest_change: <%= @health[:latest_change_kind] %> / <%= @health[:latest_change_summary] %><br />
-                change_source: <%= @health[:latest_change_source].to_s.empty? ? 'n/a' : @health[:latest_change_source].to_s.tr('_', ' ') %><br />
-                last_operator: <%= @health[:last_operator_action_kind].to_s.empty? ? 'none observed' : "#{@health[:last_operator_action_kind]} / #{@health[:last_operator_action_summary]}" %><br />
-                julia observation: <%= @health[:julia_observation_flow_intensity].to_s.empty? ? 'not available' : "#{@health[:julia_observation_flow_intensity]} / #{@health[:julia_observation_summary]}" %><br />
-                julia regime: <%= @health[:julia_observation_regime_hint].to_s.empty? ? 'n/a' : @health[:julia_observation_regime_hint].to_s.tr('_', ' ') %><br />
-                latest_origin: <%= @health[:latest_change_origin] %><br />
-                operator_origin: <%= @health[:last_operator_action_origin].to_s.empty? ? 'n/a' : @health[:last_operator_action_origin] %><br />
-                operator_at: <%= @health[:last_operator_action_timestamp].to_i.zero? ? 'n/a' : @health[:last_operator_action_timestamp] %><br />
-                latest_at: <%= @health[:latest_change_timestamp] %><br />
-                last_updated: <%= @health[:last_updated] %>
-              </p>
-            <% elsif card[:key] == :events %>
-              <div class="value events-lines" id="value-events">
-                <% events = Array(@state[:recent_events] || []).take(5) %>
-                <% if events.empty? %>
-                  no events
-                <% else %>
-                  <% events.each_with_index do |event, index| %>
-                    <% event_type = event[:type] || event['type'] %>
-                    <% event_label = case event_type
-                      when 'system_event:approved' then 'approved decision'
-                      when 'system_event:flagged' then 'flagged for review'
-                      when 'system_event:blocked' then 'blocked decision'
-                      else event_type
-                    end %>
-                    <div class="event-row <%= index.zero? ? 'latest' : '' %>">
-                      #<%= index + 1 %> <%= event[:timestamp] || event['timestamp'] %> | <%= event[:origin] || event['origin'] %> | <%= event[:channel] || event['channel'] %>
-                      type=<%= event_label %> hash=<%= event[:hash] || event['hash'] %>
-                    </div>
-                  <% end %>
-                <% end %>
-              </div>
-              <div class="card-cause" id="cause-events" aria-live="polite"></div>
-            <% elsif card[:key] == :recent_flow %>
-              <div class="value flow-lines" id="value-recent_flow">
-                <% flow_items = Array(@state[:recent_flow] || []).take(5) %>
-                <% if flow_items.empty? %>
-                  <span class="empty-state"><%= @source_type == 'core' ? 'No live flow from the core yet.' : 'No live flow available in this mode.' %></span>
-                <% else %>
-                  <% flow_items.each_with_index do |item, index| %>
-                    <div class="flow-item flow-item-<%= item[:kind] || 'event' %> <%= index.zero? ? 'latest' : '' %>">
-                      #<%= index + 1 %> <%= item[:timestamp] || 'n/a' %> | <%= item[:kind] || 'event' %> | <%= item[:origin] || 'unknown' %> | <%= item[:channel].to_s.empty? ? 'n/a' : item[:channel] %>
-                      <div class="flow-summary"><%= item[:summary] || '' %></div>
-                      <% if item[:hash].to_s.size.positive? %>
-                        <span class="mono flow-hash">hash=<%= item[:hash] %></span>
-                      <% end %>
-                    </div>
-                  <% end %>
-                <% end %>
-              </div>
-              <% elsif card[:key] == :recent_chat_messages %>
-              <div class="value chat-lines" id="value-recent_chat_messages">
-                <% messages = Array(@state[:recent_chat_messages] || []).take(5) %>
-                <% if messages.empty? %>
-                  <span class="empty-state"><%= @source_type == 'core' ? 'No chat messages from the core yet.' : (@source_type == 'sqlite' || @source_type == 'file' ? 'Offline local state is read-only.' : 'No chat messages available in this mode.') %></span>
-                <% else %>
-                  <% messages.each_with_index do |message, index| %>
-                    <div class="chat-row <%= index.zero? ? 'latest' : '' %>">
-                      <div class="chat-meta">
-                        #<%= index + 1 %> | origin=<%= message[:origin] || message['origin'] || 'unknown' %> | channel=<%= message[:channel] || message['channel'] || 'global' %><br />
-                        <%= message[:timestamp] || message['timestamp'] || 'n/a' %>
-                      </div>
-                      <span class="chat-text"><%= message[:text] || message['text'] %></span><br />
-                      <span class="mono chat-hash">hash=<%= message[:hash] || message['hash'] %></span>
-                    </div>
-                  <% end %>
-                <% end %>
-              </div>
-              <p class="value value-sub chat-source-indicator <%= @source_type == 'core' || @source_type == 'file' || @source_type == 'sqlite' ? 'chat-source-indicator-core' : 'chat-source-indicator-fallback' %>" id="chat-source-indicator">
-                messages source: <%= @source_type == 'core' ? 'connected to core' : (@source_type == 'sqlite' || @source_type == 'file' ? 'offline local state' : 'demo or fallback') %>
-              </p>
-            <% else %>
-              <p class="value <%= card[:mono] ? 'mono' : '' %>" id="value-<%= card[:key] %>">
-                <%= card[:label] ? "#{card[:label]}: #{ @state[card[:key]] }" : @state[card[:key]] %>
-              </p>
-              <% if card[:key] == :peers_count %>
-                <p class="value value-sub" id="value-network_mode">
-                  network_mode: <%= @state[:network_mode] || 'mesh' %>
-                </p>
-                <p class="value value-sub" id="value-mesh_status">
-                  mesh_status: <%= @state[:mesh_status] || 'stable' %>
-                </p>
-                <div class="mesh-preview-wrap">
-                  <div
-                    id="mesh-preview"
-                    class="mesh-preview"
-                    aria-label="network mesh preview"
-                    data-peers="<%= @state[:peers_count] || 0 %>"></div>
-                </div>
-                <p class="value value-sub" id="topology-hint">topology: local + peers</p>
-                <p class="value value-sub" id="network-cause-hint"></p>
-              <% end %>
-              <% if card[:key] == :ai_last_insight %>
-                <div class="value ai-insights-lines" id="value-ai_recent_insights">
-                  <% insights = Array(@state[:recent_ai_insights] || []).take(3) %>
-                  <% if insights.empty? %>
-                    no AI insights yet
-                  <% else %>
-                    <% insights.each_with_index do |insight, index| %>
-                      <div class="ai-insight-row <%= index.zero? ? 'latest' : '' %>">
-                        <div> #<%= index + 1 %> <%= insight[:timestamp] || insight['timestamp'] %> | <%= insight[:type] || insight['type'] %></div>
-                        <div> <%= insight[:text] || insight['text'] %></div>
-                      </div>
-                    <% end %>
-                  <% end %>
-                </div>
-              <% end %>
-              <% if card[:key] == :ai_last_insight %>
-                <div class="card-cause" id="cause-ai" aria-live="polite"></div>
-              <% elsif card[:key] == :peers_count %>
-                <div class="card-cause" id="cause-network" aria-live="polite"></div>
-              <% elsif card[:key] == :relay_status %>
-                <div class="card-cause" id="cause-relay" aria-live="polite"></div>
-              <% end %>
-            <% end %>
+        <div class="core-grid">
+          <article class="panel panel-core">
+            <h3>Evaluate (Deterministic)</h3>
+            <p class="value" id="core-system-status"><%= @state[:system_status] %></p>
+            <p class="helper">Input execution belongs to the deterministic core. This screen reflects the current evaluated state.</p>
           </article>
-        <% end %>
+
+          <article class="panel panel-decision">
+            <h3>Final Decision (Primary)</h3>
+            <p class="value value-decision" id="core-final-decision"><%= final_decision %></p>
+            <p class="helper">Decision is local and auditable for this node context.</p>
+          </article>
+
+          <article class="panel">
+            <h3>Trace</h3>
+            <dl class="kv">
+              <dt>kind</dt><dd id="trace-kind"><%= @state[:latest_change_kind] || 'n/a' %></dd>
+              <dt>summary</dt><dd id="trace-summary"><%= @state[:latest_change_summary] || 'n/a' %></dd>
+              <dt>origin</dt><dd id="trace-origin"><%= @state[:latest_change_origin] || 'n/a' %></dd>
+              <dt>timestamp</dt><dd id="trace-timestamp"><%= @state[:latest_change_timestamp] || 'n/a' %></dd>
+            </dl>
+          </article>
+
+          <article class="panel">
+            <h3>Audit Trail</h3>
+            <dl class="kv">
+              <dt>last_event_hash</dt><dd id="audit-last-event-hash"><%= @state[:last_event_hash] || 'n/a' %></dd>
+              <dt>recent_event_hash</dt><dd id="audit-recent-event-hash"><%= @state[:recent_event_hash] || 'n/a' %></dd>
+              <dt>event_type</dt><dd id="audit-event-type"><%= @state[:event_type] || 'n/a' %></dd>
+              <dt>event_origin</dt><dd id="audit-event-origin"><%= @state[:event_origin] || 'n/a' %></dd>
+              <dt>event_channel</dt><dd id="audit-event-channel"><%= @state[:event_channel] || 'n/a' %></dd>
+              <dt>event_timestamp</dt><dd id="audit-event-timestamp"><%= @state[:event_timestamp] || 'n/a' %></dd>
+            </dl>
+          </article>
+
+          <article class="panel panel-zig">
+            <h3>Verify Offline (Zig)</h3>
+            <p class="value">Offline verification path available.</p>
+            <p class="helper">
+              Use Zig verification tooling as an audit check path. It is a verification capability, not new runtime authority.
+            </p>
+          </article>
+        </div>
       </section>
 
-      <section class="meta-panel">
-        <div id="meta-system_status"><span>system_status:</span> <%= @state[:system_status] %></div>
-        <div id="meta-peers_count"><span>peers_count:</span> <%= @state[:peers_count] %></div>
-        <div id="meta-network_mode"><span>network_mode:</span> <%= @state[:network_mode] %></div>
-        <div id="meta-mesh_status"><span>mesh_status:</span> <%= @state[:mesh_status] %></div>
-        <div id="meta-relay_status"><span>relay_status:</span> <%= @state[:relay_status] %></div>
-        <div id="meta-ai_last_insight"><span>ai_last_insight:</span> <%= @state[:ai_last_insight] %></div>
-        <div id="meta-recent_event_hash"><span>recent_event_hash:</span> <%= @state[:recent_event_hash] %></div>
-        <div id="meta-last_event_hash"><span>last_event_hash:</span> <%= @state[:last_event_hash] %></div>
-        <div id="meta-event_type"><span>event_type:</span> <%= @state[:event_type] %></div>
-        <div id="meta-event_timestamp"><span>event_timestamp:</span> <%= @state[:event_timestamp] %></div>
-        <div id="meta-event_origin"><span>event_origin:</span> <%= @state[:event_origin] %></div>
-        <div id="meta-event_channel"><span>event_channel:</span> <%= @state[:event_channel] %></div>
-        <div id="meta-last_sync"><span>last_sync:</span> <%= @state[:last_sync] %></div>
-      </section>
+      <section class="zone zone-context" aria-label="Secondary/Context Surface">
+        <div class="zone-head">
+          <h2>Secondary/Context Surface</h2>
+          <p>Context supports operator understanding but does not override <code>final_decision</code>.</p>
+        </div>
 
-      <p class="hint">Ready for future deeper integration with full core adapter bridge.</p>
-      <p class="updated-line">last updated: <span id="last-updated"><%= Time.now.utc.strftime('%Y-%m-%d %H:%M:%S UTC') %></span></p>
+        <div class="context-grid">
+          <article class="panel panel-context">
+            <h3>Witness / Diagnostics</h3>
+            <span class="badge">Diagnostic only</span>
+            <dl class="kv">
+              <dt>latest_change_source</dt><dd id="ctx-latest-change-source"><%= @state[:latest_change_source] || 'n/a' %></dd>
+              <dt>write_status</dt><dd id="ctx-write-status"><%= @state[:write_status] || 'n/a' %></dd>
+              <dt>relay_status</dt><dd id="ctx-relay-status"><%= @state[:relay_status] || 'n/a' %></dd>
+            </dl>
+          </article>
+
+          <article class="panel panel-context">
+            <h3>Julia Observer</h3>
+            <span class="badge">Secondary signal</span>
+            <dl class="kv">
+              <dt>observation</dt><dd id="ctx-julia-summary"><%= @state[:julia_observation_summary] || 'not available' %></dd>
+              <dt>flow_intensity</dt><dd id="ctx-julia-flow"><%= @state[:julia_observation_flow_intensity] || 'n/a' %></dd>
+              <dt>regime_hint</dt><dd id="ctx-julia-regime"><%= @state[:julia_observation_regime_hint] || 'n/a' %></dd>
+            </dl>
+          </article>
+
+          <article class="panel panel-context">
+            <h3>Decision Cycle (Experimental)</h3>
+            <span class="badge">Experimental</span>
+            <dl class="kv">
+              <dt>event_count</dt><dd id="ctx-event-count"><%= Array(@state[:recent_events]).size %></dd>
+              <dt>last_sync</dt><dd id="ctx-last-sync"><%= @state[:last_sync] || 'n/a' %></dd>
+              <dt>note</dt><dd>Diagnostic context only, not runtime action.</dd>
+            </dl>
+          </article>
+
+          <article class="panel panel-context">
+            <h3>Operational Health</h3>
+            <span class="badge">Context only</span>
+            <dl class="kv">
+              <dt>data_source</dt><dd id="ctx-data-source"><%= @data_source %></dd>
+              <dt>source_type</dt><dd id="ctx-source-type"><%= @source_type %></dd>
+              <dt>adapter_status</dt><dd id="ctx-adapter-status"><%= @adapter_status %></dd>
+              <dt>peers_count</dt><dd id="ctx-peers-count"><%= @state[:peers_count] || 0 %></dd>
+              <dt>mesh_status</dt><dd id="ctx-mesh-status"><%= @state[:mesh_status] || 'n/a' %></dd>
+            </dl>
+          </article>
+        </div>
+
+        <article class="panel panel-nonclaims">
+          <h3>Non-claims (mandatory)</h3>
+          <ul>
+            <li>Not runtime authority</li>
+            <li>Not global truth</li>
+            <li>Not automatic sync decision</li>
+          </ul>
+        </article>
+      </section>
     </main>
 
     <script src="/app.js"></script>
