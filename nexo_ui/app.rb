@@ -8,9 +8,23 @@ require_relative 'core_adapter'
 set :public_folder, File.join(__dir__, 'public')
 set :views, File.join(__dir__, 'views')
 
+def ui_bind_from_env
+  bind = ENV['NEXO_UI_BIND'].to_s.strip
+  bind.empty? ? '0.0.0.0' : bind
+end
+
+def ui_port_from_env
+  raw = ENV['NEXO_UI_PORT'].to_s.strip
+  return 4567 if raw.empty?
+
+  Integer(raw, 10)
+rescue ArgumentError
+  raise "invalid NEXO_UI_PORT=#{raw.inspect}"
+end
+
 configure do
-  set :bind, '0.0.0.0'
-  set :port, 4567
+  set :bind, ui_bind_from_env
+  set :port, ui_port_from_env
 end
 
 set :state, CoreAdapter.build_fallback_state.merge(event_counter: 0).dup
