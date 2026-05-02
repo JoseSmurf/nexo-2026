@@ -2,7 +2,7 @@
 
 This guide describes the day-to-day operational path of the current NEXO system:
 
-`request -> decision -> audit artifact -> inspection -> verification`
+`signed request -> deterministic evaluate -> final_decision -> trace -> audit artifact -> inspection -> offline Zig verification`
 
 It is intentionally focused on the current production-shaped path already present in the repository.
 
@@ -111,6 +111,12 @@ bash scripts/find_audit_artifact.sh <request_id-or-hash> /path/to/audit_records.
 bash scripts/find_audit_artifact.sh <request_id-or-hash> /path/to/audit_archive/
 ```
 
+Important:
+
+- `scripts/demo_decision_flow.sh` and `scripts/demo_decision_flow_flagged.sh` write to a temporary audit file.
+- After either demo, use the exact inspection command printed by the demo for that artifact.
+- The no-argument form of `scripts/inspect_audit_artifact.sh` reads `NEXO_AUDIT_PATH` or `logs/audit_records.jsonl`; it does not automatically reopen the demo's temporary file after the demo exits.
+
 The helper will:
 
 1. locate the audit file
@@ -153,15 +159,17 @@ For a quick local walkthrough:
 
 ```bash
 bash scripts/demo_decision_flow.sh
-bash scripts/inspect_audit_artifact.sh
 ```
+
+Then run the exact `bash scripts/inspect_audit_artifact.sh ...` command printed by the demo for the generated temporary artifact.
 
 For a non-approved scenario:
 
 ```bash
 bash scripts/demo_decision_flow_flagged.sh
-bash scripts/inspect_audit_artifact.sh
 ```
+
+Then run the exact `bash scripts/inspect_audit_artifact.sh ...` command printed by the flagged demo for its generated temporary artifact.
 
 ## 6. Suggested operator workflow
 

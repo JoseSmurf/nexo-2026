@@ -31,8 +31,9 @@ Typical flow after running a demo:
 
 ```bash
 bash scripts/demo_decision_flow.sh
-bash scripts/inspect_audit_artifact.sh
 ```
+
+Then run the exact `bash scripts/inspect_audit_artifact.sh ...` command printed by the demo. The demo writes to a temporary audit file, so the no-argument inspect command does not automatically target that artifact after the script exits.
 
 You can also inspect a specific file path:
 
