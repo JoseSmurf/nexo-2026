@@ -127,7 +127,9 @@ bash scripts/demo_decision_flow.sh
 
 This demo executes the current verifiable path in one command:
 
-`API -> engine decision -> trace -> audit record -> Zig verification`
+`signed request -> deterministic evaluate -> final_decision -> trace -> audit artifact -> offline Zig verification`
+
+It starts the API with a temporary audit path, sends one signed request, prints the response and generated artifact, runs Zig verification, and prints the exact follow-up inspection commands for that artifact.
 
 Related docs:
 - [`scripts/demo_decision_flow.sh`](scripts/demo_decision_flow.sh)
@@ -145,6 +147,8 @@ bash scripts/inspect_audit_artifact.sh
 ```
 
 This reads the latest record from `NEXO_AUDIT_PATH` or `logs/audit_records.jsonl`, prints the main audit fields, writes a single-artifact temporary `.jsonl`, and shows the exact Zig verification command for that artifact.
+
+If you just ran `scripts/demo_decision_flow.sh` or `scripts/demo_decision_flow_flagged.sh`, use the exact `bash scripts/inspect_audit_artifact.sh ...` command printed by the demo. The no-argument form does not automatically reopen the demo's temporary audit file after the demo process exits.
 
 To find a past artifact by `request_id`, `audit_hash`, or `record_hash` across the active file and `logs/audit_archive/`:
 
@@ -167,7 +171,7 @@ For day-to-day operation of the current verification path, see:
 
 ## Quickstart (60s)
 
-Requirements: `rustup/cargo`, `julia` (for bridge/tests), `zig` (offline verifier optional in local dev).
+Requirements: `rustup/cargo`, `julia` (for bridge/tests), `zig` (required for the end-to-end offline verification path shown in Quick Demo; otherwise optional for local API work).
 
 ```bash
 git clone https://github.com/JoseSmurf/nexo-2026

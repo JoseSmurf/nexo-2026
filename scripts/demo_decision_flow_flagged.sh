@@ -84,3 +84,7 @@ echo "Flagged demo completed successfully."
 echo "Response file: ${RESPONSE_FILE}"
 echo "Audit artifact: ${AUDIT_FILE}"
 echo "Server log: ${SERVER_LOG}"
+echo
+echo "Next reviewer commands:"
+echo "bash scripts/inspect_audit_artifact.sh ${AUDIT_FILE}"
+echo "bash scripts/find_audit_artifact.sh ${REQ_ID} ${AUDIT_FILE}"
