@@ -17,9 +17,9 @@ fn stringifyJsonMinifiedAlloc(alloc: std.mem.Allocator, v: std.json.Value) ![]u8
     return std.json.stringifyAlloc(alloc, v, .{ .whitespace = .minified });
 }
 
-// Internal helper for future record_hash validation:
+// Internal helper for record_hash validation:
 // Mirrors Rust `src/audit/record.rs::compute_record_hash` (schema: audit_record_v2).
-// Not wired into the public verify flow yet.
+// Wired into verify only when `record_hash` is present and non-null.
 fn computeRecordHashV2Hex(alloc: std.mem.Allocator, root_obj: std.json.ObjectMap) ![]u8 {
     var hasher = crypto.Hasher.init(.blake3);
 
@@ -274,6 +274,22 @@ pub fn verifyLineWithOptions(
 
     if (!std.mem.eql(u8, final_decision, expected_final)) return .SchemaInvalid;
     if (!std.mem.eql(u8, out_hex, audit_hash_str)) return .Tampering;
+
+    // Optional record_hash integrity check:
+    // - absent/null => do not enforce (legacy fixtures remain valid)
+    // - string => must match recomputed `audit_record_v2` framing
+    if (root_obj.get("record_hash")) |record_hash_val| {
+        switch (record_hash_val) {
+            .null => {},
+            .string => |record_hash_str| {
+                if (!schema.isHexLowerN(record_hash_str, 64)) return .SchemaInvalid;
+                const computed_record_hash = computeRecordHashV2Hex(alloc, root_obj) catch return .SchemaInvalid;
+                defer alloc.free(computed_record_hash);
+                if (!std.mem.eql(u8, computed_record_hash, record_hash_str)) return .Tampering;
+            },
+            else => return .SchemaInvalid,
+        }
+    }
     return .Ok;
 }
 
@@ -352,6 +368,44 @@ test "verifyLine accepts known-good fixture line" {
         "fa75306f29d04f6aafcec77d7dfceb7b44386284e87df8b8c51f5071d01d663f",
         record_hex,
     );
+
+    // Step 2: record_hash is enforced only when present and non-null.
+    // - `record_hash: null` remains valid
+    // - correct record_hash passes
+    // - changing a non-trace field while keeping record_hash fails as tampering
+    // - invalid record_hash format fails as schema invalid
+    const ok_null = verifyLine(std.testing.allocator, record_fixture_line);
+    try std.testing.expectEqual(schema.VerifyResult.Ok, ok_null);
+
+    var with_record_hash = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, record_fixture_line, .{});
+    defer with_record_hash.deinit();
+    const with_obj = switch (with_record_hash.value) {
+        .object => |*o| o,
+        else => return error.InvalidFixture,
+    };
+    try with_obj.put("record_hash", std.json.Value{ .string = record_hex });
+    const with_line = try stringifyJsonMinifiedAlloc(std.testing.allocator, with_record_hash.value);
+    defer std.testing.allocator.free(with_line);
+    const ok_with = verifyLine(std.testing.allocator, with_line);
+    try std.testing.expectEqual(schema.VerifyResult.Ok, ok_with);
+
+    try with_obj.put("amount_cents", std.json.Value{ .integer = @as(i64, 150001) });
+    const tampered_line = try stringifyJsonMinifiedAlloc(std.testing.allocator, with_record_hash.value);
+    defer std.testing.allocator.free(tampered_line);
+    const tampered = verifyLine(std.testing.allocator, tampered_line);
+    try std.testing.expectEqual(schema.VerifyResult.Tampering, tampered);
+
+    var bad_record_hash = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, record_fixture_line, .{});
+    defer bad_record_hash.deinit();
+    const bad_obj = switch (bad_record_hash.value) {
+        .object => |*o| o,
+        else => return error.InvalidFixture,
+    };
+    try bad_obj.put("record_hash", std.json.Value{ .string = "ABC" });
+    const bad_line = try stringifyJsonMinifiedAlloc(std.testing.allocator, bad_record_hash.value);
+    defer std.testing.allocator.free(bad_line);
+    const bad = verifyLine(std.testing.allocator, bad_line);
+    try std.testing.expectEqual(schema.VerifyResult.SchemaInvalid, bad);
 }
 
 test "verifyLine detects tampering" {
