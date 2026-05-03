@@ -15,12 +15,17 @@ pub fn main() !void {
     }
 
     if (std.mem.eql(u8, argv[1], "verify")) {
-        if (argv.len != 3) {
+        var require_chain = false;
+        var path_idx: usize = 2;
+        if (argv.len == 4 and std.mem.eql(u8, argv[2], "--require-chain")) {
+            require_chain = true;
+            path_idx = 3;
+        } else if (argv.len != 3) {
             usage();
             std.process.exit(2);
         }
-        const code = verifyFile(alloc, argv[2]) catch {
-            std.debug.print("io_error: failed to verify file: {s}\n", .{argv[2]});
+        const code = verifyFile(alloc, argv[path_idx], require_chain) catch {
+            std.debug.print("io_error: failed to verify file: {s}\n", .{argv[path_idx]});
             std.process.exit(4);
         };
         std.process.exit(code);
@@ -36,6 +41,7 @@ fn usage() void {
         \\
         \\USAGE:
         \\  nexo-audit verify <path/to/audit.jsonl>
+        \\  nexo-audit verify --require-chain <path/to/audit.jsonl>
         \\
         \\EXIT CODES:
         \\  0 ok
@@ -48,7 +54,7 @@ fn usage() void {
     , .{});
 }
 
-fn verifyFile(alloc: std.mem.Allocator, path: []const u8) !u8 {
+fn verifyFile(alloc: std.mem.Allocator, path: []const u8, require_chain: bool) !u8 {
     const options = verifyOptionsFromEnv(alloc);
 
     var file = try std.fs.cwd().openFile(path, .{});
@@ -56,6 +62,9 @@ fn verifyFile(alloc: std.mem.Allocator, path: []const u8) !u8 {
 
     var br = std.io.bufferedReader(file.reader());
     const reader = br.reader();
+
+    var chain_state = verify_mod.RequireChainState{};
+    defer chain_state.deinit(alloc);
 
     var any_schema = false;
     var any_tamper = false;
@@ -73,7 +82,10 @@ fn verifyFile(alloc: std.mem.Allocator, path: []const u8) !u8 {
         if (raw.len == 0) continue;
 
         total += 1;
-        const res = verify_mod.verifyLineWithOptions(alloc, raw, options);
+        const res = if (require_chain)
+            verify_mod.verifyLineWithOptionsRequireChain(alloc, raw, options, &chain_state)
+        else
+            verify_mod.verifyLineWithOptions(alloc, raw, options);
         switch (res) {
             .Ok => ok += 1,
             .SchemaInvalid => {

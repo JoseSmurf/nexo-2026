@@ -6,6 +6,17 @@ pub const VerifyOptions = struct {
     allow_legacy_sha3_256: bool = false,
 };
 
+pub const RequireChainState = struct {
+    prev_record_hash: ?[]u8 = null,
+    have_prev_record_hash: bool = false,
+
+    pub fn deinit(self: *RequireChainState, alloc: std.mem.Allocator) void {
+        if (self.prev_record_hash) |buf| alloc.free(buf);
+        self.prev_record_hash = null;
+        self.have_prev_record_hash = false;
+    }
+};
+
 fn toHexLower(alloc: std.mem.Allocator, bytes: []const u8) ![]u8 {
     const out = try alloc.alloc(u8, bytes.len * 2);
     errdefer alloc.free(out);
@@ -293,6 +304,64 @@ pub fn verifyLineWithOptions(
     return .Ok;
 }
 
+pub fn verifyLineWithOptionsRequireChain(
+    alloc: std.mem.Allocator,
+    line: []const u8,
+    options: VerifyOptions,
+    state: *RequireChainState,
+) schema.VerifyResult {
+    const base = verifyLineWithOptions(alloc, line, options);
+
+    // Parse only what's needed for chain continuity checks.
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, line, .{}) catch return .SchemaInvalid;
+    defer parsed.deinit();
+    const root_obj = switch (parsed.value) {
+        .object => |o| o,
+        else => return .SchemaInvalid,
+    };
+
+    // In chain-required mode, record_hash must exist and be a valid lowercase hex string.
+    const record_hash_val = root_obj.get("record_hash") orelse return .SchemaInvalid;
+    const record_hash_str = switch (record_hash_val) {
+        .string => |s| s,
+        else => return .SchemaInvalid,
+    };
+    if (!schema.isHexLowerN(record_hash_str, 64)) return .SchemaInvalid;
+
+    // prev_record_hash validation:
+    // - first record: allow missing/null/string (but if string is present, require valid hex format)
+    // - subsequent records: require string hex and equal to previous record_hash in this file
+    const prev_val_opt = root_obj.get("prev_record_hash");
+    if (!state.have_prev_record_hash) {
+        if (prev_val_opt) |prev_val| {
+            switch (prev_val) {
+                .null => {},
+                .string => |prev_str| {
+                    if (!schema.isHexLowerN(prev_str, 64)) return .SchemaInvalid;
+                },
+                else => return .SchemaInvalid,
+            }
+        }
+    } else {
+        const prev_val = prev_val_opt orelse return .SchemaInvalid;
+        const prev_str = switch (prev_val) {
+            .string => |s| s,
+            else => return .SchemaInvalid,
+        };
+        if (!schema.isHexLowerN(prev_str, 64)) return .SchemaInvalid;
+        const expected_prev = state.prev_record_hash orelse return .SchemaInvalid;
+        if (!std.mem.eql(u8, prev_str, expected_prev)) return .Tampering;
+    }
+
+    // Only advance chain state when the record is otherwise OK.
+    if (base == .Ok) {
+        if (state.prev_record_hash) |buf| alloc.free(buf);
+        state.prev_record_hash = alloc.dupe(u8, record_hash_str) catch return .SchemaInvalid;
+        state.have_prev_record_hash = true;
+    }
+    return base;
+}
+
 const TRACE_FLAGGED_JSON =
     \\["Approved","Approved",{"FlaggedForReview":{"measured":150000,"reason":"Transaction requires AML review.","rule_id":"AML-FATF-REVIEW-001","severity":"Alta","threshold":5000000}}]
 ;
@@ -406,6 +475,116 @@ test "verifyLine accepts known-good fixture line" {
     defer std.testing.allocator.free(bad_line);
     const bad = verifyLine(std.testing.allocator, bad_line);
     try std.testing.expectEqual(schema.VerifyResult.SchemaInvalid, bad);
+
+    // Step 3: optional chain continuity validation (prev_record_hash -> record_hash),
+    // enabled only via a separate mode/flag.
+    // 2) require-chain rejects record_hash: null
+    {
+        var chain_state = RequireChainState{};
+        defer chain_state.deinit(std.testing.allocator);
+        const rejected = verifyLineWithOptionsRequireChain(std.testing.allocator, record_fixture_line, .{}, &chain_state);
+        try std.testing.expectEqual(schema.VerifyResult.SchemaInvalid, rejected);
+    }
+
+    // Build a minimal 2-line artifact with internal continuity:
+    // line1.record_hash -> line2.prev_record_hash.
+    var line1_record = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, record_fixture_line, .{});
+    defer line1_record.deinit();
+    const line1_obj = switch (line1_record.value) {
+        .object => |*o| o,
+        else => return error.InvalidFixture,
+    };
+    try line1_obj.put("record_hash", std.json.Value{ .string = record_hex });
+    const line1 = try stringifyJsonMinifiedAlloc(std.testing.allocator, line1_record.value);
+    defer std.testing.allocator.free(line1);
+
+    var line2_record = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, record_fixture_line, .{});
+    defer line2_record.deinit();
+    const line2_obj = switch (line2_record.value) {
+        .object => |*o| o,
+        else => return error.InvalidFixture,
+    };
+    try line2_obj.put("request_id", std.json.Value{ .string = "known-request-002" });
+    try line2_obj.put("prev_record_hash", std.json.Value{ .string = record_hex });
+    const line2_record_hex = try computeRecordHashV2Hex(std.testing.allocator, line2_obj.*);
+    defer std.testing.allocator.free(line2_record_hex);
+    try line2_obj.put("record_hash", std.json.Value{ .string = line2_record_hex });
+    const line2 = try stringifyJsonMinifiedAlloc(std.testing.allocator, line2_record.value);
+    defer std.testing.allocator.free(line2);
+
+    // 3) 2-line artifact with correct continuity passes in chain mode
+    {
+        var chain_state = RequireChainState{};
+        defer chain_state.deinit(std.testing.allocator);
+        const r1 = verifyLineWithOptionsRequireChain(std.testing.allocator, line1, .{}, &chain_state);
+        try std.testing.expectEqual(schema.VerifyResult.Ok, r1);
+        const r2 = verifyLineWithOptionsRequireChain(std.testing.allocator, line2, .{}, &chain_state);
+        try std.testing.expectEqual(schema.VerifyResult.Ok, r2);
+    }
+
+    // 4) wrong prev_record_hash in second record fails as tampering (continuity break)
+    {
+        var wrong_prev = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line2, .{});
+        defer wrong_prev.deinit();
+        const wrong_obj = switch (wrong_prev.value) {
+            .object => |*o| o,
+            else => return error.InvalidFixture,
+        };
+        // Keep record_hash consistent with this record; only continuity should fail.
+        try wrong_obj.put("prev_record_hash", std.json.Value{ .string = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
+        const recomputed = try computeRecordHashV2Hex(std.testing.allocator, wrong_obj.*);
+        defer std.testing.allocator.free(recomputed);
+        try wrong_obj.put("record_hash", std.json.Value{ .string = recomputed });
+        const wrong_line2 = try stringifyJsonMinifiedAlloc(std.testing.allocator, wrong_prev.value);
+        defer std.testing.allocator.free(wrong_line2);
+
+        var chain_state = RequireChainState{};
+        defer chain_state.deinit(std.testing.allocator);
+        const r1 = verifyLineWithOptionsRequireChain(std.testing.allocator, line1, .{}, &chain_state);
+        try std.testing.expectEqual(schema.VerifyResult.Ok, r1);
+        const r2 = verifyLineWithOptionsRequireChain(std.testing.allocator, wrong_line2, .{}, &chain_state);
+        try std.testing.expectEqual(schema.VerifyResult.Tampering, r2);
+    }
+
+    // 5) changing a non-trace field while keeping record_hash old fails as tampering
+    {
+        var tamper = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line2, .{});
+        defer tamper.deinit();
+        const tamper_obj = switch (tamper.value) {
+            .object => |*o| o,
+            else => return error.InvalidFixture,
+        };
+        try tamper_obj.put("amount_cents", std.json.Value{ .integer = @as(i64, 150002) });
+        const tamper_line2 = try stringifyJsonMinifiedAlloc(std.testing.allocator, tamper.value);
+        defer std.testing.allocator.free(tamper_line2);
+
+        var chain_state = RequireChainState{};
+        defer chain_state.deinit(std.testing.allocator);
+        const r1 = verifyLineWithOptionsRequireChain(std.testing.allocator, line1, .{}, &chain_state);
+        try std.testing.expectEqual(schema.VerifyResult.Ok, r1);
+        const r2 = verifyLineWithOptionsRequireChain(std.testing.allocator, tamper_line2, .{}, &chain_state);
+        try std.testing.expectEqual(schema.VerifyResult.Tampering, r2);
+    }
+
+    // 6) invalid prev_record_hash format in second record fails as schema invalid
+    {
+        var bad_prev = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line2, .{});
+        defer bad_prev.deinit();
+        const bad_prev_obj = switch (bad_prev.value) {
+            .object => |*o| o,
+            else => return error.InvalidFixture,
+        };
+        try bad_prev_obj.put("prev_record_hash", std.json.Value{ .string = "ABC" });
+        const bad_prev_line2 = try stringifyJsonMinifiedAlloc(std.testing.allocator, bad_prev.value);
+        defer std.testing.allocator.free(bad_prev_line2);
+
+        var chain_state = RequireChainState{};
+        defer chain_state.deinit(std.testing.allocator);
+        const r1 = verifyLineWithOptionsRequireChain(std.testing.allocator, line1, .{}, &chain_state);
+        try std.testing.expectEqual(schema.VerifyResult.Ok, r1);
+        const r2 = verifyLineWithOptionsRequireChain(std.testing.allocator, bad_prev_line2, .{}, &chain_state);
+        try std.testing.expectEqual(schema.VerifyResult.SchemaInvalid, r2);
+    }
 }
 
 test "verifyLine detects tampering" {
