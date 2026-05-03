@@ -13,7 +13,7 @@ fn toHexLower(alloc: std.mem.Allocator, bytes: []const u8) ![]u8 {
     return out;
 }
 
-fn stringifyJsonMinifiedAlloc(alloc: std.mem.Allocator, v: std.json.Value) ![]u8 {
+fn stringifyJsonMinifiedAlloc(alloc: std.mem.Allocator, v: std.json.Value) ![]const u8 {
     return std.json.stringifyAlloc(alloc, v, .{ .whitespace = .minified });
 }
 
@@ -40,7 +40,7 @@ fn computeRecordHashV2Hex(alloc: std.mem.Allocator, root_obj: std.json.ObjectMap
     const risk_bps = std.math.cast(u16, risk_bps_u64) orelse return error.SchemaInvalid;
 
     const trace_val = root_obj.get("trace") orelse return error.SchemaInvalid;
-    var trace_json_alloc: ?[]u8 = null;
+    var trace_json_alloc: ?[]const u8 = null;
     const trace_json: []const u8 = blk: {
         const s = stringifyJsonMinifiedAlloc(alloc, trace_val) catch break :blk "[]";
         trace_json_alloc = s;
