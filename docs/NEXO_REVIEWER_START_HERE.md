@@ -24,6 +24,19 @@ signed request -> deterministic evaluate -> final_decision -> trace -> audit art
 This is the current confirmed center of the repository.
 Do not treat secondary tracks as if they redefine this path.
 
+## Reviewer Evidence Pack
+
+This guide is the reading map. The documents below complement it with concrete reviewer surfaces:
+
+- `docs/NEXO_ARCHITECTURE_EVIDENCE.md` (architecture evidence)
+- `docs/NEXO_THREAT_MODEL.md` (threat model)
+- `docs/NEXO_REPRODUCIBILITY_REPORT.md` (reproducibility path)
+- `docs/NEXO_TEST_MATRIX.md` (validation/test matrix)
+
+The center remains:
+
+signed request -> deterministic evaluate -> final_decision -> trace -> audit artifact -> offline Zig verification
+
 ## Project Categories
 
 ### Product Center
