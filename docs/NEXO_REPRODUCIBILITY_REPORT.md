@@ -61,6 +61,24 @@ Expected verifier output includes:
 Important limit: this demo demonstrates semantic `trace` tampering detection against `audit_hash`.
 It must not be read as a claim of complete `record_hash` / `prev_record_hash` chain validation.
 
+## Record Chain Verification Demo (`--require-chain`)
+
+```bash
+bash scripts/demo_record_chain_verification.sh
+```
+
+This demo is a reproducible proof of the offline Zig verifier's optional `--require-chain` mode.
+It demonstrates:
+
+- a valid 2-record JSONL artifact with chained `record_hash` / `prev_record_hash` passes
+- a broken `prev_record_hash` on the second line fails as tampering
+- a non-trace field changed while keeping the old `record_hash` fails as tampering
+- Zig verification runs offline with `--require-chain`
+
+Important limit: this demo is fixture-driven.
+It proves offline verifier behavior, not end-to-end Rust `AuditStore` generation.
+Its intended review value is cheap-to-recompute evidence and expensive-to-hide tampering.
+
 ## Artifact Inspection
 
 ```bash
