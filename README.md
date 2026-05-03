@@ -27,6 +27,7 @@ If you are reviewing NEXO, start with this evidence pack (reading map + contract
 - `docs/NEXO_EXECUTIVE_SUMMARY.md` (one-page overview: what NEXO is, what it proves, what it does not claim, how to review quickly)
 - `docs/NEXO_REVIEWER_START_HERE.md`
 - `docs/NEXO_COMPARISON_AND_POSITIONING.md` (adjacent categories: what NEXO is similar to, where it differs, what it should not be compared as)
+- `docs/NEXO_ARCHITECTURE_DIAGRAM.md` (visual architecture map: verified backbone + role-bounded surfaces)
 - `docs/NEXO_ARCHITECTURE_EVIDENCE.md`
 - `docs/NEXO_THREAT_MODEL.md`
 - `docs/NEXO_REPRODUCIBILITY_REPORT.md`
