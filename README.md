@@ -24,6 +24,7 @@ NEXO is not:
 
 If you are reviewing NEXO, start with this evidence pack (reading map + contracts + how to reproduce and verify evidence):
 
+- `docs/NEXO_EXECUTIVE_SUMMARY.md` (one-page overview: what NEXO is, what it proves, what it does not claim, how to review quickly)
 - `docs/NEXO_REVIEWER_START_HERE.md`
 - `docs/NEXO_ARCHITECTURE_EVIDENCE.md`
 - `docs/NEXO_THREAT_MODEL.md`

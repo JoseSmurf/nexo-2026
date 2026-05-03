@@ -12,10 +12,11 @@ For agents, `AGENTS.md` remains the primary source of operational rules.
 
 Minimum reading order:
 
-1. `AGENTS.md`
-2. `README.md`
-3. `docs/OPERATIONAL_FLOW.md`
-4. `docs/SECURITY_OPERATIONS.md`
+1. `docs/NEXO_EXECUTIVE_SUMMARY.md`
+2. `AGENTS.md`
+3. `README.md`
+4. `docs/OPERATIONAL_FLOW.md`
+5. `docs/SECURITY_OPERATIONS.md`
 
 ## Confirmed Center Of NEXO
 
@@ -28,6 +29,7 @@ Do not treat secondary tracks as if they redefine this path.
 
 This guide is the reading map. The documents below complement it with concrete reviewer surfaces:
 
+- `docs/NEXO_EXECUTIVE_SUMMARY.md` (one-page overview)
 - `docs/NEXO_ARCHITECTURE_EVIDENCE.md` (architecture evidence)
 - `docs/NEXO_THREAT_MODEL.md` (threat model)
 - `docs/NEXO_REPRODUCIBILITY_REPORT.md` (reproducibility path)
