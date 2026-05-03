@@ -42,6 +42,25 @@ bash scripts/demo_decision_flow_flagged.sh
 
 This path helps review a non-approved scenario and confirm that the same central artifact and verification flow still applies.
 
+## Trace Tampering Demo (Audit Hash Mismatch)
+
+```bash
+bash scripts/demo_tampering_trace.sh
+```
+
+This demo proves two outcomes using the same central artifact format:
+
+- the original audit artifact is accepted by the Zig verifier
+- a tampered copy (same `audit_hash` / record fields, but an altered `trace`) is rejected as tampering
+
+Expected verifier output includes:
+
+- `verify: total=1 ok=1 schema_invalid=false tampering=false`
+- `verify: total=1 ok=0 schema_invalid=false tampering=true`
+
+Important limit: this demo demonstrates semantic `trace` tampering detection against `audit_hash`.
+It must not be read as a claim of complete `record_hash` / `prev_record_hash` chain validation.
+
 ## Artifact Inspection
 
 ```bash
