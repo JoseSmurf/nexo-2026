@@ -57,3 +57,17 @@ pub fn getU64(obj: std.json.ObjectMap, key: []const u8) ?u64 {
         else => null,
     };
 }
+
+// For optional string fields that Rust hashes as `unwrap_or("")`:
+// - missing field => ""
+// - null field => ""
+// - string field => the string
+// - any other type => null (caller should treat as schema invalid)
+pub fn getStringOrEmpty(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    const v = obj.get(key) orelse return "";
+    return switch (v) {
+        .null => "",
+        .string => |s| s,
+        else => null,
+    };
+}

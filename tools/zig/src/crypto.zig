@@ -134,3 +134,9 @@ pub fn pushU64Le(h: *Hasher, v: u64) void {
     std.mem.writeInt(u64, &buf, v, littleEndian());
     h.update(&buf);
 }
+
+pub fn pushU16Le(h: *Hasher, v: u16) void {
+    var buf: [2]u8 = undefined;
+    std.mem.writeInt(u16, &buf, v, littleEndian());
+    h.update(&buf);
+}

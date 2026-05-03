@@ -13,6 +13,62 @@ fn toHexLower(alloc: std.mem.Allocator, bytes: []const u8) ![]u8 {
     return out;
 }
 
+fn stringifyJsonMinifiedAlloc(alloc: std.mem.Allocator, v: std.json.Value) ![]u8 {
+    return std.json.stringifyAlloc(alloc, v, .{ .whitespace = .minified });
+}
+
+// Internal helper for future record_hash validation:
+// Mirrors Rust `src/audit/record.rs::compute_record_hash` (schema: audit_record_v2).
+// Not wired into the public verify flow yet.
+fn computeRecordHashV2Hex(alloc: std.mem.Allocator, root_obj: std.json.ObjectMap) ![]u8 {
+    var hasher = crypto.Hasher.init(.blake3);
+
+    const request_id = schema.getString(root_obj, "request_id") orelse return error.SchemaInvalid;
+    const profile_name = schema.getString(root_obj, "profile_name") orelse return error.SchemaInvalid;
+    const profile_version = schema.getString(root_obj, "profile_version") orelse return error.SchemaInvalid;
+    const calc_version = schema.getStringOrEmpty(root_obj, "calc_version") orelse return error.SchemaInvalid;
+    const user_id = schema.getString(root_obj, "user_id") orelse return error.SchemaInvalid;
+    const audit_hash_str = schema.getString(root_obj, "audit_hash") orelse return error.SchemaInvalid;
+    const hash_algo_str = schema.getString(root_obj, "hash_algo") orelse return error.SchemaInvalid;
+    const sha3_shadow = schema.getStringOrEmpty(root_obj, "sha3_shadow") orelse return error.SchemaInvalid;
+    const final_decision = schema.getString(root_obj, "final_decision") orelse return error.SchemaInvalid;
+    const prev_record_hash = schema.getStringOrEmpty(root_obj, "prev_record_hash") orelse return error.SchemaInvalid;
+
+    const timestamp_utc_ms = schema.getU64(root_obj, "timestamp_utc_ms") orelse return error.SchemaInvalid;
+    const amount_cents = schema.getU64(root_obj, "amount_cents") orelse return error.SchemaInvalid;
+    const risk_bps_u64 = schema.getU64(root_obj, "risk_bps") orelse return error.SchemaInvalid;
+    const risk_bps = std.math.cast(u16, risk_bps_u64) orelse return error.SchemaInvalid;
+
+    const trace_val = root_obj.get("trace") orelse return error.SchemaInvalid;
+    var trace_json_alloc: ?[]u8 = null;
+    const trace_json: []const u8 = blk: {
+        const s = stringifyJsonMinifiedAlloc(alloc, trace_val) catch break :blk "[]";
+        trace_json_alloc = s;
+        break :blk s;
+    };
+    defer if (trace_json_alloc) |s| alloc.free(s);
+
+    crypto.hashField(&hasher, "schema", "audit_record_v2");
+    crypto.hashField(&hasher, "request_id", request_id);
+    crypto.hashField(&hasher, "profile_name", profile_name);
+    crypto.hashField(&hasher, "profile_version", profile_version);
+    crypto.hashField(&hasher, "calc_version", calc_version);
+    crypto.hashField(&hasher, "user_id", user_id);
+    crypto.hashField(&hasher, "audit_hash", audit_hash_str);
+    crypto.hashField(&hasher, "hash_algo", hash_algo_str);
+    crypto.hashField(&hasher, "sha3_shadow", sha3_shadow);
+    crypto.hashField(&hasher, "final_decision", final_decision);
+    crypto.hashField(&hasher, "trace_json", trace_json);
+    crypto.hashField(&hasher, "prev_record_hash", prev_record_hash);
+    crypto.pushU64Le(&hasher, timestamp_utc_ms);
+    crypto.pushU64Le(&hasher, amount_cents);
+    crypto.pushU16Le(&hasher, risk_bps);
+
+    const out_bytes = try hasher.finalAlloc(alloc);
+    defer alloc.free(out_bytes);
+    return try toHexLower(alloc, out_bytes);
+}
+
 fn hashTrace(
     alloc: std.mem.Allocator,
     hash_algo: crypto.HashAlgorithm,
@@ -275,6 +331,27 @@ test "verifyLine accepts known-good fixture line" {
 
     const result = verifyLine(std.testing.allocator, line);
     try std.testing.expectEqual(schema.VerifyResult.Ok, result);
+
+    // Golden compatibility check for future record_hash validation.
+    // This does not change the public `verifyLine` behavior; it only proves we can
+    // recompute Rust's `compute_record_hash` framing in Zig deterministically.
+    const record_fixture_line =
+        \\{"request_id":"known-request-001","calc_version":"fixture_rust_v1","profile_name":"br_default_v1","profile_version":"2026.02","timestamp_utc_ms":1771845406862,"user_id":"rust_fixture_user","amount_cents":150000,"risk_bps":9999,"final_decision":"Flagged","trace":["Approved","Approved",{"FlaggedForReview":{"measured":150000,"reason":"Transaction requires AML review.","rule_id":"AML-FATF-REVIEW-001","severity":"Alta","threshold":5000000}}],"audit_hash":"bf5cfda1e218837d2f8a597f8011b4096a38e8578db23ef6aeeede292b4649f3","hash_algo":"blake3","sha3_shadow":null,"prev_record_hash":null,"record_hash":null}
+    ;
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, record_fixture_line, .{});
+    defer parsed.deinit();
+    const obj = switch (parsed.value) {
+        .object => |o| o,
+        else => return error.InvalidFixture,
+    };
+
+    const record_hex = try computeRecordHashV2Hex(std.testing.allocator, obj);
+    defer std.testing.allocator.free(record_hex);
+    try std.testing.expectEqualStrings(
+        "fa75306f29d04f6aafcec77d7dfceb7b44386284e87df8b8c51f5071d01d663f",
+        record_hex,
+    );
 }
 
 test "verifyLine detects tampering" {
