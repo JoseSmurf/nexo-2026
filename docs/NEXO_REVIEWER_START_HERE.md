@@ -30,6 +30,7 @@ Do not treat secondary tracks as if they redefine this path.
 This guide is the reading map. The documents below complement it with concrete reviewer surfaces:
 
 - `docs/NEXO_EXECUTIVE_SUMMARY.md` (one-page overview)
+- `docs/NEXO_COMPARISON_AND_POSITIONING.md` (comparison and positioning)
 - `docs/NEXO_ARCHITECTURE_EVIDENCE.md` (architecture evidence)
 - `docs/NEXO_THREAT_MODEL.md` (threat model)
 - `docs/NEXO_REPRODUCIBILITY_REPORT.md` (reproducibility path)
