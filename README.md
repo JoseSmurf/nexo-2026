@@ -20,6 +20,22 @@ NEXO is not:
 - a CRDT runtime;
 - a full sync runtime protocol (yet).
 
+## Reviewer Evidence Pack
+
+If you are reviewing NEXO, start with this evidence pack (reading map + contracts + how to reproduce and verify evidence):
+
+- `docs/NEXO_REVIEWER_START_HERE.md`
+- `docs/NEXO_ARCHITECTURE_EVIDENCE.md`
+- `docs/NEXO_THREAT_MODEL.md`
+- `docs/NEXO_REPRODUCIBILITY_REPORT.md`
+- `docs/NEXO_TEST_MATRIX.md`
+
+Confirmed center of the repository:
+
+`signed request -> deterministic evaluate -> final_decision -> trace -> audit artifact -> offline Zig verification`
+
+This pack is intentionally scoped to local, inspectable evidence. It does not claim global truth, consensus, AI judgment, or Bitcoin mining/profitability/PoW/ASIC advantage.
+
 ## Witness Layer (Current)
 
 - `AcceptedStateWitness`
