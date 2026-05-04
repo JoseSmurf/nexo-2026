@@ -79,6 +79,18 @@ Important limit: this demo is fixture-driven.
 It proves offline verifier behavior, not end-to-end Rust `AuditStore` generation.
 Its intended review value is cheap-to-recompute evidence and expensive-to-hide tampering.
 
+## Persistent Chained Fixture (`--require-chain`)
+
+This repo also includes a persistent 2-line chained audit fixture:
+
+```bash
+cd tools/zig
+zig build run -- verify --require-chain ../../fixtures/audit_chain_sample.jsonl
+```
+
+This proves the offline Zig verifier's `--require-chain` behavior against a persistent, chained JSONL artifact.
+It does not claim to prove all deployment/storage/runtime conditions.
+
 ## Artifact Inspection
 
 ```bash
