@@ -60,6 +60,46 @@ mod tests {
     use crate::FinalDecision;
     use serde_json::json;
 
+    #[test]
+    fn audit_chain_fixture_matches_compute_record_hash_semantics() {
+        let fixture = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/audit_chain_sample.jsonl"
+        ));
+        let lines: Vec<&str> = fixture
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "expected exactly 2 non-empty lines in fixtures/audit_chain_sample.jsonl"
+        );
+
+        let record_1: AuditRecord =
+            serde_json::from_str(lines[0]).expect("parse line 1 audit record");
+        let record_2: AuditRecord =
+            serde_json::from_str(lines[1]).expect("parse line 2 audit record");
+
+        let stored_hash_1 = record_1
+            .record_hash
+            .clone()
+            .expect("line 1 record_hash must be present");
+        let stored_hash_2 = record_2
+            .record_hash
+            .clone()
+            .expect("line 2 record_hash must be present");
+        assert_eq!(
+            record_2.prev_record_hash.as_deref(),
+            Some(stored_hash_1.as_str()),
+            "line 2 prev_record_hash must equal line 1 record_hash"
+        );
+
+        assert_eq!(compute_record_hash(&record_1), stored_hash_1);
+        assert_eq!(compute_record_hash(&record_2), stored_hash_2);
+    }
+
     fn sample_record() -> AuditRecord {
         AuditRecord {
             request_id: "known-request-001".to_string(),
