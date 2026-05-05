@@ -185,6 +185,113 @@ Tune per environment, but start with:
 2. Compare with deploy/change timeline.
 3. Roll back if SLO is breached and cause is unknown.
 
+### 4.6 Audit Incident Recovery & Quarantine Checklist
+
+This checklist is for audit persistence incidents (append failures, lock incidents, malformed audit content, or chain-integrity concerns).
+
+Immediate posture (fail closed):
+
+1. Stop accepting new `POST /evaluate` traffic while audit persistence is failing (disable ingress/drain or stop the API process).
+2. Preserve the current audit file, lock file, and temp artifacts before any mutation.
+3. Do not delete/truncate/overwrite/edit audit JSONL files manually.
+4. Do not blindly retry the same `request_id`.
+5. Do not treat `/api/state`, `/audit/recent`, or `/security/status` as authoritative proof of audit integrity.
+
+Evidence preservation order (command-level):
+
+1. Capture incident context:
+   - `UTC_TS="$(date -u +%Y%m%dT%H%M%SZ)"`
+   - `AUDIT_PATH="${NEXO_AUDIT_PATH:-logs/audit_records.jsonl}"`
+   - `LOCK_PATH="${AUDIT_PATH}.lock"`
+   - `AUDIT_DIR="$(dirname "${AUDIT_PATH}")"`
+   - `AUDIT_BASE="$(basename "${AUDIT_PATH}")"`
+   - `AUDIT_STEM="${AUDIT_BASE%.*}"; [ "${AUDIT_STEM}" = "${AUDIT_BASE}" ] && AUDIT_STEM="${AUDIT_BASE}"`
+   - `TMP_PATH="${AUDIT_DIR}/${AUDIT_STEM}.jsonl.tmp"`
+2. Record current build/revision:
+   - `git rev-parse HEAD`
+3. Record whether lock/temp exists:
+   - `test -f "${LOCK_PATH}" && echo "lock:present" || echo "lock:absent"`
+   - `test -f "${TMP_PATH}" && echo "tmp:present" || echo "tmp:absent"`
+4. Preserve evidence before recovery actions:
+   - `mkdir -p "quarantine/audit/${UTC_TS}"`
+   - `cp -a "${AUDIT_PATH}" "quarantine/audit/${UTC_TS}/"`
+   - `test -f "${LOCK_PATH}" && cp -a "${LOCK_PATH}" "quarantine/audit/${UTC_TS}/"`
+   - `test -f "${TMP_PATH}" && cp -a "${TMP_PATH}" "quarantine/audit/${UTC_TS}/"`
+5. Preserve logs and operator notes for the incident window:
+   - save API/runtime logs around the failure window
+   - save request metadata needed for forensics without leaking secrets
+
+Quarantine convention:
+
+- Use `quarantine/audit/<UTC_TIMESTAMP>/` (for example `quarantine/audit/20260505T120000Z/`).
+- Include:
+  - copied audit JSONL
+  - copied `.lock` file (if present)
+  - copied `.jsonl.tmp` file (if present)
+  - operator notes (timeline, actions, assumptions)
+  - offline verification output
+  - relevant runtime logs
+- Do not mutate original evidence files before quarantine copy + verification.
+
+Offline verification (authoritative for persisted artifacts):
+
+- `cd tools/zig && zig build run -- verify --require-chain <artifact.jsonl>`
+- `bash scripts/inspect_audit_artifact.sh <artifact.jsonl>`
+- `bash scripts/find_audit_artifact.sh <request_id|audit_hash|record_hash> <path-or-dir>`
+
+Interpretation:
+
+- Zig is authoritative for persisted artifact schema/hash/chain checks.
+- Zig cannot prove that a never-persisted event existed.
+
+Persistence-outcome decision table:
+
+| Scenario | Operator interpretation | Retry same `request_id`? | New signed request/new `request_id`? | Resume service? | Required actions |
+| --- | --- | --- | --- | --- | --- |
+| Definitely not persisted | Failure occurred before any durable replace success evidence | No | Only after incident review | Not yet | Preserve evidence, quarantine, run offline verification on current artifact, document incident |
+| Possibly persisted | Error surface is ambiguous (for example post-rename/post-append incident) | No | Only after review confirms safe continuation | Not yet | Treat as high-risk ambiguity, preserve/quarantine, verify persisted artifact, record operator decision |
+| Persisted but caller received error | Append likely persisted but caller saw failure (for example lock release failure after durable append) | No | Yes, but only for a new business attempt, never by reusing old nonce | Only after checks below | Preserve/quarantine, verify artifact, ensure one-writer topology, document incident and caller impact |
+| Visible chain break | Persisted file fails chain continuity/hash checks | No | Only after quarantine and continuity decision | Not until resolved | Quarantine current path, verify with Zig, investigate source, do not overwrite evidence |
+| Never-persisted event risk | Some accepted intent may not exist in persisted artifact history | No | Only after explicit review and new signed request | Not by default | Preserve logs + metadata, do not overclaim, document limitation explicitly |
+| Stale lock vs active writer uncertainty | Existing lock may indicate live writer or stale incident artifact | No | Only after lock investigation and review | Not until resolved | Confirm process ownership, preserve lock before removal, verify artifact before resuming |
+
+Lock investigation procedure:
+
+1. Assume lock may be valid until proven otherwise.
+2. Check for active writer process using deployment-native process inspection.
+3. Preserve lock file into quarantine before any removal attempt.
+4. If active writer is confirmed, do not remove lock manually; resolve writer topology first.
+5. If stale lock is concluded, remove only after evidence capture, process check, and offline verification.
+6. Deleting a stale lock is a recovery action, not proof of chain integrity.
+
+Resume criteria:
+
+Resume `POST /evaluate` traffic only when all are true:
+
+1. Incident evidence was preserved/quarantined.
+2. Offline verification was completed on active/recovered artifact.
+3. No unresolved active-writer or lock ambiguity remains.
+4. Deployment topology enforces one writer per audit path.
+5. Incident record includes persistence-outcome interpretation and recovery decision.
+6. If chain is broken or persistence outcome remains ambiguous, resume only under explicit operator incident procedure.
+7. Do not resume solely because `/api/state` or `/security/status` appears healthy.
+
+MUST NOT actions during incident response:
+
+- MUST NOT manually edit audit JSONL.
+- MUST NOT truncate audit files.
+- MUST NOT overwrite malformed tails.
+- MUST NOT delete lock files before evidence capture.
+- MUST NOT retry the same `request_id` after audit persistence failure.
+- MUST NOT treat Zig pass as proof that no request was ever lost before persistence.
+- MUST NOT treat Ruby/Julia/Mesh/Witness/Bitcoin outputs as authority over unverified evidence.
+
+Informational vs authoritative:
+
+- Informational only: `/api/state`, `/audit/recent`, `/security/status`.
+- Authoritative for persisted audit evidence: offline artifact verification and preserved incident artifacts.
+- Informational endpoints are useful for triage, not substitutes for forensic verification.
+
 ## 5. Key Rotation Procedure
 
 1. Set new `NEXO_HMAC_SECRET_FILE` and keep old as `NEXO_HMAC_SECRET_PREV_FILE` (or env equivalents).

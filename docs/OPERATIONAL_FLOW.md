@@ -56,6 +56,7 @@ Durability incident note:
 - Keep exactly one writer process per `NEXO_AUDIT_PATH`; do not run multiple replicas writing the same audit file path unless external single-writer coordination is in place.
 - If `<audit_path>.lock` already exists, treat it as an incident signal (possible active writer or stale lock after interruption), not as a cleanup-only task.
 - If append fails at lock release after a completed durable write, treat it as an incident where the record may already be persisted; do not blindly retry the same request or blindly delete the lock before process/timestamp checks and offline verification.
+- For command-level incident handling, follow `docs/SECURITY_OPERATIONS.md` section `4.6 Audit Incident Recovery & Quarantine Checklist`.
 
 ## 2. Where artifacts are stored
 
@@ -156,6 +157,7 @@ Operational meaning:
 - `empty`: no persisted audit records are currently available in the checked window
 
 This signal is intentionally compact. Use `scripts/inspect_audit_artifact.sh` and the Zig verifier for deeper investigation.
+It is informational only and does not replace offline verification for incident decisions.
 
 ## 5. Verifying past decisions
 
