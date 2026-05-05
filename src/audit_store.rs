@@ -39,10 +39,9 @@ fn is_hex_lower_n(s: &str, expected_len: usize) -> bool {
     if s.len() != expected_len {
         return false;
     }
-    s.as_bytes().iter().all(|&b| match b {
-        b'0'..=b'9' | b'a'..=b'f' => true,
-        _ => false,
-    })
+    s.as_bytes()
+        .iter()
+        .all(|&b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 #[derive(Clone)]
@@ -242,7 +241,9 @@ mod tests {
         let store = AuditStore::new(&path, 10);
         let r1 = sample_record("req-should-fail");
 
-        let err = store.append(&r1).expect_err("append must fail on malformed tail");
+        let err = store
+            .append(&r1)
+            .expect_err("append must fail on malformed tail");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
 
         let _ = fs::remove_file(path);
