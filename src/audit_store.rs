@@ -61,6 +61,66 @@ fn sync_parent_directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+fn lock_path_for(path: &Path) -> PathBuf {
+    let mut os = path.as_os_str().to_os_string();
+    os.push(".lock");
+    PathBuf::from(os)
+}
+
+struct AppendLockGuard {
+    path: PathBuf,
+    released: bool,
+}
+
+impl AppendLockGuard {
+    fn acquire(audit_path: &Path) -> io::Result<Self> {
+        let lock_path = lock_path_for(audit_path);
+        match OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&lock_path)
+        {
+            Ok(file) => {
+                drop(file);
+                Ok(Self {
+                    path: lock_path,
+                    released: false,
+                })
+            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "audit append lock file already exists at {}; another writer may be active or a stale lock may remain after an incident",
+                    lock_path.display()
+                ),
+            )),
+            Err(err) => Err(err),
+        }
+    }
+
+    fn release(mut self) -> io::Result<()> {
+        fs::remove_file(&self.path).map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!(
+                    "audit append completed but failed to release lock file {}: {err}",
+                    self.path.display()
+                ),
+            )
+        })?;
+        self.released = true;
+        Ok(())
+    }
+}
+
+impl Drop for AppendLockGuard {
+    fn drop(&mut self) {
+        if !self.released {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
 fn write_replace_durable(path: &Path, content: &[u8]) -> io::Result<()> {
     let tmp_path = path.with_extension("jsonl.tmp");
     let mut tmp_file = OpenOptions::new()
@@ -121,6 +181,7 @@ impl AuditStore {
     pub fn append(&self, record: &AuditRecord) -> io::Result<()> {
         self.ready()?;
         let _guard = self.inner.lock.lock().expect("audit store lock poisoned");
+        let process_guard = AppendLockGuard::acquire(&self.inner.path)?;
         let content = fs::read_to_string(&self.inner.path)?;
         let mut lines: Vec<String> = content
             .lines()
@@ -167,6 +228,7 @@ impl AuditStore {
             output.push('\n');
         }
         write_replace_durable(&self.inner.path, output.as_bytes())?;
+        process_guard.release()?;
         Ok(())
     }
 
@@ -316,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn audit_store_append_success_removes_temp_file() {
+    fn audit_store_append_success_removes_temp_file_and_lock_file() {
         let path = std::env::temp_dir().join(format!(
             "nexo_audit_tmp_cleanup_{}.jsonl",
             SystemTime::now()
@@ -325,7 +387,9 @@ mod tests {
                 .as_nanos()
         ));
         let tmp_path = path.with_extension("jsonl.tmp");
+        let lock_path = lock_path_for(&path);
         let _ = fs::remove_file(&tmp_path);
+        let _ = fs::remove_file(&lock_path);
 
         let store = AuditStore::new(&path, 10);
         let r1 = sample_record("req-temp-cleanup");
@@ -335,8 +399,65 @@ mod tests {
             !tmp_path.exists(),
             "temporary replace file should not remain after successful append"
         );
+        assert!(
+            !lock_path.exists(),
+            "append lock file should not remain after successful append"
+        );
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn audit_store_append_fails_when_lock_file_already_exists() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_audit_lock_exists_{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let lock_path = lock_path_for(&path);
+        let store = AuditStore::new(&path, 10);
+        fs::write(&lock_path, "locked").expect("create lock file");
+
+        let err = store
+            .append(&sample_record("req-locked"))
+            .expect_err("append must fail when lock file exists");
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert!(
+            err.to_string()
+                .contains("another writer may be active or a stale lock may remain"),
+            "lock-file failure message should mention active writer or stale lock incident"
+        );
+
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(lock_path);
+    }
+
+    #[test]
+    fn audit_store_append_with_existing_lock_preserves_existing_file_content() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_audit_lock_preserves_content_{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let lock_path = lock_path_for(&path);
+        let original = "existing content\n";
+        fs::write(&path, original).expect("write original content");
+        fs::write(&lock_path, "locked").expect("create lock file");
+        let store = AuditStore::new(&path, 10);
+
+        let err = store
+            .append(&sample_record("req-locked-preserve"))
+            .expect_err("append must fail when lock file exists");
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        let after = fs::read_to_string(&path).expect("read file after lock failure");
+        assert_eq!(after, original);
+
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(lock_path);
     }
 
     #[test]
@@ -348,7 +469,9 @@ mod tests {
                 .expect("time")
                 .as_nanos()
         ));
+        let lock_path = lock_path_for(&path);
         let original = "this is not json\n";
+        let _ = fs::remove_file(&lock_path);
         fs::write(&path, original).expect("write malformed tail");
         let store = AuditStore::new(&path, 10);
 
@@ -360,6 +483,10 @@ mod tests {
 
         let after = fs::read_to_string(&path).expect("read file after failed append");
         assert_eq!(after, original);
+        assert!(
+            !lock_path.exists(),
+            "append lock file should be released after append failure"
+        );
 
         let _ = fs::remove_file(path);
     }

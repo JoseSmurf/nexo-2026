@@ -90,7 +90,20 @@ Client asymmetric signature mode (optional):
 - If rename fails, the previous audit file remains authoritative and the temp file may remain for operator inspection/removal.
 - If parent-directory sync fails after rename, treat it as a storage durability incident; visible file state may already have changed.
 - This durable replace sequence improves crash/power-loss resilience, but it is not a universal crash-proof guarantee across every filesystem, mount option, storage device, or platform.
-- This durability contract does not add multi-process writer safety, does not replace offline Zig verification, and does not prove full historical chain validity by itself.
+- This durability contract does not replace offline Zig verification, and does not prove full historical chain validity by itself.
+
+### 1.3.3 Single-Writer Audit Path Contract
+
+- One audit artifact path must have exactly one writer process.
+- `AuditStore::append` uses a same-directory lock file (`<audit_path>.lock`) as a fail-closed process-level guard.
+- If the lock file already exists, append fails closed and should be treated as an operator incident (another writer may be active, or a stale lock may remain after an interrupted append).
+- If lock release fails after a completed durable append sequence, treat it as an operator incident: the record may already be persisted even if the caller receives an error.
+- Do not run multiple replicas writing to the same `NEXO_AUDIT_PATH`.
+- Shared filesystems/NFS/container replicas require external single-writer coordination or separate audit paths per writer.
+- The lock file guard is not a distributed lock system.
+- A stale lock file must not be blindly deleted without checking whether an append was interrupted and whether the artifact needs verification/quarantine.
+- On post-append lock-release failure, do not blindly retry the same request and do not blindly delete the lock; preserve current audit/lock state, inspect process/timestamp context, and run offline verification before recovery decisions.
+- Zig verification can detect visible chain/tampering issues in persisted artifacts, but it cannot prove that no accepted event was lost before persistence.
 
 ### 1.4 Runtime Isolation
 

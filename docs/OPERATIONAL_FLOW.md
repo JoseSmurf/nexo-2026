@@ -45,6 +45,9 @@ Each persisted record contains the fields needed for later inspection and offlin
 Durability incident note:
 
 - If audit append returns a storage/durability error, stop accepting new decisions, preserve the current audit file and any remaining `*.jsonl.tmp`, run offline verification, and quarantine the affected artifact path before resuming writes.
+- Keep exactly one writer process per `NEXO_AUDIT_PATH`; do not run multiple replicas writing the same audit file path unless external single-writer coordination is in place.
+- If `<audit_path>.lock` already exists, treat it as an incident signal (possible active writer or stale lock after interruption), not as a cleanup-only task.
+- If append fails at lock release after a completed durable write, treat it as an incident where the record may already be persisted; do not blindly retry the same request or blindly delete the lock before process/timestamp checks and offline verification.
 
 ## 2. Where artifacts are stored
 
