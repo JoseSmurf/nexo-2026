@@ -35,6 +35,16 @@ fn default_hash_algo() -> String {
     "blake3".to_string()
 }
 
+fn is_hex_lower_n(s: &str, expected_len: usize) -> bool {
+    if s.len() != expected_len {
+        return false;
+    }
+    s.as_bytes().iter().all(|&b| match b {
+        b'0'..=b'9' | b'a'..=b'f' => true,
+        _ => false,
+    })
+}
+
 #[derive(Clone)]
 pub struct AuditStore {
     inner: Arc<AuditStoreInner>,
@@ -70,17 +80,37 @@ impl AuditStore {
     pub fn append(&self, record: &AuditRecord) -> io::Result<()> {
         self.ready()?;
         let _guard = self.inner.lock.lock().expect("audit store lock poisoned");
-        let content = fs::read_to_string(&self.inner.path).unwrap_or_default();
+        let content = fs::read_to_string(&self.inner.path)?;
         let mut lines: Vec<String> = content
             .lines()
             .map(|line| line.trim())
             .filter(|line| !line.is_empty())
             .map(ToString::to_string)
             .collect();
-        let prev_hash = lines
-            .last()
-            .and_then(|line| serde_json::from_str::<AuditRecord>(line).ok())
-            .and_then(|r| r.record_hash.clone());
+
+        let prev_hash = if let Some(tail_line) = lines.last() {
+            let tail_record: AuditRecord = serde_json::from_str(tail_line).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("audit store tail line is malformed JSON: {e}"),
+                )
+            })?;
+            let record_hash = tail_record.record_hash.clone().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "audit store tail record missing record_hash; chain continuity cannot be trusted",
+                )
+            })?;
+            if !is_hex_lower_n(&record_hash, 64) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "audit store tail record_hash has invalid format; chain continuity cannot be trusted",
+                ));
+            }
+            Some(record_hash)
+        } else {
+            None
+        };
 
         let mut chained = record.clone();
         chained.prev_record_hash = prev_hash;
@@ -174,6 +204,72 @@ mod tests {
         assert_eq!(older.prev_record_hash, None);
         assert!(newest.record_hash.is_some());
         assert_eq!(newest.prev_record_hash, older.record_hash);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn audit_store_append_works_on_empty_file() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_audit_empty_{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let store = AuditStore::new(&path, 10);
+        let r1 = sample_record("req-empty-1");
+
+        store.append(&r1).expect("append to empty store");
+        let recent = store.recent(10).expect("recent");
+        assert_eq!(recent.len(), 1);
+        assert!(recent[0].record_hash.is_some());
+        assert_eq!(recent[0].prev_record_hash, None);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn audit_store_append_fails_on_malformed_tail_json() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_audit_malformed_tail_{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::write(&path, "this is not json\n").expect("write malformed tail");
+        let store = AuditStore::new(&path, 10);
+        let r1 = sample_record("req-should-fail");
+
+        let err = store.append(&r1).expect_err("append must fail on malformed tail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn audit_store_append_fails_on_tail_missing_record_hash() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_audit_missing_record_hash_{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let store = AuditStore::new(&path, 10);
+
+        let mut tail = sample_record("legacy-tail-without-record-hash");
+        tail.prev_record_hash = None;
+        tail.record_hash = None;
+        let tail_line = serde_json::to_string(&tail).expect("serialize tail record");
+        fs::write(&path, format!("{tail_line}\n")).expect("write tail record");
+
+        let r1 = sample_record("req-should-fail");
+        let err = store
+            .append(&r1)
+            .expect_err("append must fail when tail has no usable record_hash");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
 
         let _ = fs::remove_file(path);
     }
