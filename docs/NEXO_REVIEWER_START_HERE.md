@@ -32,6 +32,7 @@ This guide is the reading map. The documents below complement it with concrete r
 - `docs/NEXO_EXECUTIVE_SUMMARY.md` (one-page overview)
 - `docs/NEXO_COMPARISON_AND_POSITIONING.md` (comparison and positioning)
 - `docs/NEXO_ARCHITECTURE_DIAGRAM.md` (architecture diagram / visual map)
+- `docs/NEXO_CROSS_LANGUAGE_EVIDENCE_BOUNDARY.md` (cross-language evidence boundary contract)
 - `docs/NEXO_ARCHITECTURE_EVIDENCE.md` (architecture evidence)
 - `docs/NEXO_THREAT_MODEL.md` (threat model)
 - `docs/NEXO_REPRODUCIBILITY_REPORT.md` (reproducibility path)

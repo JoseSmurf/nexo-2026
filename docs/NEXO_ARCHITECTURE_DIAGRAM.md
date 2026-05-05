@@ -54,6 +54,8 @@ It does not make other parts irrelevant; it makes their roles and trust boundari
 - **Docs / Evidence Pack:** protects scope and makes review reproducible; it is part of how NEXO stays honest over time.
 - **Experimental tracks:** Bitcoin, mesh/P2P, and Witness work can be important, but they are bounded as research/experimental tracks unless explicitly promoted by contract.
 
+See `docs/NEXO_CROSS_LANGUAGE_EVIDENCE_BOUNDARY.md` for the canonical cross-language evidence boundary contract.
+
 ## What The Diagram Does Not Claim
 
 This diagram does not claim that NEXO is:
@@ -66,4 +68,3 @@ This diagram does not claim that NEXO is:
 
 It also must not be read as a promise of complete offline validation of `record_hash` / `prev_record_hash` chain semantics (not asserted here).
 Secondary surfaces (Ruby UI, Julia observer, Witness/mesh/Bitcoin tracks) must not be treated as authorities over the core Rust decision evidence.
-

@@ -9,6 +9,8 @@ It is intended to help a reviewer run, inspect, and independently verify the cur
 
 signed request -> deterministic evaluate -> final_decision -> trace -> audit artifact -> offline Zig verification
 
+For cross-language boundary rules (what may treat evidence as authority), see `docs/NEXO_CROSS_LANGUAGE_EVIDENCE_BOUNDARY.md`.
+
 ## Required Tools
 
 - Rust/Cargo
