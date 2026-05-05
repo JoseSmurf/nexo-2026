@@ -12,6 +12,16 @@ This document defines the deployment hardening and incident response baseline fo
 - Restrict allowed methods and paths.
 - Enable IP reputation and WAF rules when available.
 
+Proxy identity headers trust boundary:
+
+- By default, NEXO does **not** trust `X-Forwarded-For` / `X-Real-IP` for rate-limit identity.
+- If you must run behind a reverse proxy and want forwarded identity, enable explicitly:
+  - `NEXO_TRUST_PROXY_HEADERS=true`
+- This is safe only when the deployment guarantees:
+  - direct access to the service is blocked (proxy is the only ingress)
+  - the proxy strips/sanitizes any incoming forwarded headers from clients
+  - only the trusted proxy injects the forwarded identity headers
+
 Recommended baseline:
 - `POST /evaluate` only from trusted networks/clients.
 - `GET /security/status` and `GET /metrics` restricted to internal/admin access.

@@ -107,6 +107,9 @@ pub struct AppState {
     pub replay_max_keys: usize,
     pub auth_window_ms: u64,
     pub rate_limiter: Arc<RateLimiter>,
+    // Proxy identity headers are spoofable unless the deployment strictly enforces a trusted proxy boundary.
+    // Default is fail-safe: do not trust X-Forwarded-For / X-Real-IP unless explicitly enabled.
+    pub trust_proxy_headers: bool,
     pub key_usage: Arc<DashMap<String, u64>>,
     pub mtls: Option<MtlsConfig>,
     pub client_sig: Option<ClientSignatureConfig>,
@@ -372,6 +375,7 @@ impl AppState {
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(DEFAULT_RATE_LIMIT_USER);
+        let trust_proxy_headers = env_bool("NEXO_TRUST_PROXY_HEADERS", false);
         let mtls = load_mtls_config_from_env();
         let client_sig = load_client_signature_config_from_env();
         let edge_guard = load_edge_guard_config_from_env();
@@ -425,6 +429,7 @@ impl AppState {
                 rate_limit_ip,
                 rate_limit_user,
             )),
+            trust_proxy_headers,
             key_usage: Arc::new(DashMap::new()),
             mtls,
             client_sig,
@@ -464,6 +469,7 @@ impl AppState {
                 10_000,
                 10_000,
             )),
+            trust_proxy_headers: false,
             key_usage: Arc::new(DashMap::new()),
             mtls: None,
             client_sig: None,
@@ -500,6 +506,7 @@ impl AppState {
                 u32::MAX,
                 u32::MAX,
             )),
+            trust_proxy_headers: false,
             key_usage: Arc::new(DashMap::new()),
             mtls: None,
             client_sig: None,
@@ -1552,7 +1559,8 @@ async fn rate_limit_middleware(
     };
 
     let now = now_utc_ms();
-    let ip = extract_client_ip(&parts.headers);
+    let connect_info = parts.extensions.get::<ConnectInfo<SocketAddr>>();
+    let ip = extract_client_ip(connect_info, &parts.headers, state.trust_proxy_headers);
     let user_id = extract_user_id_from_body(&body_bytes).unwrap_or_else(|| "unknown".to_string());
 
     if !is_json_content_type(&parts.headers) {
@@ -1845,21 +1853,35 @@ fn extract_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .map(str::trim)
 }
 
-fn extract_client_ip(headers: &HeaderMap) -> String {
-    if let Some(v) = extract_header(headers, HEADER_FORWARDED_FOR) {
-        if let Some(first) = v.split(',').next() {
-            let ip = first.trim();
-            if !ip.is_empty() {
-                return ip.to_string();
+fn peer_ip_from_connect_info(connect_info: Option<&ConnectInfo<SocketAddr>>) -> Option<String> {
+    let ConnectInfo(addr) = connect_info?;
+    Some(addr.ip().to_string())
+}
+
+fn extract_client_ip(
+    connect_info: Option<&ConnectInfo<SocketAddr>>,
+    headers: &HeaderMap,
+    trust_proxy_headers: bool,
+) -> String {
+    if trust_proxy_headers {
+        if let Some(v) = extract_header(headers, HEADER_FORWARDED_FOR) {
+            if let Some(first) = v.split(',').next() {
+                let ip = first.trim();
+                if !ip.is_empty() {
+                    return ip.to_string();
+                }
             }
         }
-    }
-    if let Some(v) = extract_header(headers, HEADER_REAL_IP) {
-        if !v.is_empty() {
-            return v.to_string();
+        if let Some(v) = extract_header(headers, HEADER_REAL_IP) {
+            if !v.is_empty() {
+                return v.to_string();
+            }
         }
+        return peer_ip_from_connect_info(connect_info).unwrap_or_else(|| "unknown".to_string());
     }
-    "unknown".to_string()
+
+    // Default fail-safe posture: do not trust spoofable forwarded identity headers.
+    peer_ip_from_connect_info(connect_info).unwrap_or_else(|| "unknown".to_string())
 }
 
 fn extract_user_id_from_body(body: &[u8]) -> Option<String> {
@@ -2373,6 +2395,27 @@ mod tests {
             req = req.header(*k, v);
         }
         req.body(Body::from(body)).expect("request")
+    }
+
+    fn signed_request_with_headers_and_remote_addr(
+        payload: serde_json::Value,
+        secret: &str,
+        key_id: &str,
+        request_id: &str,
+        timestamp_ms: u64,
+        extra_headers: &[(&str, String)],
+        remote_addr: SocketAddr,
+    ) -> Request<Body> {
+        let mut req = signed_request_with_headers(
+            payload,
+            secret,
+            key_id,
+            request_id,
+            timestamp_ms,
+            extra_headers,
+        );
+        req.extensions_mut().insert(ConnectInfo(remote_addr));
+        req
     }
 
     fn admin_get_request(path: &str, auth: Option<&str>) -> Request<Body> {
@@ -3309,6 +3352,96 @@ mod tests {
         );
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn forwarded_headers_are_ignored_by_default_for_rate_limit_identity() {
+        let mut state = test_state();
+        state.trust_proxy_headers = false;
+        state.rate_limiter = Arc::new(RateLimiter::new(60_000, 1, 10_000));
+
+        let app = app_with_state(state);
+        let now = now_utc_ms();
+        let payload = serde_json::json!({
+            "user_id":"u_rl",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+
+        let remote: SocketAddr = "127.0.0.1:41001".parse().expect("loopback");
+        let req1 = signed_request_with_headers_and_remote_addr(
+            payload.clone(),
+            "test_active_secret",
+            "active",
+            "a7774f19-7c6a-4b04-9d47-5bf1c6f86b11",
+            now,
+            &[(HEADER_FORWARDED_FOR, "203.0.113.10".to_string())],
+            remote,
+        );
+        let resp1 = app.clone().oneshot(req1).await.expect("response");
+        assert_eq!(resp1.status(), StatusCode::OK);
+
+        // Attempt to evade rate limit by spoofing X-Forwarded-For. This must fail by default.
+        let req2 = signed_request_with_headers_and_remote_addr(
+            payload,
+            "test_active_secret",
+            "active",
+            "b5f2e10b-1b1a-4ae1-8b8c-66f762e6d971",
+            now,
+            &[(HEADER_FORWARDED_FOR, "203.0.113.11".to_string())],
+            remote,
+        );
+        let resp2 = app.oneshot(req2).await.expect("response");
+        assert_eq!(resp2.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn forwarded_headers_are_used_only_when_proxy_trust_is_enabled() {
+        let mut state = test_state();
+        state.trust_proxy_headers = true;
+        state.rate_limiter = Arc::new(RateLimiter::new(60_000, 1, 10_000));
+
+        let app = app_with_state(state);
+        let now = now_utc_ms();
+        let payload = serde_json::json!({
+            "user_id":"u_rl",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+
+        let remote: SocketAddr = "127.0.0.1:41002".parse().expect("loopback");
+        let req1 = signed_request_with_headers_and_remote_addr(
+            payload.clone(),
+            "test_active_secret",
+            "active",
+            "bf04edc1-52d3-4f8f-8f44-0f40c3cbe0a7",
+            now,
+            &[(HEADER_FORWARDED_FOR, "203.0.113.20".to_string())],
+            remote,
+        );
+        let resp1 = app.clone().oneshot(req1).await.expect("response");
+        assert_eq!(resp1.status(), StatusCode::OK);
+
+        // When explicitly trusted, different X-Forwarded-For values produce different rate-limit identities.
+        let req2 = signed_request_with_headers_and_remote_addr(
+            payload,
+            "test_active_secret",
+            "active",
+            "ccbdd4b3-4b9f-4d0a-8755-5cd2b5cba4d5",
+            now,
+            &[(HEADER_FORWARDED_FOR, "203.0.113.21".to_string())],
+            remote,
+        );
+        let resp2 = app.oneshot(req2).await.expect("response");
+        assert_eq!(resp2.status(), StatusCode::OK);
     }
 
     #[tokio::test]

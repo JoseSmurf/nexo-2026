@@ -12,6 +12,7 @@ It is intentionally focused on the current production-shaped path already presen
 
 - A client sends a signed `POST /evaluate` request.
 - The API validates HMAC, timestamp window, replay constraints, and other fail-closed security checks.
+- Rate limiting uses the socket peer IP by default. Forwarded proxy identity headers are ignored unless explicitly enabled via `NEXO_TRUST_PROXY_HEADERS=true` behind a sanitizing reverse proxy boundary.
 
 ### 1.2 Deterministic decision
 

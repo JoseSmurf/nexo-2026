@@ -45,6 +45,7 @@ Out of scope:
 | --- | --- | --- | --- | --- |
 | unsigned or forged request | unauthorized decision request accepted | HMAC validation, key id validation, fail-closed auth path | `src/api/auth.rs`, `src/api.rs` | key compromise or bad secret handling outside the repo |
 | duplicate or ambiguous auth headers | header confusion or auth bypass | duplicate auth headers rejected explicitly | `src/api/auth.rs` | proxy/header normalization mistakes outside app boundary |
+| spoofed forwarded identity headers | rate-limit evasion or misleading operator attribution | proxy headers not trusted by default; optional trusted-proxy mode gated by `NEXO_TRUST_PROXY_HEADERS` | `src/api.rs`, `docs/SECURITY_OPERATIONS.md` | requires correct ingress posture (service must not be directly reachable; proxy must sanitize forwarded headers) |
 | replayed request | repeated execution of old signed request | request id replay cache, optional distributed replay guard | `src/api/auth.rs`, `src/api/replay.rs`, `src/api.rs` | replay window depends on correct deployment and storage posture |
 | stale timestamp | delayed request accepted as fresh | bounded timestamp window, request timeout rejection | `src/api/auth.rs`, `src/api.rs` | clock drift between clients and server |
 | abusive request volume | service degradation or abuse | rate limiting, optional distributed rate limiting | `src/api/rate_limit.rs`, `src/api.rs` | edge posture and deployment tuning still matter |
