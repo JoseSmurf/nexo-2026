@@ -82,6 +82,12 @@ Client asymmetric signature mode (optional):
   - `NEXO_REQUIRE_PERSISTENT_REPLAY=true`
   - `NEXO_REDIS_URL=...`
 - If Redis replay is configured, backend unavailability should remain fail-closed (requests guarded by replay must be rejected).
+- `request_id` is a one-time signed nonce consumed at the security/replay gate, before audit persistence.
+- `request_id` is not a retry/idempotency key.
+- A request is accepted only when `/evaluate` returns `200` after audit append success.
+- If audit append fails, `/evaluate` fails closed, returns an error, and withholds the decision payload.
+- Retrying the same `request_id` after audit append failure is expected to return replay conflict; after incident review/recovery, use a new signed request with a new `request_id`.
+- Two-phase replay reservation/commit is a future architecture option and is not the current behavior.
 
 ### 1.3.2 Audit Persistence Durability Contract
 

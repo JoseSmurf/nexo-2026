@@ -2346,6 +2346,8 @@ mod tests {
     use http_body_util::BodyExt;
     use serde_json::Value;
     use std::collections::HashMap;
+    use std::fs;
+    use std::path::PathBuf;
     use tower::util::ServiceExt;
 
     #[cfg(feature = "network")]
@@ -2356,6 +2358,12 @@ mod tests {
     fn test_state() -> AppState {
         let path = std::env::temp_dir().join(format!("nexo_api_test_{}.jsonl", Uuid::new_v4()));
         AppState::for_tests(path)
+    }
+
+    fn lock_path_for_test(path: &std::path::Path) -> PathBuf {
+        let mut os = path.as_os_str().to_os_string();
+        os.push(".lock");
+        PathBuf::from(os)
     }
 
     fn signed_request(
@@ -3166,6 +3174,184 @@ mod tests {
             app.oneshot(req2).await.expect("r2").status(),
             StatusCode::CONFLICT
         );
+    }
+
+    #[tokio::test]
+    async fn evaluate_fails_closed_when_audit_lock_preexists_and_does_not_append() {
+        let path =
+            std::env::temp_dir().join(format!("nexo_api_audit_lock_fail_{}.jsonl", Uuid::new_v4()));
+        let lock_path = lock_path_for_test(&path);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&lock_path);
+        fs::write(&lock_path, "locked").expect("create lock file");
+
+        let app = app_with_state(AppState::for_tests(path.clone()));
+        let now = now_utc_ms();
+        let request_id = "4a6cbef7-2f34-4d7b-8cf5-b92724a63e9b";
+        let req_body = serde_json::json!({
+            "user_id":"lock_fail_user",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let req = signed_request(req_body, "test_active_secret", "active", request_id, now);
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("body bytes")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["error"], "failed to persist audit record");
+        assert!(json.get("final_decision").is_none());
+
+        let persisted = fs::read_to_string(&path).expect("read audit file after failure");
+        assert!(persisted.trim().is_empty());
+        assert!(lock_path.exists(), "pre-existing lock file should remain");
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&lock_path);
+    }
+
+    #[tokio::test]
+    async fn same_request_id_after_audit_lock_failure_returns_replay_conflict() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_api_replay_after_lock_failure_{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let lock_path = lock_path_for_test(&path);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&lock_path);
+        fs::write(&lock_path, "locked").expect("create lock file");
+
+        let app = app_with_state(AppState::for_tests(path.clone()));
+        let now = now_utc_ms();
+        let request_id = "4b3ca3d2-7f69-4cb1-bd76-dfc53fd78e7d";
+        let req_body = serde_json::json!({
+            "user_id":"replay_after_lock_fail_user",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let req1 = signed_request(
+            req_body.clone(),
+            "test_active_secret",
+            "active",
+            request_id,
+            now,
+        );
+        let req2 = signed_request(req_body, "test_active_secret", "active", request_id, now);
+
+        let r1 = app.clone().oneshot(req1).await.expect("first response");
+        assert_eq!(r1.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let r2 = app.oneshot(req2).await.expect("second response");
+        assert_eq!(r2.status(), StatusCode::CONFLICT);
+        let body = r2
+            .into_body()
+            .collect()
+            .await
+            .expect("body bytes")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["error"], "replay detected: X-Request-Id already used");
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&lock_path);
+    }
+
+    #[tokio::test]
+    async fn evaluate_fails_closed_with_malformed_audit_tail_and_does_not_repair() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_api_malformed_tail_failure_{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let lock_path = lock_path_for_test(&path);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&lock_path);
+        let original = "this is not json\n";
+        fs::write(&path, original).expect("write malformed audit tail");
+
+        let app = app_with_state(AppState::for_tests(path.clone()));
+        let now = now_utc_ms();
+        let request_id = "2210e9c4-120c-4d8f-93d0-07899ca70d79";
+        let req_body = serde_json::json!({
+            "user_id":"malformed_tail_user",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let req = signed_request(req_body, "test_active_secret", "active", request_id, now);
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("body bytes")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["error"], "failed to persist audit record");
+        assert!(json.get("final_decision").is_none());
+
+        let after = fs::read_to_string(&path).expect("read audit file after failure");
+        assert_eq!(after, original);
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&lock_path);
+    }
+
+    #[tokio::test]
+    async fn evaluate_success_persists_audit_record_with_chain_fields() {
+        let path =
+            std::env::temp_dir().join(format!("nexo_api_persist_success_{}.jsonl", Uuid::new_v4()));
+        let lock_path = lock_path_for_test(&path);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&lock_path);
+        let app = app_with_state(AppState::for_tests(path.clone()));
+        let now = now_utc_ms();
+        let request_id = "31e9ff8c-8091-4296-a7a2-301e8bfb1897";
+        let req_body = serde_json::json!({
+            "user_id":"persisted_success_user",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let req = signed_request(req_body, "test_active_secret", "active", request_id, now);
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let persisted = fs::read_to_string(&path).expect("read persisted audit file");
+        let lines: Vec<&str> = persisted
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        assert_eq!(lines.len(), 1, "expected single persisted audit record");
+        let record: Value = serde_json::from_str(lines[0]).expect("parse persisted audit record");
+        assert_eq!(record["request_id"], request_id);
+        assert!(record["final_decision"].is_string());
+        assert!(record["audit_hash"].is_string());
+        assert_eq!(record["prev_record_hash"], Value::Null);
+        let record_hash = record["record_hash"].as_str().expect("record_hash string");
+        assert_eq!(record_hash.len(), 64);
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&lock_path);
     }
 
     #[tokio::test]

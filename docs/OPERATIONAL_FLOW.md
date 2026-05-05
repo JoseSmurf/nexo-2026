@@ -14,6 +14,7 @@ It is intentionally focused on the current production-shaped path already presen
 - The API validates HMAC, timestamp window, replay constraints, and other fail-closed security checks.
 - Rate limiting uses the socket peer IP by default. Forwarded proxy identity headers are ignored unless explicitly enabled via `NEXO_TRUST_PROXY_HEADERS=true` behind a sanitizing reverse proxy boundary.
 - Replay protection is in-memory by default (local/dev posture) and does not survive process restart. Production-like hostile deployments should require a persistent replay backend via `NEXO_REQUIRE_PERSISTENT_REPLAY=true` (see `docs/SECURITY_OPERATIONS.md`).
+- `request_id` is a one-time signed nonce consumed at the security/replay gate and is not an idempotent retry key.
 
 ### 1.2 Deterministic decision
 
@@ -41,6 +42,13 @@ Each persisted record contains the fields needed for later inspection and offlin
 - `hash_algo`
 - `prev_record_hash`
 - `record_hash`
+
+Acceptance boundary:
+
+- `/evaluate` is accepted only when it returns `200` after audit append succeeds.
+- If audit append fails, `/evaluate` returns an error and withholds the decision payload.
+- A retry with the same `request_id` is expected to be rejected as replay conflict; incident recovery requires operator review and, when appropriate, a new signed request with a new `request_id`.
+- Zig verifies persisted artifacts only; it cannot prove events that were never persisted.
 
 Durability incident note:
 
