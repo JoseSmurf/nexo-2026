@@ -155,6 +155,19 @@ Limits:
 - The route is loopback-only at the Rust API boundary; non-loopback requests fail closed.
 - This endpoint is intentionally not signed/replay-protected like `/evaluate`; keep it private and local-only in hostile deployments.
 
+### 1.3.6 Dependency and Build Surface Guardrails
+
+- CI runs `bash scripts/check_supply_chain_surface.sh` to fail closed on local regressions in repository-owned sensitive paths (`src`, `tests`, `benches`):
+  - repository-owned `build.rs` files
+  - local `unsafe`/FFI/dynamic-loading/process-execution patterns (`unsafe`, `extern "C"`, `std::process::Command`, `Command::new`, `std::ptr`, `std::mem::transmute`, `MaybeUninit`, `libloading`, `dlopen`, `libc::`)
+  - non-crates.io lockfile source drift (`Cargo.lock` git sources or unknown source patterns)
+- CI also runs `cargo deny check` for advisories, license policy, and registry/git source restrictions.
+- `deny.toml` keeps `bans.multiple-versions = "warn"` today because current upstream stacks (notably AWS/HTTP ecosystem splits) legitimately resolve to duplicate major/minor versions; treat duplicate-version output as a manual review signal until graph-level remediation is planned.
+- This guard is intentionally a repository regression boundary; it does not scan transitive dependency source code under Cargo registries.
+- Build-time dependency scripts and proc macros remain a trust surface (for example native `-sys` crates, `cc`/`cmake` toolchains, proc-macro expansion).
+- External CI actions and tool installers are additional trust boundaries; this guard does not eliminate that risk.
+- Operators/reviewers should treat dependency graph changes, lockfile source changes, and CI action changes as explicit review items before production promotion.
+
 ### 1.4 Runtime Isolation
 
 - Run as non-root user.

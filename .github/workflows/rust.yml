@@ -1,5 +1,8 @@
 name: Rust
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [ "main" ]
@@ -134,6 +137,8 @@ jobs:
           ${{ runner.os }}-cargo-
     - name: Install cargo-deny
       uses: taiki-e/install-action@cargo-deny
+    - name: Supply-chain surface guard
+      run: bash scripts/check_supply_chain_surface.sh
     - name: cargo-deny check
       run: cargo deny check
 

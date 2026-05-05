@@ -1,5 +1,8 @@
 name: Staging Security
 
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
 
@@ -17,6 +20,9 @@ jobs:
 
     - name: Validate security binaries build
       run: cargo build --release --bin syntax-engine --bin sign_request --bin sign_client_request --bin client_pubkey
+
+    - name: Supply-chain surface guard
+      run: bash scripts/check_supply_chain_surface.sh
 
     - name: Generate staging certificates
       run: |
