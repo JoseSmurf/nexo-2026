@@ -1546,6 +1546,13 @@ async fn rate_limit_middleware(
     next: Next,
 ) -> Response {
     let (parts, body) = request.into_parts();
+    if let Err(msg) = validate_json_content_type(&parts.headers) {
+        let request_id = extract_header(&parts.headers, HEADER_REQUEST_ID)
+            .map(ToString::to_string)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        return error_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, &state, &request_id, msg);
+    }
+
     let body_bytes = match to_bytes(body, MAX_REQUEST_BODY_BYTES).await {
         Ok(b) => b,
         Err(_) => {
@@ -1565,18 +1572,6 @@ async fn rate_limit_middleware(
     let connect_info = parts.extensions.get::<ConnectInfo<SocketAddr>>();
     let ip = extract_client_ip(connect_info, &parts.headers, state.trust_proxy_headers);
     let user_id = extract_user_id_from_body(&body_bytes).unwrap_or_else(|| "unknown".to_string());
-
-    if !is_json_content_type(&parts.headers) {
-        let request_id = extract_header(&parts.headers, HEADER_REQUEST_ID)
-            .map(ToString::to_string)
-            .unwrap_or_else(|| Uuid::new_v4().to_string());
-        return error_response(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            &state,
-            &request_id,
-            "content-type must be application/json",
-        );
-    }
 
     let allow_result = if state.redis_guard.is_some() {
         distributed_rate_limit_allow(&state, &ip, &user_id, now).await
@@ -1916,6 +1911,16 @@ fn is_json_content_type(headers: &HeaderMap) -> bool {
         .unwrap_or_default()
         .to_ascii_lowercase();
     mime == "application/json"
+}
+
+fn validate_json_content_type(headers: &HeaderMap) -> Result<(), &'static str> {
+    if headers.get_all(HEADER_CONTENT_TYPE).iter().count() > 1 {
+        return Err("duplicate content-type header");
+    }
+    if !is_json_content_type(headers) {
+        return Err("content-type must be application/json");
+    }
+    Ok(())
 }
 
 pub fn compute_signature(
@@ -3330,6 +3335,150 @@ mod tests {
             .expect("request");
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    #[tokio::test]
+    async fn missing_content_type_returns_415() {
+        let app = app_with_state(test_state());
+        let now = now_utc_ms();
+        let payload = serde_json::json!({
+            "user_id":"u_missing_ct",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let body = payload.to_string();
+        let request_id = "ec4e7231-eca8-40b7-a36d-61b46166ec77";
+        let signature = compute_signature(
+            "test_active_secret",
+            "active",
+            request_id,
+            now,
+            body.as_bytes(),
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri("/evaluate")
+            .header("x-signature", signature)
+            .header("x-request-id", request_id)
+            .header("x-timestamp", now.to_string())
+            .header("x-key-id", "active")
+            .body(Body::from(body))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    #[tokio::test]
+    async fn duplicate_content_type_returns_415() {
+        let app = app_with_state(test_state());
+        let now = now_utc_ms();
+        let payload = serde_json::json!({
+            "user_id":"u_dup_ct",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let body = payload.to_string();
+        let request_id = "0ece2a47-49d9-4810-a240-c3136a4fb34f";
+        let signature = compute_signature(
+            "test_active_secret",
+            "active",
+            request_id,
+            now,
+            body.as_bytes(),
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri("/evaluate")
+            .header("content-type", "application/json")
+            .header("content-type", "application/json")
+            .header("x-signature", signature)
+            .header("x-request-id", request_id)
+            .header("x-timestamp", now.to_string())
+            .header("x-key-id", "active")
+            .body(Body::from(body))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("response body")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(json["error"], "duplicate content-type header");
+    }
+
+    #[tokio::test]
+    async fn application_json_with_charset_is_accepted() {
+        let app = app_with_state(test_state());
+        let now = now_utc_ms();
+        let payload = serde_json::json!({
+            "user_id":"u_json_charset",
+            "amount_cents":50_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true
+        });
+        let body = payload.to_string();
+        let request_id = "c4bbebc6-c7a4-4b17-aac0-9743cb31ef6b";
+        let signature = compute_signature(
+            "test_active_secret",
+            "active",
+            request_id,
+            now,
+            body.as_bytes(),
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri("/evaluate")
+            .header("content-type", "application/json; charset=utf-8")
+            .header("x-signature", signature)
+            .header("x-request-id", request_id)
+            .header("x-timestamp", now.to_string())
+            .header("x-key-id", "active")
+            .body(Body::from(body))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn oversized_body_returns_body_too_large_even_with_invalid_signature() {
+        let app = app_with_state(test_state());
+        let now = now_utc_ms();
+        let request_id = "2cac0fbd-d30b-4791-9ca7-c11250f838f6";
+        let oversized = "x".repeat(MAX_REQUEST_BODY_BYTES + 1);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/evaluate")
+            .header("content-type", "application/json")
+            .header("x-signature", "deadbeef")
+            .header("x-request-id", request_id)
+            .header("x-timestamp", now.to_string())
+            .header("x-key-id", "active")
+            .body(Body::from(oversized))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("response body")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(json["error"], "request body too large");
     }
 
     #[tokio::test]
