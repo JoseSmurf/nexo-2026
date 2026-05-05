@@ -83,6 +83,15 @@ Client asymmetric signature mode (optional):
   - `NEXO_REDIS_URL=...`
 - If Redis replay is configured, backend unavailability should remain fail-closed (requests guarded by replay must be rejected).
 
+### 1.3.2 Audit Persistence Durability Contract
+
+- On append, NEXO writes full JSONL replacement content into a same-directory temp file (`*.jsonl.tmp`), flushes/syncs that temp file, renames it into the final audit path, and then syncs the parent directory when supported by the platform.
+- If temp write/sync fails before rename, the previous audit file remains authoritative.
+- If rename fails, the previous audit file remains authoritative and the temp file may remain for operator inspection/removal.
+- If parent-directory sync fails after rename, treat it as a storage durability incident; visible file state may already have changed.
+- This durable replace sequence improves crash/power-loss resilience, but it is not a universal crash-proof guarantee across every filesystem, mount option, storage device, or platform.
+- This durability contract does not add multi-process writer safety, does not replace offline Zig verification, and does not prove full historical chain validity by itself.
+
 ### 1.4 Runtime Isolation
 
 - Run as non-root user.

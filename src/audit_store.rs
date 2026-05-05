@@ -1,6 +1,6 @@
-use std::fs;
-use std::io;
-use std::path::PathBuf;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,48 @@ fn is_hex_lower_n(s: &str, expected_len: usize) -> bool {
     s.as_bytes()
         .iter()
         .all(|&b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn sync_parent_directory(path: &Path) -> io::Result<()> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    if parent.as_os_str().is_empty() {
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        let dir = File::open(parent)?;
+        dir.sync_all()?;
+    }
+
+    Ok(())
+}
+
+fn write_replace_durable(path: &Path, content: &[u8]) -> io::Result<()> {
+    let tmp_path = path.with_extension("jsonl.tmp");
+    let mut tmp_file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&tmp_path)?;
+    tmp_file.write_all(content)?;
+    tmp_file.flush()?;
+    tmp_file.sync_all()?;
+    drop(tmp_file);
+
+    fs::rename(&tmp_path, path)?;
+    sync_parent_directory(path).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "audit file replaced but parent directory sync failed; treat as durability incident: {e}"
+            ),
+        )
+    })?;
+
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -124,9 +166,7 @@ impl AuditStore {
         if !output.is_empty() {
             output.push('\n');
         }
-        let tmp_path = self.inner.path.with_extension("jsonl.tmp");
-        fs::write(&tmp_path, output)?;
-        fs::rename(tmp_path, &self.inner.path)?;
+        write_replace_durable(&self.inner.path, output.as_bytes())?;
         Ok(())
     }
 
@@ -271,6 +311,55 @@ mod tests {
             .append(&r1)
             .expect_err("append must fail when tail has no usable record_hash");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn audit_store_append_success_removes_temp_file() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_audit_tmp_cleanup_{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let tmp_path = path.with_extension("jsonl.tmp");
+        let _ = fs::remove_file(&tmp_path);
+
+        let store = AuditStore::new(&path, 10);
+        let r1 = sample_record("req-temp-cleanup");
+        store.append(&r1).expect("append");
+
+        assert!(
+            !tmp_path.exists(),
+            "temporary replace file should not remain after successful append"
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn audit_store_append_invalid_tail_preserves_existing_file_content() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_audit_preserve_invalid_tail_{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let original = "this is not json\n";
+        fs::write(&path, original).expect("write malformed tail");
+        let store = AuditStore::new(&path, 10);
+
+        let r1 = sample_record("req-preserve-on-failure");
+        let err = store
+            .append(&r1)
+            .expect_err("append must fail on malformed tail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        let after = fs::read_to_string(&path).expect("read file after failed append");
+        assert_eq!(after, original);
 
         let _ = fs::remove_file(path);
     }

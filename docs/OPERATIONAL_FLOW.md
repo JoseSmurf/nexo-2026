@@ -42,6 +42,10 @@ Each persisted record contains the fields needed for later inspection and offlin
 - `prev_record_hash`
 - `record_hash`
 
+Durability incident note:
+
+- If audit append returns a storage/durability error, stop accepting new decisions, preserve the current audit file and any remaining `*.jsonl.tmp`, run offline verification, and quarantine the affected artifact path before resuming writes.
+
 ## 2. Where artifacts are stored
 
 The current storage model is JSONL append-only persistence via the Rust audit store.
