@@ -14,6 +14,7 @@ It is intentionally focused on the current production-shaped path already presen
 - The API validates HMAC, timestamp window, replay constraints, and other fail-closed security checks.
 - Rate limiting uses the socket peer IP by default. Forwarded proxy identity headers are ignored unless explicitly enabled via `NEXO_TRUST_PROXY_HEADERS=true` behind a sanitizing reverse proxy boundary.
 - Replay protection is in-memory by default (local/dev posture) and does not survive process restart. Production-like hostile deployments should require a persistent replay backend via `NEXO_REQUIRE_PERSISTENT_REPLAY=true` (see `docs/SECURITY_OPERATIONS.md`).
+- Startup audit preflight is optional and defaults to off. In hostile deployments, set `NEXO_REQUIRE_AUDIT_PREFLIGHT=true` so startup fails closed if the existing audit artifact has lock/temp/integrity incidents.
 - `request_id` is a one-time signed nonce consumed at the security/replay gate and is not an idempotent retry key.
 
 ### 1.2 Deterministic decision
@@ -158,6 +159,12 @@ Operational meaning:
 
 This signal is intentionally compact. Use `scripts/inspect_audit_artifact.sh` and the Zig verifier for deeper investigation.
 It is informational only and does not replace offline verification for incident decisions.
+
+Health/readiness distinction:
+
+- `/healthz` is shallow liveness only.
+- `/readyz` is runtime readiness only.
+- With `NEXO_REQUIRE_AUDIT_PREFLIGHT=true`, startup fails closed before serving traffic if persisted audit preflight fails; this is a startup guard and not a replacement for offline Zig verification.
 
 ## 5. Verifying past decisions
 

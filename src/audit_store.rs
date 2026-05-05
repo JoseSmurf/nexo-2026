@@ -67,6 +67,10 @@ fn lock_path_for(path: &Path) -> PathBuf {
     PathBuf::from(os)
 }
 
+fn temp_path_for(path: &Path) -> PathBuf {
+    path.with_extension("jsonl.tmp")
+}
+
 struct AppendLockGuard {
     path: PathBuf,
     released: bool,
@@ -122,7 +126,7 @@ impl Drop for AppendLockGuard {
 }
 
 fn write_replace_durable(path: &Path, content: &[u8]) -> io::Result<()> {
-    let tmp_path = path.with_extension("jsonl.tmp");
+    let tmp_path = temp_path_for(path);
     let mut tmp_file = OpenOptions::new()
         .create(true)
         .write(true)
@@ -229,6 +233,126 @@ impl AuditStore {
         }
         write_replace_durable(&self.inner.path, output.as_bytes())?;
         process_guard.release()?;
+        Ok(())
+    }
+
+    pub fn verify_existing_artifact_preflight(&self) -> io::Result<()> {
+        self.ready()?;
+        let _guard = self.inner.lock.lock().expect("audit store lock poisoned");
+
+        let lock_path = lock_path_for(&self.inner.path);
+        if lock_path.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "audit preflight failed: lock file exists at {}; another writer may be active or a stale lock may remain after an incident",
+                    lock_path.display()
+                ),
+            ));
+        }
+
+        let tmp_path = temp_path_for(&self.inner.path);
+        if tmp_path.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "audit preflight failed: temp file exists at {}; treat as durability incident before serving traffic",
+                    tmp_path.display()
+                ),
+            ));
+        }
+
+        let content = fs::read_to_string(&self.inner.path)?;
+        let mut prev_record_hash: Option<String> = None;
+        let mut non_empty_index: usize = 0;
+
+        for (line_no, raw_line) in content.lines().enumerate() {
+            let line = raw_line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let record: AuditRecord = serde_json::from_str(line).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "audit preflight failed: malformed JSON at line {}: {e}",
+                        line_no + 1
+                    ),
+                )
+            })?;
+
+            let stored_record_hash = record.record_hash.clone().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "audit preflight failed: missing record_hash at line {}",
+                        line_no + 1
+                    ),
+                )
+            })?;
+            if !is_hex_lower_n(&stored_record_hash, 64) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "audit preflight failed: invalid record_hash format at line {}",
+                        line_no + 1
+                    ),
+                ));
+            }
+
+            let computed_record_hash = compute_record_hash(&record);
+            if computed_record_hash != stored_record_hash {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "audit preflight failed: record_hash mismatch at line {}",
+                        line_no + 1
+                    ),
+                ));
+            }
+
+            if non_empty_index == 0 {
+                if record.prev_record_hash.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "audit preflight failed: first record must have prev_record_hash=null (line {})",
+                            line_no + 1
+                        ),
+                    ));
+                }
+            } else {
+                let expected_prev = prev_record_hash.as_deref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "audit preflight failed: previous record_hash unavailable",
+                    )
+                })?;
+                let actual_prev = record.prev_record_hash.as_deref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "audit preflight failed: missing prev_record_hash at line {}",
+                            line_no + 1
+                        ),
+                    )
+                })?;
+                if actual_prev != expected_prev {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "audit preflight failed: prev_record_hash mismatch at line {}",
+                            line_no + 1
+                        ),
+                    ));
+                }
+            }
+
+            prev_record_hash = Some(stored_record_hash);
+            non_empty_index += 1;
+        }
+
         Ok(())
     }
 
@@ -489,5 +613,231 @@ mod tests {
         );
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn preflight_allows_missing_file_by_initializing_empty_artifact() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_audit_preflight_missing_{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let lock_path = lock_path_for(&path);
+        let tmp_path = temp_path_for(&path);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&lock_path);
+        let _ = fs::remove_file(&tmp_path);
+
+        let store = AuditStore::new(&path, 10);
+        store
+            .verify_existing_artifact_preflight()
+            .expect("missing file should be treated as empty chain");
+        assert!(path.exists(), "ready() should create missing audit file");
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn preflight_allows_empty_file() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_audit_preflight_empty_{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let lock_path = lock_path_for(&path);
+        let tmp_path = temp_path_for(&path);
+        let _ = fs::remove_file(&lock_path);
+        let _ = fs::remove_file(&tmp_path);
+        fs::write(&path, "").expect("write empty file");
+
+        let store = AuditStore::new(&path, 10);
+        store
+            .verify_existing_artifact_preflight()
+            .expect("empty file should be a valid empty chain");
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn preflight_fails_on_malformed_json_line() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_audit_preflight_malformed_{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let lock_path = lock_path_for(&path);
+        let tmp_path = temp_path_for(&path);
+        let _ = fs::remove_file(&lock_path);
+        let _ = fs::remove_file(&tmp_path);
+        fs::write(&path, "not json\n").expect("write malformed line");
+
+        let store = AuditStore::new(&path, 10);
+        let err = store
+            .verify_existing_artifact_preflight()
+            .expect_err("malformed line must fail preflight");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn preflight_fails_on_missing_or_invalid_record_hash() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_audit_preflight_record_hash_{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let lock_path = lock_path_for(&path);
+        let tmp_path = temp_path_for(&path);
+        let _ = fs::remove_file(&lock_path);
+        let _ = fs::remove_file(&tmp_path);
+
+        let mut record = sample_record("preflight-missing-record-hash");
+        record.record_hash = None;
+        let line = serde_json::to_string(&record).expect("serialize record");
+        fs::write(&path, format!("{line}\n")).expect("write line");
+        let store = AuditStore::new(&path, 10);
+        let err = store
+            .verify_existing_artifact_preflight()
+            .expect_err("missing record_hash must fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        record.record_hash = Some("ABC123".to_string());
+        let line = serde_json::to_string(&record).expect("serialize record invalid hash");
+        fs::write(&path, format!("{line}\n")).expect("write invalid hash line");
+        let err = store
+            .verify_existing_artifact_preflight()
+            .expect_err("invalid record_hash format must fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn preflight_fails_on_record_hash_mismatch() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_audit_preflight_hash_mismatch_{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let lock_path = lock_path_for(&path);
+        let tmp_path = temp_path_for(&path);
+        let _ = fs::remove_file(&lock_path);
+        let _ = fs::remove_file(&tmp_path);
+
+        let mut record = sample_record("preflight-hash-mismatch");
+        record.record_hash = Some("0".repeat(64));
+        let line = serde_json::to_string(&record).expect("serialize record");
+        fs::write(&path, format!("{line}\n")).expect("write mismatched hash line");
+
+        let store = AuditStore::new(&path, 10);
+        let err = store
+            .verify_existing_artifact_preflight()
+            .expect_err("mismatched record_hash must fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn preflight_fails_on_prev_record_hash_mismatch() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_audit_preflight_prev_mismatch_{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let lock_path = lock_path_for(&path);
+        let tmp_path = temp_path_for(&path);
+        let _ = fs::remove_file(&lock_path);
+        let _ = fs::remove_file(&tmp_path);
+        let store = AuditStore::new(&path, 10);
+
+        let r1 = sample_record("preflight-prev-1");
+        let r2 = sample_record("preflight-prev-2");
+        store.append(&r1).expect("append r1");
+        store.append(&r2).expect("append r2");
+
+        let content = fs::read_to_string(&path).expect("read chain");
+        let mut lines: Vec<String> = content
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToString::to_string)
+            .collect();
+        let mut second: AuditRecord = serde_json::from_str(&lines[1]).expect("parse second record");
+        second.prev_record_hash = Some("f".repeat(64));
+        lines[1] = serde_json::to_string(&second).expect("serialize tampered second");
+        fs::write(&path, format!("{}\n{}\n", lines[0], lines[1])).expect("write tampered chain");
+
+        let err = store
+            .verify_existing_artifact_preflight()
+            .expect_err("prev_record_hash mismatch must fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn preflight_fails_when_lock_file_exists() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_audit_preflight_lock_exists_{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let lock_path = lock_path_for(&path);
+        let tmp_path = temp_path_for(&path);
+        let _ = fs::remove_file(&lock_path);
+        let _ = fs::remove_file(&tmp_path);
+        fs::write(&path, "").expect("create empty audit file");
+        fs::write(&lock_path, "locked").expect("create lock file");
+
+        let store = AuditStore::new(&path, 10);
+        let err = store
+            .verify_existing_artifact_preflight()
+            .expect_err("existing lock must fail preflight");
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(lock_path);
+    }
+
+    #[test]
+    fn preflight_fails_when_temp_file_exists() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_audit_preflight_tmp_exists_{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let lock_path = lock_path_for(&path);
+        let tmp_path = temp_path_for(&path);
+        let _ = fs::remove_file(&lock_path);
+        let _ = fs::remove_file(&tmp_path);
+        fs::write(&path, "").expect("create empty audit file");
+        fs::write(&tmp_path, "tmp").expect("create temp file");
+
+        let store = AuditStore::new(&path, 10);
+        let err = store
+            .verify_existing_artifact_preflight()
+            .expect_err("existing temp file must fail preflight");
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(tmp_path);
     }
 }

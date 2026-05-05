@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -363,6 +364,7 @@ impl AppState {
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(DEFAULT_REPLAY_MAX_KEYS);
+        let require_audit_preflight = env_bool("NEXO_REQUIRE_AUDIT_PREFLIGHT", false);
         let require_persistent_replay = env_bool("NEXO_REQUIRE_PERSISTENT_REPLAY", false);
         let rate_limit_window_ms = std::env::var("NEXO_RATE_LIMIT_WINDOW_MS")
             .ok()
@@ -412,10 +414,19 @@ impl AppState {
             .ok()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty());
+        let audit_store = AuditStore::new(path.clone(), retention);
+        apply_audit_preflight_requirement(&audit_store, require_audit_preflight).unwrap_or_else(
+            |err| {
+                panic!(
+                    "NEXO_REQUIRE_AUDIT_PREFLIGHT preflight failed for {}: {err}",
+                    path
+                )
+            },
+        );
 
         Self {
             profile: profile_from_env(),
-            audit_store: AuditStore::new(path, retention),
+            audit_store,
             metrics: Metrics::new_shared(),
             audit_enabled: true,
             auth: AuthSecrets {
@@ -563,6 +574,16 @@ fn env_bool(key: &str, default: bool) -> bool {
             value == "1" || value == "true" || value == "yes"
         })
         .unwrap_or(default)
+}
+
+fn apply_audit_preflight_requirement(
+    audit_store: &AuditStore,
+    require_audit_preflight: bool,
+) -> io::Result<()> {
+    if !require_audit_preflight {
+        return Ok(());
+    }
+    audit_store.verify_existing_artifact_preflight()
 }
 
 fn load_mtls_config_from_env() -> Option<MtlsConfig> {
@@ -3352,6 +3373,82 @@ mod tests {
 
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(&lock_path);
+    }
+
+    #[tokio::test]
+    async fn readyz_remains_ready_without_preflight_even_if_existing_audit_is_malformed() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_readyz_no_preflight_malformed_{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let lock_path = lock_path_for_test(&path);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&lock_path);
+        fs::write(&path, "not-json\n").expect("write malformed audit file");
+
+        let app = app_with_state(AppState::for_tests(path.clone()));
+        let req = Request::builder()
+            .method("GET")
+            .uri("/readyz")
+            .body(Body::empty())
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("readyz response");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&lock_path);
+    }
+
+    #[test]
+    fn audit_preflight_helper_is_noop_when_disabled() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_preflight_helper_disabled_{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "not-json\n").expect("write malformed audit file");
+        let store = AuditStore::new(path.clone(), 10);
+
+        apply_audit_preflight_requirement(&store, false)
+            .expect("preflight helper must be noop when requirement is disabled");
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn audit_preflight_helper_fails_when_enabled_and_artifact_is_malformed() {
+        let path = std::env::temp_dir().join(format!(
+            "nexo_preflight_helper_enabled_{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "not-json\n").expect("write malformed audit file");
+        let store = AuditStore::new(path.clone(), 10);
+
+        let err = apply_audit_preflight_requirement(&store, true)
+            .expect_err("preflight helper must fail when requirement is enabled");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn healthz_remains_shallow_liveness_even_with_malformed_audit_file() {
+        let path =
+            std::env::temp_dir().join(format!("nexo_healthz_shallow_{}.jsonl", Uuid::new_v4()));
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "not-json\n").expect("write malformed audit file");
+
+        let app = app_with_state(AppState::for_tests(path.clone()));
+        let req = Request::builder()
+            .method("GET")
+            .uri("/healthz")
+            .body(Body::empty())
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("healthz response");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let _ = fs::remove_file(path);
     }
 
     #[tokio::test]

@@ -111,6 +111,37 @@ Client asymmetric signature mode (optional):
 - On post-append lock-release failure, do not blindly retry the same request and do not blindly delete the lock; preserve current audit/lock state, inspect process/timestamp context, and run offline verification before recovery decisions.
 - Zig verification can detect visible chain/tampering issues in persisted artifacts, but it cannot prove that no accepted event was lost before persistence.
 
+### 1.3.4 Optional Startup Audit Preflight (Hostile Deployments)
+
+- Default behavior remains compatibility-first:
+  - `NEXO_REQUIRE_AUDIT_PREFLIGHT=false`
+- Hostile deployments should enable fail-closed startup preflight:
+  - `NEXO_REQUIRE_AUDIT_PREFLIGHT=true`
+- When enabled, NEXO verifies the configured audit artifact before serving traffic and fails startup if any preflight check fails.
+
+Preflight checks include:
+
+- lock-file incident check (`<audit_path>.lock` must not exist)
+- leftover temp-file incident check (deterministic `*.jsonl.tmp` path must not exist)
+- full JSONL parse of non-empty lines as audit records
+- stored `record_hash` presence/format validation (lowercase 64-hex)
+- recomputed Rust `record_hash` equality check
+- `prev_record_hash` continuity check across the full persisted chain
+
+Semantics:
+
+- missing/empty audit artifact is allowed as an empty chain
+- `healthz` remains shallow liveness
+- `readyz` remains a runtime readiness signal; with preflight enabled, startup already failed closed if persisted artifact preflight was invalid
+- `/api/state`, `/audit/recent`, and `/security/status` remain informational triage signals, not authoritative verification
+
+Limits:
+
+- this Rust preflight is a runtime startup snapshot guard
+- it does not replace offline Zig verification
+- Zig remains authoritative for persisted artifact schema/hash/chain verification
+- preflight still cannot prove that a never-persisted event existed
+
 ### 1.4 Runtime Isolation
 
 - Run as non-root user.
