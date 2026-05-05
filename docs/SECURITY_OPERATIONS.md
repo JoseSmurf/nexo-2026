@@ -24,6 +24,7 @@ Proxy identity headers trust boundary:
 
 Recommended baseline:
 - `POST /evaluate` only from trusted networks/clients.
+- `POST /api/chat/send` is local UI support only; do not expose it on public ingress.
 - `GET /security/status` and `GET /metrics` restricted to internal/admin access.
 
 ### 1.2 TLS and mTLS
@@ -141,6 +142,18 @@ Limits:
 - it does not replace offline Zig verification
 - Zig remains authoritative for persisted artifact schema/hash/chain verification
 - preflight still cannot prove that a never-persisted event existed
+
+### 1.3.5 Local Chat Mutation Boundary
+
+- `POST /api/chat/send` is non-authoritative local dashboard support and is not part of signed decision evidence.
+- It does not create audit records and does not influence deterministic `/evaluate` decisions.
+- It enforces an explicit ingress boundary:
+  - exactly one `Content-Type` header
+  - `application/json` (including `application/json; charset=utf-8`)
+  - duplicate/missing/wrong content-type fails closed
+  - explicit request body cap of 4 KiB
+- The route is loopback-only at the Rust API boundary; non-loopback requests fail closed.
+- This endpoint is intentionally not signed/replay-protected like `/evaluate`; keep it private and local-only in hostile deployments.
 
 ### 1.4 Runtime Isolation
 

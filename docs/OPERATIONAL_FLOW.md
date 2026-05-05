@@ -16,6 +16,11 @@ It is intentionally focused on the current production-shaped path already presen
 - Replay protection is in-memory by default (local/dev posture) and does not survive process restart. Production-like hostile deployments should require a persistent replay backend via `NEXO_REQUIRE_PERSISTENT_REPLAY=true` (see `docs/SECURITY_OPERATIONS.md`).
 - Startup audit preflight is optional and defaults to off. In hostile deployments, set `NEXO_REQUIRE_AUDIT_PREFLIGHT=true` so startup fails closed if the existing audit artifact has lock/temp/integrity incidents.
 - `request_id` is a one-time signed nonce consumed at the security/replay gate and is not an idempotent retry key.
+- `POST /api/chat/send` is a separate local UI route, not part of the signed decision path:
+  - loopback-only
+  - explicit 4 KiB request body cap
+  - explicit JSON content-type gate with duplicate `Content-Type` rejection
+  - non-authoritative (does not create audit evidence or influence deterministic evaluate semantics)
 
 ### 1.2 Deterministic decision
 

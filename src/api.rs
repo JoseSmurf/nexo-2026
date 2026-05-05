@@ -74,6 +74,7 @@ const DEFAULT_SHAKE_BITS: u16 = 512;
 const DEFAULT_STATE_CHAT_LIMIT: usize = 5;
 const ADAPTIVE_RISK_BPS_THRESHOLD: u16 = 8_000;
 const MAX_CHAT_MESSAGE_BYTES: usize = 32;
+const MAX_CHAT_REQUEST_BODY_BYTES: usize = 4 * 1024;
 
 const HEADER_SIGNATURE: &str = "x-signature";
 const HEADER_REQUEST_ID: &str = "x-request-id";
@@ -1343,6 +1344,10 @@ pub fn app_with_state(state: AppState) -> Router {
         state.clone(),
         rate_limit_middleware,
     ));
+    let chat_send_route = post(api_chat_send_handler).route_layer(middleware::from_fn_with_state(
+        state.clone(),
+        chat_send_boundary_middleware,
+    ));
     Router::new()
         .route("/evaluate", evaluate_route)
         .route("/healthz", get(health_handler))
@@ -1351,7 +1356,7 @@ pub fn app_with_state(state: AppState) -> Router {
         .route("/audit/recent", get(audit_recent_handler))
         .route("/security/status", get(security_status_handler))
         .route("/api/state", get(api_state_handler))
-        .route("/api/chat/send", post(api_chat_send_handler))
+        .route("/api/chat/send", chat_send_route)
         .with_state(state)
 }
 
@@ -1428,8 +1433,20 @@ async fn api_state_handler(State(state): State<AppState>) -> impl IntoResponse {
 async fn api_chat_send_handler(
     State(state): State<AppState>,
     connect_info: ConnectInfo<SocketAddr>,
-    Json(req): Json<ChatSendRequest>,
+    body: Bytes,
 ) -> impl IntoResponse {
+    let req: ChatSendRequest = match serde_json::from_slice(&body) {
+        Ok(req) => req,
+        Err(_) => {
+            let request_id = Uuid::new_v4().to_string();
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &state,
+                &request_id,
+                "invalid JSON payload",
+            );
+        }
+    };
     let request_id = Uuid::new_v4().to_string();
     let channel = req.channel.unwrap_or_else(|| "global".to_string());
     let text = req.text;
@@ -1559,6 +1576,38 @@ fn store_chat_message(
         return Err(ChatSendError::BadRequest("text must be <= 32 bytes"));
     }
     Err(ChatSendError::ServiceUnavailable("p2p chat unavailable"))
+}
+
+async fn chat_send_boundary_middleware(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let (parts, body) = request.into_parts();
+    if let Err(msg) = validate_json_content_type(&parts.headers) {
+        let request_id = extract_header(&parts.headers, HEADER_REQUEST_ID)
+            .map(ToString::to_string)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        return error_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, &state, &request_id, msg);
+    }
+
+    let body_bytes = match to_bytes(body, MAX_CHAT_REQUEST_BODY_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            let request_id = extract_header(&parts.headers, HEADER_REQUEST_ID)
+                .map(ToString::to_string)
+                .unwrap_or_else(|| Uuid::new_v4().to_string());
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &state,
+                &request_id,
+                "request body too large",
+            );
+        }
+    };
+
+    let request = Request::from_parts(parts, Body::from(body_bytes));
+    next.run(request).await
 }
 
 async fn rate_limit_middleware(
@@ -2467,12 +2516,23 @@ mod tests {
         payload: serde_json::Value,
         remote_addr: Option<SocketAddr>,
     ) -> Request<Body> {
-        let mut req = Request::builder()
-            .method("POST")
-            .uri("/api/chat/send")
-            .header("content-type", "application/json")
-            .body(Body::from(payload.to_string()))
-            .expect("request");
+        chat_send_request_with_content_types(
+            payload.to_string(),
+            &["application/json"],
+            remote_addr,
+        )
+    }
+
+    fn chat_send_request_with_content_types(
+        body: String,
+        content_types: &[&str],
+        remote_addr: Option<SocketAddr>,
+    ) -> Request<Body> {
+        let mut builder = Request::builder().method("POST").uri("/api/chat/send");
+        for content_type in content_types {
+            builder = builder.header(HEADER_CONTENT_TYPE, *content_type);
+        }
+        let mut req = builder.body(Body::from(body)).expect("request");
         if let Some(addr) = remote_addr {
             req.extensions_mut().insert(ConnectInfo(addr));
         }
@@ -2785,6 +2845,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_chat_send_handler_rejects_empty_text() {
+        let app = app_with_state(test_state());
+        let req = chat_send_request(
+            serde_json::json!({
+                "channel": "global",
+                "text": "   "
+            }),
+            Some("127.0.0.1:41002".parse().expect("loopback")),
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("response body")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(json["error"], "text must not be empty");
+    }
+
+    #[tokio::test]
     async fn api_chat_send_handler_rejects_when_capability_is_unavailable() {
         let app = app_with_state(test_state());
         let req = chat_send_request(
@@ -2850,6 +2933,158 @@ mod tests {
         );
         let resp = app.oneshot(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn api_chat_send_missing_content_type_returns_415() {
+        let app = app_with_state(test_state());
+        let req = chat_send_request_with_content_types(
+            serde_json::json!({
+                "channel": "global",
+                "text": "hello-ui-core"
+            })
+            .to_string(),
+            &[],
+            Some("127.0.0.1:41005".parse().expect("loopback")),
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("response body")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(json["error"], "content-type must be application/json");
+    }
+
+    #[tokio::test]
+    async fn api_chat_send_non_json_content_type_returns_415() {
+        let app = app_with_state(test_state());
+        let req = chat_send_request_with_content_types(
+            serde_json::json!({
+                "channel": "global",
+                "text": "hello-ui-core"
+            })
+            .to_string(),
+            &["text/plain"],
+            Some("127.0.0.1:41006".parse().expect("loopback")),
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("response body")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(json["error"], "content-type must be application/json");
+    }
+
+    #[tokio::test]
+    async fn api_chat_send_duplicate_content_type_returns_415() {
+        let app = app_with_state(test_state());
+        let req = chat_send_request_with_content_types(
+            serde_json::json!({
+                "channel": "global",
+                "text": "hello-ui-core"
+            })
+            .to_string(),
+            &["application/json", "application/json"],
+            Some("127.0.0.1:41007".parse().expect("loopback")),
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("response body")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(json["error"], "duplicate content-type header");
+    }
+
+    #[tokio::test]
+    async fn api_chat_send_application_json_with_charset_is_accepted() {
+        let app = app_with_state(test_state());
+        let req = chat_send_request_with_content_types(
+            serde_json::json!({
+                "channel": "global",
+                "text": "hello-ui-core"
+            })
+            .to_string(),
+            &["application/json; charset=utf-8"],
+            Some("127.0.0.1:41008".parse().expect("loopback")),
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("response body")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(
+            json["error"],
+            format!(
+                "chat send unavailable: {}",
+                expected_chat_send_unavailable_reason()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn api_chat_send_oversized_body_returns_400() {
+        let app = app_with_state(test_state());
+        let oversized = format!(
+            "{{\"channel\":\"global\",\"text\":\"x\",\"padding\":\"{}\"}}",
+            "y".repeat(MAX_CHAT_REQUEST_BODY_BYTES)
+        );
+        let req = chat_send_request_with_content_types(
+            oversized,
+            &["application/json"],
+            Some("127.0.0.1:41009".parse().expect("loopback")),
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("response body")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(json["error"], "request body too large");
+    }
+
+    #[tokio::test]
+    async fn api_chat_send_wrong_content_type_with_oversized_body_returns_415() {
+        let app = app_with_state(test_state());
+        let req = chat_send_request_with_content_types(
+            "x".repeat(MAX_CHAT_REQUEST_BODY_BYTES + 1024),
+            &["text/plain"],
+            Some("127.0.0.1:41010".parse().expect("loopback")),
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("response body")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("response json");
+        assert_eq!(json["error"], "content-type must be application/json");
     }
 
     #[tokio::test]
