@@ -13,6 +13,7 @@ It is intentionally focused on the current production-shaped path already presen
 - A client sends a signed `POST /evaluate` request.
 - The API validates HMAC, timestamp window, replay constraints, and other fail-closed security checks.
 - Rate limiting uses the socket peer IP by default. Forwarded proxy identity headers are ignored unless explicitly enabled via `NEXO_TRUST_PROXY_HEADERS=true` behind a sanitizing reverse proxy boundary.
+- Replay protection is in-memory by default (local/dev posture) and does not survive process restart. Production-like hostile deployments should require a persistent replay backend via `NEXO_REQUIRE_PERSISTENT_REPLAY=true` (see `docs/SECURITY_OPERATIONS.md`).
 
 ### 1.2 Deterministic decision
 

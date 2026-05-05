@@ -75,6 +75,14 @@ Client asymmetric signature mode (optional):
 - `NEXO_CLIENT_SIG_REQUIRED=true`
 - `NEXO_CLIENT_PUBKEYS_JSON` or `NEXO_CLIENT_PUBKEYS_FILE`
 
+### 1.3.1 Replay Protection Posture
+
+- Local/dev mode: in-memory replay protection is allowed, but it does **not** survive process restart.
+- Production-like hostile environments: require a persistent replay backend (Redis) and fail closed if it is not configured:
+  - `NEXO_REQUIRE_PERSISTENT_REPLAY=true`
+  - `NEXO_REDIS_URL=...`
+- If Redis replay is configured, backend unavailability should remain fail-closed (requests guarded by replay must be rejected).
+
 ### 1.4 Runtime Isolation
 
 - Run as non-root user.

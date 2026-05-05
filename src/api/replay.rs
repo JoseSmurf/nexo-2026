@@ -4,6 +4,16 @@ use std::time::Duration;
 use super::errors::AuthError;
 use super::AppState;
 
+pub(super) fn validate_persistent_replay_requirement(
+    require_persistent_replay: bool,
+    redis_configured: bool,
+) -> Result<(), &'static str> {
+    if require_persistent_replay && !redis_configured {
+        return Err("NEXO_REQUIRE_PERSISTENT_REPLAY=true requires a persistent replay backend (set NEXO_REDIS_URL)");
+    }
+    Ok(())
+}
+
 pub(super) fn maybe_purge_replay_cache(state: &AppState, now_ms: u64) {
     let last = state.last_replay_cleanup_ms.load(Ordering::Relaxed);
     if now_ms.saturating_sub(last) < state.replay_ttl_ms / 2 {
@@ -68,4 +78,25 @@ pub(super) async fn distributed_replay_check_and_store(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persistent_replay_not_required_allows_no_redis() {
+        validate_persistent_replay_requirement(false, false).expect("should be allowed");
+    }
+
+    #[test]
+    fn persistent_replay_required_without_redis_is_invalid() {
+        validate_persistent_replay_requirement(true, false)
+            .expect_err("must fail closed when persistent replay is required");
+    }
+
+    #[test]
+    fn persistent_replay_required_with_redis_is_valid() {
+        validate_persistent_replay_requirement(true, true).expect("should be allowed");
+    }
 }

@@ -27,7 +27,7 @@ use uuid::Uuid;
 use self::auth::validate_security_headers;
 use self::errors::{AuthError, ChatSendError};
 use self::rate_limit::distributed_rate_limit_allow;
-use self::replay::distributed_replay_check_and_store;
+use self::replay::{distributed_replay_check_and_store, validate_persistent_replay_requirement};
 use self::state::{build_state_response, StateChatMessage};
 use crate::audit_store::{AuditRecord, AuditStore};
 #[cfg(feature = "network")]
@@ -363,6 +363,7 @@ impl AppState {
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(DEFAULT_REPLAY_MAX_KEYS);
+        let require_persistent_replay = env_bool("NEXO_REQUIRE_PERSISTENT_REPLAY", false);
         let rate_limit_window_ms = std::env::var("NEXO_RATE_LIMIT_WINDOW_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -380,6 +381,8 @@ impl AppState {
         let client_sig = load_client_signature_config_from_env();
         let edge_guard = load_edge_guard_config_from_env();
         let redis_guard = load_redis_guard_from_env();
+        validate_persistent_replay_requirement(require_persistent_replay, redis_guard.is_some())
+            .unwrap_or_else(|msg| panic!("{msg}"));
         let redis_op_timeout_ms = std::env::var("NEXO_REDIS_OP_TIMEOUT_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
