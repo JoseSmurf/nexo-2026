@@ -529,7 +529,7 @@ fn build_state_ai_insights(records: &[AuditRecord]) -> Vec<StateAiInsight> {
         }
     }
 
-    insights.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    insights.sort_by_key(|insight| std::cmp::Reverse(insight.timestamp));
 
     if insights.is_empty() {
         return vec![StateAiInsight {
