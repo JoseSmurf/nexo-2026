@@ -536,6 +536,12 @@ NEXO_ZIG_LEGACY_SHA3_256=1 zig build run -- verify ../../logs/audit_records.json
 | `NEXO_MTLS_REQUIRED` | `false` | Require upstream mTLS attestation headers | Enable behind trusted proxy only |
 | `NEXO_CLIENT_SIG_REQUIRED` | `false` | Require client Ed25519 signature | Requires key registry env/file |
 
+### Profile
+
+| Env var | Default | Purpose | Safe notes |
+|---|---|---|---|
+| `NEXO_PROFILE` | `br_default_v1` | Built-in policy profile selector | Unset uses BR default; explicit unknown values fail closed at startup/config selection |
+
 ### Admin
 
 | Env var | Default | Purpose | Safe notes |
@@ -630,10 +636,10 @@ Use `.env.example` provider sections as the canonical reference for required var
   - `GET /audit/recent?limit=50` (admin-gated)
   - `GET /security/status` (admin-gated)
 - Rule profiles include 9 jurisdictions/currencies/regulators.
-- Rust tests: 365
+- Rust tests: 371
 - Julia tests: 126
 - Zig tests: 21
-- Total tests: 512
+- Total tests: 518
 - Tech stack:
   - Rust (core engine + API)
   - BLAKE3 + SHAKE256 (audit hash, with deterministic hybrid mode in INCIDENT)

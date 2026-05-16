@@ -46,10 +46,10 @@ Runtime profile selection happens in Rust application state setup:
 - `AppState::from_env()` calls `profile_from_env()`.
 - `profile_from_env()` reads `NEXO_PROFILE`.
 - If `NEXO_PROFILE` is unset, the selected profile defaults to `br_default_v1`.
-- If `NEXO_PROFILE` has an unknown value, current behavior also falls back to `br_default_v1`.
+- If `NEXO_PROFILE` has an unknown value, startup/config selection fails closed.
 
-The unknown-profile fallback is current behavior, not necessarily the desired future contract.
-It should not be described as fail-closed profile selection.
+The unset default is current behavior.
+Explicitly unknown profile values are not allowed and should be treated as startup/config incidents.
 
 `/evaluate` uses the selected runtime profile through:
 
@@ -266,7 +266,7 @@ However:
 
 Trace evidence is partial policy evidence, not full config provenance.
 
-## Unknown Profile Fallback Behavior
+## Unknown Profile Fail-Closed Behavior
 
 Current `NEXO_PROFILE` behavior:
 
@@ -275,12 +275,12 @@ Current `NEXO_PROFILE` behavior:
 | unset | `br_default_v1` |
 | `br_default_v1` | `br_default_v1` |
 | known built-in profile | matching built-in profile |
-| unknown value | `br_default_v1` |
+| unknown value | fail closed at startup/config selection |
 
-The unknown-value fallback is not fail-closed.
-It can mask deployment mistakes if operators believe an unknown profile name was rejected.
+Unknown explicit values are fail-closed.
+This avoids silently running BR defaults when an operator intended another profile.
 
-Baseline v1 documents this behavior; it does not endorse it as the desired future contract.
+The unset default remains `br_default_v1`.
 
 ## What Policy/Profile Provenance v1 Proves
 
@@ -303,7 +303,6 @@ Baseline v1 does not prove:
 - country/jurisdiction verification
 - known-profile verification by Zig
 - cryptographic policy binding
-- fail-closed behavior for unknown `NEXO_PROFILE`
 - full-input replay
 - that a `profile_name/profile_version` pair uniquely identifies a historical config
 - that future code still maps the same labels to the same thresholds
@@ -313,7 +312,7 @@ Baseline v1 does not prove:
 ## Known Limits
 
 - Current provenance is selected metadata binding, not full config binding.
-- Unknown `NEXO_PROFILE` values fall back to `br_default_v1`.
+- Unknown explicit `NEXO_PROFILE` values fail closed.
 - Full `RuleProfile` is not persisted.
 - Full `EngineConfig` is not persisted.
 - `country` is not persisted.
@@ -328,7 +327,7 @@ Baseline v1 does not prove:
 
 - Built-in profile thresholds could change while keeping the same `profile_name` and `profile_version`.
 - A profile label could remain stable while `RuleProfile::engine_config()` mapping changes.
-- Unknown `NEXO_PROFILE` fallback could silently run BR defaults when an operator intended another profile.
+- If future changes weaken unknown-profile fail-closed behavior, deployment mistakes could silently run the wrong profile.
 - Docs could overread `profile_name/profile_version` as a cryptographic policy binding.
 - Zig could be described as verifying known profile config even though it does not.
 - Trace evidence for approved rules could be overread as full policy evidence.
@@ -343,7 +342,7 @@ Baseline v1 does not prove:
 | Persist `country`? | Not persisted | Should jurisdiction/country be part of artifact provenance? |
 | Add `config_hash`? | Not present | Should artifacts bind exact effective config with a stable hash? |
 | Add `policy_hash`? | Not present | Should artifacts bind policy source/bundle identity? |
-| Fail closed on unknown `NEXO_PROFILE`? | No; falls back to BR default | Should unknown profile names become startup errors? |
+| Fail closed on unknown `NEXO_PROFILE`? | Yes | Should this remain a required startup/config invariant? |
 | Version/bind policy source code or policy bundle identity? | Not present | Should provenance include code/bundle/source identity? |
 | Add rule ids and thresholds for approved trace entries? | Not present | Should approved steps expose rule provenance and thresholds? |
 | Teach Zig known profile/config mappings? | Not implemented | Should Zig remain schema/hash-only or verify known policy profiles? |
@@ -376,5 +375,5 @@ Use this checklist when reviewing policy/profile provenance claims:
 - Is anyone claiming a `config_hash` or `policy_hash` exists?
 - Are fired-rule thresholds being treated as partial trace evidence, not full config provenance?
 - Are approved trace entries understood to lack rule ids and thresholds?
-- Are unknown `NEXO_PROFILE` fallback semantics understood before deployment claims are made?
+- Are unknown `NEXO_PROFILE` fail-closed semantics understood before deployment claims are made?
 - Are vNext decisions separated from current v1 behavior?
