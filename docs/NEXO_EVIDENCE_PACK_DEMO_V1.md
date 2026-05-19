@@ -69,6 +69,68 @@ The demo story is:
 7. record-chain verification
 8. explicit claims and non-claims
 
+## Quick Path (5 Commands)
+
+Prerequisites:
+
+- Install `bash`, `rust/cargo`, and `zig` locally, and run from the repository root on a clean clone.
+- Use a local environment with free loopback ports and permission to create temporary files under `/tmp` (or system temp dir).
+
+1. Run signed decision demo:
+
+```bash
+bash scripts/demo_decision_flow.sh
+```
+
+Success criterion: script exits `0`, prints locations for generated outputs (response JSON, audit JSONL, and run/log artifacts), and produces at least one new audit artifact path to inspect.
+
+2. Inspect the generated audit artifact:
+
+```bash
+bash scripts/inspect_audit_artifact.sh <artifact.jsonl>
+```
+
+Success criterion: output shows parseable record details including `request_id`, `final_decision`, `audit_hash`, `hash_algo`, `profile_name`, `profile_version`, and chain fields (`record_hash`, `prev_record_hash` when present).
+
+3. Verify artifact offline with Zig (base verification):
+
+```bash
+cd tools/zig && zig build run -- verify <artifact.jsonl>
+```
+
+Success criterion: verifier exits `0` and reports successful integrity/consistency validation for the artifact.
+
+4. Demonstrate trace tamper detection:
+
+```bash
+bash scripts/demo_tampering_trace.sh
+```
+
+Success criterion: original generated artifact passes verification, tampered copy fails verification, and script exits `0` only if this pass/fail behavior is observed.
+
+5. Verify chain mode (require-chain):
+
+```bash
+cd tools/zig && zig build run -- verify --require-chain ../../fixtures/audit_chain_sample.jsonl
+```
+
+Success criterion: verifier exits `0` in chain-required mode for the fixture chain artifact.
+
+Evidence pack to save:
+
+- Response JSON produced by `demo_decision_flow.sh`.
+- Generated audit artifact JSONL (`<artifact.jsonl>` used in steps 2 and 3).
+- Output from `inspect_audit_artifact.sh`.
+- Zig base verification output (step 3).
+- Tamper demo output showing original pass + tampered fail (step 4).
+- Zig `--require-chain` output (step 5).
+- Key identifiers copied from outputs: `request_id`, `audit_hash`, `record_hash`, `prev_record_hash`, `profile_name`, `profile_version`.
+
+Notes:
+
+- This quick path is a reviewer shortcut; it does not replace CI, hostile baseline gates, or full operational runbooks.
+- This path demonstrates evidence generation and verification behavior only; it does not claim global truth, consensus, or full-input replay.
+
 ## Step 1 — Run Signed Decision Demo
 
 Run:
