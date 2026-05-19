@@ -2418,6 +2418,7 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
     use tower::util::ServiceExt;
 
     #[cfg(feature = "network")]
@@ -2434,6 +2435,19 @@ mod tests {
         let mut os = path.as_os_str().to_os_string();
         os.push(".lock");
         PathBuf::from(os)
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn restore_env_var(name: &str, value: Option<String>) {
+        if let Some(v) = value {
+            std::env::set_var(name, v);
+        } else {
+            std::env::remove_var(name);
+        }
     }
 
     fn signed_request(
@@ -3663,6 +3677,68 @@ mod tests {
         let err = apply_audit_preflight_requirement(&store, true)
             .expect_err("preflight helper must fail when requirement is enabled");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn app_state_from_env_fails_closed_when_audit_preflight_required_and_artifact_is_malformed() {
+        let _guard = env_lock().lock().expect("env lock");
+        let path = std::env::temp_dir().join(format!(
+            "nexo_from_env_preflight_enabled_{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "not-json\n").expect("write malformed audit file");
+        let path_str = path.display().to_string();
+
+        let previous_audit_path = std::env::var("NEXO_AUDIT_PATH").ok();
+        let previous_require_preflight = std::env::var("NEXO_REQUIRE_AUDIT_PREFLIGHT").ok();
+        let previous_hmac_secret = std::env::var("NEXO_HMAC_SECRET").ok();
+        let previous_hmac_secret_file = std::env::var("NEXO_HMAC_SECRET_FILE").ok();
+        let previous_secret_provider = std::env::var("NEXO_SECRET_PROVIDER").ok();
+        let previous_require_persistent_replay =
+            std::env::var("NEXO_REQUIRE_PERSISTENT_REPLAY").ok();
+        let previous_admin_api_enabled = std::env::var("NEXO_ADMIN_API_ENABLED").ok();
+
+        std::env::set_var("NEXO_AUDIT_PATH", &path_str);
+        std::env::set_var("NEXO_REQUIRE_AUDIT_PREFLIGHT", "true");
+        std::env::set_var("NEXO_HMAC_SECRET", "test_active_secret");
+        std::env::remove_var("NEXO_HMAC_SECRET_FILE");
+        std::env::remove_var("NEXO_SECRET_PROVIDER");
+        std::env::set_var("NEXO_REQUIRE_PERSISTENT_REPLAY", "false");
+        std::env::set_var("NEXO_ADMIN_API_ENABLED", "false");
+
+        let result = std::panic::catch_unwind(AppState::from_env);
+        let (is_err, msg) = match result {
+            Ok(_) => (false, String::new()),
+            Err(payload) => (
+                true,
+                payload
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                    .unwrap_or_default(),
+            ),
+        };
+
+        restore_env_var("NEXO_AUDIT_PATH", previous_audit_path);
+        restore_env_var("NEXO_REQUIRE_AUDIT_PREFLIGHT", previous_require_preflight);
+        restore_env_var("NEXO_HMAC_SECRET", previous_hmac_secret);
+        restore_env_var("NEXO_HMAC_SECRET_FILE", previous_hmac_secret_file);
+        restore_env_var("NEXO_SECRET_PROVIDER", previous_secret_provider);
+        restore_env_var(
+            "NEXO_REQUIRE_PERSISTENT_REPLAY",
+            previous_require_persistent_replay,
+        );
+        restore_env_var("NEXO_ADMIN_API_ENABLED", previous_admin_api_enabled);
+
+        assert!(
+            is_err,
+            "from_env must fail closed when preflight is required and artifact is malformed"
+        );
+        assert!(msg.contains("NEXO_REQUIRE_AUDIT_PREFLIGHT preflight failed"));
+        assert!(msg.contains(path_str.as_str()));
 
         let _ = fs::remove_file(path);
     }
