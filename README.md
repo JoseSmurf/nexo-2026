@@ -32,6 +32,9 @@ If you are reviewing NEXO, start with this evidence pack (reading map + contract
 - `docs/NEXO_THREAT_MODEL.md`
 - `docs/NEXO_REPRODUCIBILITY_REPORT.md`
 - `docs/NEXO_TEST_MATRIX.md`
+- `docs/NEXO_EVIDENCE_PACK_DEMO_V1.md` (reviewer demo flow, including Quick Path (5 Commands))
+- `docs/NEXO_PRODUCTION_HOSTILE_BASELINE_V1.md` (hostile baseline scope, required controls, non-claims)
+- `docs/NEXO_CORE_VALIDATION_GATE_V1.md` (required vs optional validation gates)
 
 Confirmed center of the repository:
 
@@ -149,6 +152,9 @@ This demo executes the current verifiable path in one command:
 `signed request -> deterministic evaluate -> final_decision -> trace -> audit artifact -> offline Zig verification`
 
 It starts the API with a temporary audit path, sends one signed request, prints the response and generated artifact, runs Zig verification, and prints the exact follow-up inspection commands for that artifact.
+
+For first-time review, use the linear 5-command path in:
+[`docs/NEXO_EVIDENCE_PACK_DEMO_V1.md#quick-path-5-commands`](docs/NEXO_EVIDENCE_PACK_DEMO_V1.md#quick-path-5-commands)
 
 Related docs:
 - [`scripts/demo_decision_flow.sh`](scripts/demo_decision_flow.sh)
@@ -393,6 +399,9 @@ cargo test --features network -q
 julia --project=./julia julia/test/runtests.jl
 cd tools/zig && zig build test
 ```
+
+Fail-closed startup preflight coverage includes:
+`app_state_from_env_fails_closed_when_audit_preflight_required_and_artifact_is_malformed` (in `src/api.rs` tests).
 
 ## Security model
 
