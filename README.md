@@ -441,7 +441,7 @@ These fields let the UI reflect the core truth directly instead of inferring cap
 - The Sinatra UI can read the latest Julia artifact if present and render a compact observation line in the existing Integrity surface.
 - Example: `julia --project=./julia julia/observe_state.jl http://127.0.0.1:3000/api/state`
 - Continuous loop: `julia --project=./julia julia/observe_loop.jl http://127.0.0.1:3000/api/state ./observations`
-- Role split remains explicit: Rust decides, Julia observes, Ruby presents.
+- Role split remains explicit: Rust decides, Zig verifies offline, Julia observes. The built-in /nexo-ui operator SPA is powered by JavaScript; Ruby remains an optional secondary operator surface.
 
 ## UI modes
 

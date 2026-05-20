@@ -32,7 +32,7 @@ signed request -> deterministic evaluate -> final_decision -> trace -> audit art
 
 - Rust decides.
 - Zig verifies offline.
-- Ruby presents.
+- Ruby is an optional presentation surface; JavaScript powers the primary operator SPA.
 - Julia observes.
 - experimental tracks do not redefine the center.
 

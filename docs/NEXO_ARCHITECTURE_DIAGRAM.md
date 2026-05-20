@@ -49,7 +49,7 @@ It does not make other parts irrelevant; it makes their roles and trust boundari
 
 - **Rust (trust core):** validates signed input fail-closed, evaluates deterministic rules, emits `final_decision` + ordered `trace`, persists audit artifacts.
 - **Zig (offline verifier):** independently verifies persisted artifacts offline (schema + trace/decision/hash contract checks).
-- **Ruby (operator surface):** presents the core evidence path for a human (core-first, edges-visible).
+- **Ruby (operator surface):** optional secondary presentation layer; the primary built-in operator surface is the Rust-served JavaScript SPA at /nexo-ui.
 - **Julia (observer):** reads and summarizes without authority; it does not decide or redefine the product center.
 - **Docs / Evidence Pack:** protects scope and makes review reproducible; it is part of how NEXO stays honest over time.
 - **Experimental tracks:** Bitcoin, mesh/P2P, and Witness work can be important, but they are bounded as research/experimental tracks unless explicitly promoted by contract.
