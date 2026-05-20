@@ -1,6 +1,5 @@
 use std::env;
 
-use axum::{response::Redirect, routing::get};
 use tower_http::{cors::CorsLayer, services::ServeDir};
 
 const DEFAULT_HTTP_BIND: &str = "0.0.0.0:3000";
@@ -11,12 +10,7 @@ async fn main() {
     let state = syntax_engine::api::AppState::from_env();
     let bind = http_bind_addr();
     let ui_service = ServeDir::new("nexo_ui/app").append_index_html_on_directories(true);
-    let app = syntax_engine::api::app_with_state(state)
-        .route(
-            "/nexo-ui",
-            get(|| async { Redirect::temporary("/nexo-ui/") }),
-        )
-        .nest_service("/nexo-ui", ui_service);
+    let app = syntax_engine::api::app_with_state(state).nest_service("/nexo-ui", ui_service);
     let app = if ui_dev_cors_enabled() {
         app.layer(CorsLayer::permissive())
     } else {
