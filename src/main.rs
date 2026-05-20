@@ -12,8 +12,11 @@ async fn main() {
     let bind = http_bind_addr();
     let ui_service = ServeDir::new("nexo_ui/app").append_index_html_on_directories(true);
     let app = syntax_engine::api::app_with_state(state)
-        .route("/ui", get(|| async { Redirect::temporary("/ui/") }))
-        .nest_service("/ui", ui_service);
+        .route(
+            "/nexo-ui",
+            get(|| async { Redirect::temporary("/nexo-ui/") }),
+        )
+        .nest_service("/nexo-ui", ui_service);
     let app = if ui_dev_cors_enabled() {
         app.layer(CorsLayer::permissive())
     } else {
