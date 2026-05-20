@@ -51,11 +51,7 @@ fn http_bind_addr() -> String {
 }
 
 fn ui_dev_cors_enabled() -> bool {
-    let raw = env::var("NEXO_UI_DEV_CORS")
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    matches!(raw.as_str(), "1" | "true" | "yes" | "on")
+    env::var("NEXO_UI_DEV_CORS").unwrap_or_default() == "true"
 }
 
 #[cfg(test)]
