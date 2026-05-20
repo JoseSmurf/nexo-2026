@@ -357,9 +357,14 @@ impl AppState {
                 "NEXO_HMAC_KEY_ID_PREV must be different from NEXO_HMAC_KEY_ID."
             );
         }
-        let auth_window_ms = std::env::var("NEXO_AUTH_WINDOW_MS")
+        let auth_window_ms = std::env::var("NEXO_TIMESTAMP_WINDOW_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
+            .or_else(|| {
+                std::env::var("NEXO_AUTH_WINDOW_MS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+            })
             .unwrap_or(DEFAULT_AUTH_WINDOW_MS);
         let replay_ttl_ms = std::env::var("NEXO_REPLAY_TTL_MS")
             .ok()
