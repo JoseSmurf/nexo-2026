@@ -117,6 +117,7 @@ It is not:
 
 Hostile deployments should not expose `/api/state` publicly by default.
 Public Exposure Policy v1 classifies it as internal-only.
+In hostile mode (`ELEVATED`/`INCIDENT`), `/api/state` is fail-closed by default and returns `503` unless `NEXO_EXPOSE_API_STATE=true` is explicitly set.
 
 Open decision: a future hostile profile may admin-gate `/api/state`, or the project may keep it internal-only by deployment policy.
 

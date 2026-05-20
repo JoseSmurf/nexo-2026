@@ -92,6 +92,9 @@ const HEADER_CLIENT_ID: &str = "x-client-id";
 const HEADER_CLIENT_SIGNATURE: &str = "x-client-signature";
 const HEADER_EDGE_AUTH: &str = "x-edge-auth";
 const HEADER_AUTHORIZATION: &str = "authorization";
+const HEADER_NEXO_REASON: &str = "x-nexo-reason";
+const API_STATE_EXPOSURE_DISABLED_REASON: &str =
+    "API state exposure is disabled in this configuration";
 
 pub const BENCH_HMAC_SECRET: &str = "bench_hmac_secret";
 pub const BENCH_KEY_ID: &str = "active";
@@ -124,6 +127,7 @@ pub struct AppState {
     pub sha3_shadow_enabled: bool,
     pub admin_api_enabled: bool,
     pub admin_api_token: Option<String>,
+    pub expose_api_state: bool,
     pub p2p_db_path: Option<String>,
 }
 
@@ -411,6 +415,7 @@ impl AppState {
         } else {
             None
         };
+        let expose_api_state = env_bool("NEXO_EXPOSE_API_STATE", false);
         let p2p_db_path = std::env::var("NEXO_P2P_DB_PATH")
             .ok()
             .map(|v| v.trim().to_string())
@@ -457,6 +462,7 @@ impl AppState {
             sha3_shadow_enabled,
             admin_api_enabled,
             admin_api_token,
+            expose_api_state,
             p2p_db_path,
         }
     }
@@ -497,6 +503,7 @@ impl AppState {
             sha3_shadow_enabled: false,
             admin_api_enabled: false,
             admin_api_token: None,
+            expose_api_state: false,
             p2p_db_path: None,
         }
     }
@@ -534,6 +541,7 @@ impl AppState {
             sha3_shadow_enabled: false,
             admin_api_enabled: false,
             admin_api_token: None,
+            expose_api_state: false,
             p2p_db_path: None,
         }
     }
@@ -1412,6 +1420,22 @@ fn is_loopback_connect_info(connect_info: &ConnectInfo<SocketAddr>) -> bool {
 }
 
 async fn api_state_handler(State(state): State<AppState>) -> impl IntoResponse {
+    if matches!(
+        state.security_level,
+        SecurityLevel::Elevated | SecurityLevel::Incident
+    ) && !state.expose_api_state
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(HEADER_NEXO_REASON, API_STATE_EXPOSURE_DISABLED_REASON)],
+            Json(serde_json::json!({
+                "status": "unavailable",
+                "reason": API_STATE_EXPOSURE_DISABLED_REASON
+            })),
+        )
+            .into_response();
+    }
+
     let records = state.audit_store.recent(200).unwrap_or_default();
     let chat_send = chat_send_capability(&state);
     let now_sync = now_utc_ms();
@@ -2602,7 +2626,9 @@ mod tests {
 
     #[tokio::test]
     async fn api_state_handler_returns_expected_state_payload() {
-        let app = app_with_state(test_state());
+        let mut state = test_state();
+        state.security_level = SecurityLevel::Normal;
+        let app = app_with_state(state);
         let now = now_utc_ms();
         let req_body = serde_json::json!({
             "user_id": "state_user",
@@ -2708,6 +2734,40 @@ mod tests {
         assert_eq!(state_json["last_operator_action_channel"], "");
     }
 
+    #[tokio::test]
+    async fn api_state_handler_returns_503_in_hostile_mode_when_exposure_disabled() {
+        let mut state = test_state();
+        state.security_level = SecurityLevel::Incident;
+        state.expose_api_state = false;
+        let app = app_with_state(state);
+
+        let state_req = Request::builder()
+            .method("GET")
+            .uri("/api/state")
+            .body(Body::empty())
+            .expect("state request");
+        let state_resp = app.oneshot(state_req).await.expect("state response");
+        assert_eq!(state_resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            state_resp
+                .headers()
+                .get(HEADER_NEXO_REASON)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default(),
+            API_STATE_EXPOSURE_DISABLED_REASON
+        );
+
+        let state_body = state_resp
+            .into_body()
+            .collect()
+            .await
+            .expect("state body bytes")
+            .to_bytes();
+        let state_json: Value = serde_json::from_slice(&state_body).expect("state json");
+        assert_eq!(state_json["status"], "unavailable");
+        assert_eq!(state_json["reason"], API_STATE_EXPOSURE_DISABLED_REASON);
+    }
+
     #[cfg(feature = "network")]
     #[tokio::test]
     async fn api_state_handler_exposes_recent_chat_messages_from_db() {
@@ -2729,6 +2789,7 @@ mod tests {
         assert_eq!(status, StoreInsertStatus::Inserted);
 
         let mut state = test_state();
+        state.security_level = SecurityLevel::Normal;
         state.p2p_db_path = Some(db_path_str.to_string());
         let app = app_with_state(state);
 
