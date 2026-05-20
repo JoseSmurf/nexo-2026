@@ -1,5 +1,8 @@
 use std::env;
 
+use axum::{response::Redirect, routing::get};
+use tower_http::{cors::CorsLayer, services::ServeDir};
+
 const DEFAULT_HTTP_BIND: &str = "0.0.0.0:3000";
 
 #[tokio::main]
@@ -7,6 +10,16 @@ async fn main() {
     init_tracing();
     let state = syntax_engine::api::AppState::from_env();
     let bind = http_bind_addr();
+    let ui_service = ServeDir::new("nexo_ui/app").append_index_html_on_directories(true);
+    let app = syntax_engine::api::app_with_state(state)
+        .route("/ui", get(|| async { Redirect::temporary("/ui/") }))
+        .nest_service("/ui", ui_service);
+    let app = if ui_dev_cors_enabled() {
+        app.layer(CorsLayer::permissive())
+    } else {
+        app
+    };
+
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .unwrap_or_else(|_| panic!("failed to bind {bind}"));
@@ -14,8 +27,7 @@ async fn main() {
     println!("HTTP server running on http://{bind}");
     axum::serve(
         listener,
-        syntax_engine::api::app_with_state(state)
-            .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .await
     .expect("server error");
@@ -39,6 +51,14 @@ fn http_bind_addr() -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+fn ui_dev_cors_enabled() -> bool {
+    let raw = env::var("NEXO_UI_DEV_CORS")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    matches!(raw.as_str(), "1" | "true" | "yes" | "on")
 }
 
 #[cfg(test)]
@@ -73,11 +93,41 @@ mod tests {
         restore_env(previous);
     }
 
+    #[test]
+    fn ui_dev_cors_disabled_by_default() {
+        let _guard = env_lock().lock().expect("env lock");
+        let previous = env::var("NEXO_UI_DEV_CORS").ok();
+        env::remove_var("NEXO_UI_DEV_CORS");
+
+        assert!(!ui_dev_cors_enabled());
+
+        restore_env_var("NEXO_UI_DEV_CORS", previous);
+    }
+
+    #[test]
+    fn ui_dev_cors_enabled_for_true_values() {
+        let _guard = env_lock().lock().expect("env lock");
+        let previous = env::var("NEXO_UI_DEV_CORS").ok();
+        env::set_var("NEXO_UI_DEV_CORS", "true");
+
+        assert!(ui_dev_cors_enabled());
+
+        restore_env_var("NEXO_UI_DEV_CORS", previous);
+    }
+
     fn restore_env(previous: Option<String>) {
         if let Some(value) = previous {
             env::set_var("NEXO_HTTP_BIND", value);
         } else {
             env::remove_var("NEXO_HTTP_BIND");
+        }
+    }
+
+    fn restore_env_var(name: &str, previous: Option<String>) {
+        if let Some(value) = previous {
+            env::set_var(name, value);
+        } else {
+            env::remove_var(name);
         }
     }
 }

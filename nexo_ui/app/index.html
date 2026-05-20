@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NEXO Operator Panel (Phase A)</title>
+    <link rel="stylesheet" href="/ui/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>NEXO Operator Panel — Phase A</h1>
+      <p class="subtitle">
+        Generate, inspect, and sanity-check evidence with a minimal local-first interface.
+      </p>
+    </header>
+
+    <main class="grid">
+      <section class="panel">
+        <h2>Gerar</h2>
+        <form id="generate-form">
+          <div class="row">
+            <label for="user_id">user_id</label>
+            <input id="user_id" name="user_id" type="text" value="ui_operator_user" required />
+          </div>
+          <div class="row">
+            <label for="amount_cents">amount_cents</label>
+            <input id="amount_cents" name="amount_cents" type="number" min="0" value="50000" required />
+          </div>
+          <div class="row split">
+            <label><input id="is_pep" name="is_pep" type="checkbox" /> is_pep</label>
+            <label><input id="has_active_kyc" name="has_active_kyc" type="checkbox" checked /> has_active_kyc</label>
+          </div>
+          <div class="row">
+            <label for="tx_timestamp_utc_ms">timestamp_utc_ms (body)</label>
+            <input id="tx_timestamp_utc_ms" name="tx_timestamp_utc_ms" type="number" min="0" required />
+          </div>
+          <div class="row">
+            <label for="risk_bps">risk_bps</label>
+            <input id="risk_bps" name="risk_bps" type="number" min="0" max="65535" value="1200" required />
+          </div>
+          <div class="row">
+            <label><input id="ui_hash_valid" name="ui_hash_valid" type="checkbox" checked /> ui_hash_valid</label>
+          </div>
+
+          <h3>Signed Headers (operator-provided)</h3>
+          <div class="row">
+            <label for="x_key_id">x-key-id</label>
+            <input id="x_key_id" name="x_key_id" type="text" value="active" required />
+          </div>
+          <div class="row">
+            <label for="x_request_id">x-request-id</label>
+            <input id="x_request_id" name="x_request_id" type="text" required />
+          </div>
+          <div class="row">
+            <label for="x_timestamp">x-timestamp</label>
+            <input id="x_timestamp" name="x_timestamp" type="number" min="0" required />
+          </div>
+          <div class="row">
+            <label for="x_signature">x-signature</label>
+            <textarea id="x_signature" name="x_signature" rows="3" required></textarea>
+          </div>
+
+          <button id="generate-btn" type="submit">Gerar Prova</button>
+        </form>
+
+        <h3>Resposta</h3>
+        <pre id="generate-output" class="output">No request sent yet.</pre>
+      </section>
+
+      <section class="panel">
+        <h2>Verificar</h2>
+        <p class="muted">
+          Fase A faz sanity check local e não substitui o Zig verifier offline.
+        </p>
+
+        <div class="row">
+          <label for="artifact-file">EvidencePack file (.json / .jsonl)</label>
+          <input id="artifact-file" type="file" accept=".json,.jsonl,application/json" />
+        </div>
+        <button id="verify-btn" type="button">Verificar Integridade</button>
+        <pre id="verify-output" class="output">No artifact loaded.</pre>
+      </section>
+
+      <section class="panel">
+        <h2>Auditar</h2>
+        <table id="audit-table">
+          <tbody>
+            <tr><th>request_id</th><td id="audit-request-id">n/a</td></tr>
+            <tr><th>final_decision</th><td id="audit-final-decision">n/a</td></tr>
+            <tr><th>audit_hash</th><td id="audit-hash">n/a</td></tr>
+            <tr><th>hash_algo</th><td id="audit-hash-algo">n/a</td></tr>
+            <tr><th>record_hash</th><td id="audit-record-hash">n/a</td></tr>
+            <tr><th>prev_record_hash</th><td id="audit-prev-record-hash">n/a</td></tr>
+            <tr><th>profile_name</th><td id="audit-profile-name">n/a</td></tr>
+            <tr><th>profile_version</th><td id="audit-profile-version">n/a</td></tr>
+          </tbody>
+        </table>
+        <button id="export-btn" type="button">Exportar Pacote</button>
+        <pre id="audit-output" class="output">No evidence loaded.</pre>
+      </section>
+    </main>
+
+    <footer class="nonclaims">
+      Rust decides. Zig verifies offline. This UI does not create new runtime authority and does not replace the Zig verifier.
+    </footer>
+
+    <script src="/ui/app.js"></script>
+  </body>
+</html>
