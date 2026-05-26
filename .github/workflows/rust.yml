@@ -31,16 +31,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Cache cargo + target
+    - name: Cache cargo registry + git
       uses: actions/cache@v4
       with:
         path: |
-          ~/.cargo/bin
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
           ~/.cargo/git/db
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-fmt
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-fmt-v2
         restore-keys: |
           ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
           ${{ runner.os }}-cargo-
@@ -53,16 +51,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Cache cargo + target
+    - name: Cache cargo registry + git
       uses: actions/cache@v4
       with:
         path: |
-          ~/.cargo/bin
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
           ~/.cargo/git/db
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-clippy
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-clippy-v2
         restore-keys: |
           ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
           ${{ runner.os }}-cargo-
@@ -75,16 +71,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Cache cargo + target
+    - name: Cache cargo registry + git
       uses: actions/cache@v4
       with:
         path: |
-          ~/.cargo/bin
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
           ~/.cargo/git/db
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-engine-boundaries
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-engine-boundaries-v2
         restore-keys: |
           ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
           ${{ runner.os }}-cargo-
@@ -122,16 +116,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Cache cargo + target
+    - name: Cache cargo registry + git
       uses: actions/cache@v4
       with:
         path: |
-          ~/.cargo/bin
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
           ~/.cargo/git/db
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-security
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-security-v2
         restore-keys: |
           ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
           ${{ runner.os }}-cargo-
@@ -147,16 +139,14 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - name: Cache cargo + target
+    - name: Cache cargo registry + git
       uses: actions/cache@v4
       with:
         path: |
-          ~/.cargo/bin
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
           ~/.cargo/git/db
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-build
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-build-v2
         restore-keys: |
           ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
           ${{ runner.os }}-cargo-
@@ -200,16 +190,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Cache cargo + target
+    - name: Cache cargo registry + git
       uses: actions/cache@v4
       with:
         path: |
-          ~/.cargo/bin
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
           ~/.cargo/git/db
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-bench
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-bench-v2
         restore-keys: |
           ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
           ${{ runner.os }}-cargo-
