@@ -28,6 +28,7 @@ pub mod relay_client;
 #[cfg(feature = "network")]
 pub mod relay_registry;
 pub mod telemetry;
+pub mod transport;
 
 pub use crate::audit::{audit_hash, audit_hash_with_algo, AuditHashAlgo};
 
