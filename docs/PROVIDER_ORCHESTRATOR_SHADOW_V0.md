@@ -33,6 +33,13 @@ Set:
 
 `NEXO_PROVIDER_ORCH=1`
 
+Optional failover inputs (all three required to enable threshold mode):
+
+- `NEXO_PROVIDER_ORCH_PREVIOUS_PRIMARY=<provider-id>`
+- `NEXO_PROVIDER_ORCH_MAX_LATENCY_MS=<u32>`
+- `NEXO_PROVIDER_ORCH_MAX_JITTER_MS=<u32>`
+- `NEXO_PROVIDER_ORCH_MAX_LOSS_BPS=<u16>`
+
 ## Run
 
 ```bash
@@ -45,6 +52,16 @@ Or with explicit file:
 bash scripts/run_provider_orch_shadow.sh fixtures/provider_metrics_sample.json
 ```
 
+## Offline verification
+
+```bash
+bash scripts/verify_provider_orch_artifact.sh logs/provider_orchestrator_decision.jsonl
+```
+
+Expected output format:
+
+`provider_orch_verify: total=<n> ok=<n> invalid=<n>`
+
 ## Output
 
 - stdout prints:
@@ -56,5 +73,6 @@ bash scripts/run_provider_orch_shadow.sh fixtures/provider_metrics_sample.json
 ## Safety
 
 - fail-closed when no providers are healthy
+- fail-closed when threshold mode leaves no healthy provider
 - deterministic tie-break by provider id
 - artifact hash uses `blake3` over content without hash field

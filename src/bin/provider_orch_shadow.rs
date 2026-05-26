@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 
 use serde::Deserialize;
-use syntax_engine::provider_orchestrator::{self, ProviderMetric};
+use syntax_engine::provider_orchestrator::{self, FailoverThresholds, ProviderMetric};
 
 fn main() {
     if !orchestrator_enabled() {
@@ -33,10 +33,36 @@ fn main() {
         std::process::exit(2);
     });
 
-    let selection = provider_orchestrator::select_route(providers).unwrap_or_else(|err| {
+    let previous_primary_id = env::var("NEXO_PROVIDER_ORCH_PREVIOUS_PRIMARY").ok();
+    let thresholds = parse_failover_thresholds();
+
+    let selection = if let Some(thresholds) = thresholds {
+        provider_orchestrator::select_route_with_failover(
+            providers,
+            previous_primary_id.as_deref(),
+            thresholds,
+        )
+    } else {
+        provider_orchestrator::select_route(providers)
+    }
+    .unwrap_or_else(|err| {
         eprintln!("provider_orch_shadow: route selection failed: {}", err);
         std::process::exit(1);
     });
+
+    if let Some(previous) = previous_primary_id.as_deref() {
+        if previous != selection.primary_id {
+            println!(
+                "provider_orch_shadow: failover=triggered previous_primary={} new_primary={}",
+                previous, selection.primary_id
+            );
+        } else {
+            println!(
+                "provider_orch_shadow: failover=not_triggered previous_primary={}",
+                previous
+            );
+        }
+    }
 
     println!("provider_orch_shadow: primary={}", selection.primary_id);
     if let Some(fallback) = selection.fallback_id {
@@ -45,6 +71,27 @@ fn main() {
         println!("provider_orch_shadow: fallback=none");
     }
     println!("provider_orch_shadow: artifact=logs/provider_orchestrator_decision.jsonl");
+}
+
+fn parse_failover_thresholds() -> Option<FailoverThresholds> {
+    let max_latency_ms = env::var("NEXO_PROVIDER_ORCH_MAX_LATENCY_MS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok());
+    let max_jitter_ms = env::var("NEXO_PROVIDER_ORCH_MAX_JITTER_MS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok());
+    let max_loss_bps = env::var("NEXO_PROVIDER_ORCH_MAX_LOSS_BPS")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok());
+
+    match (max_latency_ms, max_jitter_ms, max_loss_bps) {
+        (Some(latency), Some(jitter), Some(loss)) => Some(FailoverThresholds {
+            max_latency_ms: latency,
+            max_jitter_ms: jitter,
+            max_loss_bps: loss,
+        }),
+        _ => None,
+    }
 }
 
 fn orchestrator_enabled() -> bool {
