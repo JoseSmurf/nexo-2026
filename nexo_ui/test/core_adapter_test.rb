@@ -4,6 +4,16 @@ require 'minitest/autorun'
 require_relative '../core_adapter'
 
 class CoreAdapterBoundaryTest < Minitest::Test
+  def with_stubbed_core_read_state(result)
+    original = CoreAdapter.method(:read_core_state)
+    CoreAdapter.singleton_class.send(:define_method, :read_core_state) do
+      result
+    end
+    yield
+  ensure
+    CoreAdapter.singleton_class.send(:define_method, :read_core_state, original)
+  end
+
   def test_core_state_payload_is_passed_through
     core_payload = {
       'system_status' => 'operational',
@@ -354,7 +364,7 @@ class CoreAdapterBoundaryTest < Minitest::Test
 
     normalized_core_state = CoreAdapter.normalize(core_payload, source: :core)
 
-    CoreAdapter.stub(:read_core_state, [normalized_core_state, 'ok']) do
+    with_stubbed_core_read_state([normalized_core_state, 'ok']) do
       state, health, source, status = CoreAdapter.build_state
 
       assert_equal('real', health)
