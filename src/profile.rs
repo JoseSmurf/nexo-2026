@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::fmt;
 
 use crate::EngineConfig;
 
@@ -15,6 +16,57 @@ const VALID_PROFILE_NAMES: &[&str] = &[
     "gb_default_v1",
     "kr_default_v1",
 ];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileConfigError {
+    pub code: &'static str,
+    pub message: String,
+    pub checklist: [&'static str; 3],
+}
+
+impl ProfileConfigError {
+    fn invalid_profile(name: &str) -> Self {
+        Self {
+            code: "NEXO_PROFILE_INVALID",
+            message: format!(
+                "unsupported NEXO_PROFILE '{name}'; unknown profiles are not allowed. Valid built-in profiles: {}",
+                VALID_PROFILE_NAMES.join(", ")
+            ),
+            checklist: [
+                "Set NEXO_PROFILE to one valid built-in profile name.",
+                "Check for typos or casing drift in NEXO_PROFILE.",
+                "Unset NEXO_PROFILE to fallback to default br_default_v1.",
+            ],
+        }
+    }
+
+    fn invalid_profile_non_unicode() -> Self {
+        Self {
+            code: "NEXO_PROFILE_INVALID_UNICODE",
+            message: format!(
+                "unsupported NEXO_PROFILE value; unknown profiles are not allowed. Valid built-in profiles: {}",
+                VALID_PROFILE_NAMES.join(", ")
+            ),
+            checklist: [
+                "Ensure NEXO_PROFILE is valid UTF-8.",
+                "Set NEXO_PROFILE to one valid built-in profile name.",
+                "Unset NEXO_PROFILE to fallback to default br_default_v1.",
+            ],
+        }
+    }
+}
+
+impl fmt::Display for ProfileConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}: {} | checklist=[1] {} [2] {} [3] {}",
+            self.code, self.message, self.checklist[0], self.checklist[1], self.checklist[2]
+        )
+    }
+}
+
+impl std::error::Error for ProfileConfigError {}
 
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct RuleProfile {
@@ -147,22 +199,14 @@ pub fn profile_by_name(name: &str) -> Option<RuleProfile> {
     }
 }
 
-pub fn profile_from_env() -> RuleProfile {
+pub fn profile_from_env() -> Result<RuleProfile, ProfileConfigError> {
     match std::env::var("NEXO_PROFILE") {
-        Ok(name) => profile_by_name(name.as_str()).unwrap_or_else(|| {
-            panic!(
-                "unsupported NEXO_PROFILE '{name}'; unknown profiles are not allowed. Valid built-in profiles: {}",
-                VALID_PROFILE_NAMES.join(", ")
-            )
-        }),
-        Err(std::env::VarError::NotPresent) => {
-            profile_by_name(DEFAULT_PROFILE_NAME).expect("default profile must exist")
-        }
+        Ok(name) => profile_by_name(name.as_str())
+            .ok_or_else(|| ProfileConfigError::invalid_profile(name.as_str())),
+        Err(std::env::VarError::NotPresent) => profile_by_name(DEFAULT_PROFILE_NAME)
+            .ok_or_else(|| ProfileConfigError::invalid_profile(DEFAULT_PROFILE_NAME)),
         Err(std::env::VarError::NotUnicode(_)) => {
-            panic!(
-                "unsupported NEXO_PROFILE value; unknown profiles are not allowed. Valid built-in profiles: {}",
-                VALID_PROFILE_NAMES.join(", ")
-            )
+            Err(ProfileConfigError::invalid_profile_non_unicode())
         }
     }
 }
@@ -225,29 +269,21 @@ mod tests {
         let previous = std::env::var("NEXO_PROFILE").ok();
         std::env::remove_var("NEXO_PROFILE");
 
-        let profile = profile_from_env();
+        let profile = profile_from_env().expect("default profile should load");
         assert_eq!(profile.name, DEFAULT_PROFILE_NAME);
 
         restore_profile_env(previous);
     }
 
     #[test]
-    fn unknown_explicit_profile_env_panics_fail_closed() {
+    fn unknown_explicit_profile_env_returns_structured_error_fail_closed() {
         let _guard = env_lock().lock().expect("env lock");
         let previous = std::env::var("NEXO_PROFILE").ok();
         std::env::set_var("NEXO_PROFILE", "typo_profile_v1");
 
-        let result = std::panic::catch_unwind(profile_from_env);
-        assert!(result.is_err(), "unknown profile must fail closed");
-        let msg = result
-            .err()
-            .and_then(|payload| {
-                payload
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
-            })
-            .unwrap_or_default();
+        let err = profile_from_env().expect_err("unknown profile must fail closed");
+        assert_eq!(err.code, "NEXO_PROFILE_INVALID");
+        let msg = err.to_string();
         assert!(msg.contains("typo_profile_v1"));
         assert!(msg.contains("unknown profiles are not allowed"));
         assert!(msg.contains("br_default_v1"));

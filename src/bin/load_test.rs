@@ -89,6 +89,7 @@ async fn main() {
                     .header("x-signature", signature)
                     .header("x-request-id", req_id)
                     .header("x-timestamp", timestamp.to_string())
+                    .header("x-nonce", timestamp.to_string())
                     .header("x-key-id", syntax_engine::api::BENCH_KEY_ID)
                     .body(Body::from(body_str))
                     .expect("request");

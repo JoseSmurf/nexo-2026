@@ -4,18 +4,22 @@ use ed25519_dalek::{Signature, Verifier};
 use axum::http::HeaderMap;
 
 use super::errors::AuthError;
-use super::replay::{enforce_replay_capacity, maybe_purge_replay_cache};
+use super::replay::{
+    enforce_replay_capacity, local_replay_and_nonce_check, local_replay_and_nonce_store,
+    maybe_purge_replay_cache,
+};
 use super::{
     client_signature_message, decode_hex_32, extract_header, hmac_blake3, is_uuid_v4,
     is_valid_key_id, now_utc_ms, signing_message, timing_safe_eq_32, AppState, HEADER_KEY_ID,
-    HEADER_REQUEST_ID, HEADER_SIGNATURE, HEADER_TIMESTAMP, MAX_KEY_ID_LEN, MAX_REQUEST_ID_LEN,
+    HEADER_NONCE, HEADER_REQUEST_ID, HEADER_SIGNATURE, HEADER_TIMESTAMP, MAX_KEY_ID_LEN,
+    MAX_REQUEST_ID_LEN,
 };
 
 pub(super) fn validate_security_headers(
     state: &AppState,
     headers: &HeaderMap,
     body: &[u8],
-) -> Result<(String, u64, String), AuthError> {
+) -> Result<(String, u64, u64, String), AuthError> {
     if headers.get_all(HEADER_SIGNATURE).iter().count() > 1 {
         return Err(AuthError::Unauthorized("duplicate X-Signature header"));
     }
@@ -27,6 +31,9 @@ pub(super) fn validate_security_headers(
     }
     if headers.get_all(HEADER_TIMESTAMP).iter().count() > 1 {
         return Err(AuthError::Unauthorized("duplicate X-Timestamp header"));
+    }
+    if headers.get_all(HEADER_NONCE).iter().count() > 1 {
+        return Err(AuthError::Unauthorized("duplicate X-Nonce header"));
     }
 
     verify_edge_guard(state, headers)?;
@@ -55,6 +62,13 @@ pub(super) fn validate_security_headers(
     if key_id.len() > MAX_KEY_ID_LEN || !is_valid_key_id(key_id) {
         return Err(AuthError::Unauthorized("invalid X-Key-Id header"));
     }
+    let nonce = extract_header(headers, HEADER_NONCE)
+        .ok_or(AuthError::Unauthorized("missing X-Nonce header"))?
+        .parse::<u64>()
+        .map_err(|_| AuthError::Unauthorized("invalid X-Nonce header"))?;
+    if nonce == 0 {
+        return Err(AuthError::Unauthorized("invalid X-Nonce header"));
+    }
 
     let now = now_utc_ms();
     if now.abs_diff(timestamp_ms) > state.auth_window_ms {
@@ -74,33 +88,44 @@ pub(super) fn validate_security_headers(
     };
     let key = allowed_key.ok_or(AuthError::Unauthorized("unknown or inactive X-Key-Id"))?;
 
-    verify_client_signature(state, headers, &request_id, timestamp_ms, key_id, body)?;
+    verify_client_signature(
+        state,
+        headers,
+        &request_id,
+        timestamp_ms,
+        nonce,
+        key_id,
+        body,
+    )?;
 
+    let mut nonce_cache_key = None;
     if state.redis_guard.is_none() {
         maybe_purge_replay_cache(state, now);
         enforce_replay_capacity(state);
-        if state.replay_cache.contains_key(&request_id) {
-            return Err(AuthError::Conflict(
-                "replay detected: X-Request-Id already used",
-            ));
-        }
+        nonce_cache_key = Some(local_replay_and_nonce_check(
+            state,
+            &request_id,
+            key_id,
+            nonce,
+        )?);
     }
 
-    let signing_bytes = signing_message(key_id, &request_id, timestamp_ms, body);
+    let signing_bytes = signing_message(key_id, &request_id, timestamp_ms, nonce, body);
     let expected = hmac_blake3(&key.secret, &signing_bytes);
     if !timing_safe_eq_32(&signature, &expected) {
         return Err(AuthError::Unauthorized("invalid request signature"));
     }
 
-    if state.redis_guard.is_none() {
-        state.replay_cache.insert(request_id.clone(), now);
+    if let Some(nonce_key) = nonce_cache_key.as_deref() {
+        local_replay_and_nonce_store(state, &request_id, nonce_key, now);
     }
+
     state
         .key_usage
         .entry(key.id.clone())
         .and_modify(|v| *v += 1)
         .or_insert(1);
-    Ok((request_id, timestamp_ms, key.id.clone()))
+    Ok((request_id, timestamp_ms, nonce, key.id.clone()))
 }
 
 fn verify_edge_guard(state: &AppState, headers: &HeaderMap) -> Result<(), AuthError> {
@@ -142,6 +167,7 @@ fn verify_client_signature(
     headers: &HeaderMap,
     request_id: &str,
     timestamp_ms: u64,
+    nonce: u64,
     key_id: &str,
     body: &[u8],
 ) -> Result<(), AuthError> {
@@ -165,7 +191,7 @@ fn verify_client_signature(
         .try_into()
         .map_err(|_| AuthError::Unauthorized("invalid client signature length"))?;
     let signature = Signature::from_bytes(&sig_bytes);
-    let msg = client_signature_message(client_id, key_id, request_id, timestamp_ms, body);
+    let msg = client_signature_message(client_id, key_id, request_id, timestamp_ms, nonce, body);
     pubkey
         .verify(&msg, &signature)
         .map_err(|_| AuthError::Unauthorized("invalid client signature"))?;

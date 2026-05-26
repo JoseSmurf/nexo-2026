@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
+use std::{error::Error, fmt};
 
 use aws_config::BehaviorVersion;
 use axum::{
@@ -28,7 +29,10 @@ use uuid::Uuid;
 use self::auth::validate_security_headers;
 use self::errors::{AuthError, ChatSendError};
 use self::rate_limit::distributed_rate_limit_allow;
-use self::replay::{distributed_replay_check_and_store, validate_persistent_replay_requirement};
+use self::replay::{
+    distributed_nonce_check_and_store, distributed_replay_check_and_store,
+    validate_persistent_replay_requirement,
+};
 use self::state::{build_state_response, StateChatMessage};
 use crate::audit_store::{AuditRecord, AuditStore};
 #[cfg(feature = "network")]
@@ -80,6 +84,7 @@ const MAX_CHAT_REQUEST_BODY_BYTES: usize = 4 * 1024;
 const HEADER_SIGNATURE: &str = "x-signature";
 const HEADER_REQUEST_ID: &str = "x-request-id";
 const HEADER_TIMESTAMP: &str = "x-timestamp";
+const HEADER_NONCE: &str = "x-nonce";
 const HEADER_KEY_ID: &str = "x-key-id";
 const HEADER_RESPONSE_SIGNATURE: &str = "x-response-signature";
 const HEADER_RESPONSE_KEY_ID: &str = "x-response-key-id";
@@ -317,6 +322,39 @@ struct SecretBundle {
     previous_key_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiConfigError {
+    pub code: &'static str,
+    pub message: String,
+    pub checklist: [&'static str; 3],
+}
+
+impl ApiConfigError {
+    fn unsupported_secret_provider(provider: &str) -> Self {
+        Self {
+            code: "NEXO_SECRET_PROVIDER_UNSUPPORTED",
+            message: format!("unsupported NEXO_SECRET_PROVIDER '{provider}'"),
+            checklist: [
+                "Set NEXO_SECRET_PROVIDER to one of: none, vault, azure, gcp, aws.",
+                "Remove typos from NEXO_SECRET_PROVIDER.",
+                "Unset NEXO_SECRET_PROVIDER to use the default (none).",
+            ],
+        }
+    }
+}
+
+impl fmt::Display for ApiConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}: {} | checklist=[1] {} [2] {} [3] {}",
+            self.code, self.message, self.checklist[0], self.checklist[1], self.checklist[2]
+        )
+    }
+}
+
+impl Error for ApiConfigError {}
+
 impl AppState {
     pub fn from_env() -> Self {
         let path =
@@ -325,7 +363,7 @@ impl AppState {
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(DEFAULT_RETENTION);
-        let bundle = load_secret_bundle_from_env();
+        let bundle = load_secret_bundle_from_env().unwrap_or_else(|err| panic!("{err}"));
         let active_secret = load_required_secret(
             "NEXO_HMAC_SECRET",
             bundle.as_ref().and_then(|b| b.active_secret.as_deref()),
@@ -437,7 +475,7 @@ impl AppState {
         );
 
         Self {
-            profile: profile_from_env(),
+            profile: profile_from_env().unwrap_or_else(|err| panic!("{err}")),
             audit_store,
             metrics: Metrics::new_shared(),
             audit_enabled: true,
@@ -475,7 +513,7 @@ impl AppState {
 
     pub fn for_tests(path: PathBuf) -> Self {
         Self {
-            profile: profile_from_env(),
+            profile: profile_from_env().unwrap_or_else(|err| panic!("{err}")),
             audit_store: AuditStore::new(path, 500),
             metrics: Metrics::new_shared(),
             audit_enabled: true,
@@ -516,7 +554,7 @@ impl AppState {
 
     pub fn for_bench() -> Self {
         Self {
-            profile: profile_from_env(),
+            profile: profile_from_env().unwrap_or_else(|err| panic!("{err}")),
             audit_store: AuditStore::new(std::env::temp_dir().join("nexo_bench_unused.jsonl"), 1),
             metrics: Metrics::new_shared(),
             audit_enabled: false,
@@ -566,18 +604,18 @@ fn load_shake_bits(default_bits: u16) -> u16 {
     parsed
 }
 
-fn load_secret_bundle_from_env() -> Option<SecretBundle> {
+fn load_secret_bundle_from_env() -> Result<Option<SecretBundle>, ApiConfigError> {
     let provider = std::env::var("NEXO_SECRET_PROVIDER")
         .unwrap_or_else(|_| DEFAULT_SECRET_PROVIDER.to_string())
         .to_ascii_lowercase();
 
     match provider.as_str() {
-        "" | "none" => None,
-        "vault" => Some(load_vault_bundle_from_env()),
-        "azure" => Some(load_azure_bundle_from_env()),
-        "gcp" => Some(load_gcp_bundle_from_env()),
-        "aws" => Some(load_aws_bundle_from_env()),
-        other => panic!("unsupported NEXO_SECRET_PROVIDER '{other}'"),
+        "" | "none" => Ok(None),
+        "vault" => Ok(Some(load_vault_bundle_from_env())),
+        "azure" => Ok(Some(load_azure_bundle_from_env())),
+        "gcp" => Ok(Some(load_gcp_bundle_from_env())),
+        "aws" => Ok(Some(load_aws_bundle_from_env())),
+        other => Err(ApiConfigError::unsupported_secret_provider(other)),
     }
 }
 
@@ -1709,7 +1747,7 @@ async fn evaluate_handler(
     body: Bytes,
 ) -> impl IntoResponse {
     let start = Instant::now();
-    let (header_request_id, header_timestamp, key_used_id) =
+    let (header_request_id, header_timestamp, header_nonce, key_used_id) =
         match validate_security_headers(&state, &headers, &body) {
             Ok(v) => v,
             Err(err) => {
@@ -1725,6 +1763,14 @@ async fn evaluate_handler(
 
     if state.redis_guard.is_some() {
         if let Err(err) = distributed_replay_check_and_store(&state, &header_request_id).await {
+            state
+                .metrics
+                .observe_error(start.elapsed().as_nanos() as u64);
+            return auth_error_response(&state, header_request_id, err);
+        }
+        if let Err(err) =
+            distributed_nonce_check_and_store(&state, &key_used_id, header_nonce).await
+        {
             state
                 .metrics
                 .observe_error(start.elapsed().as_nanos() as u64);
@@ -1764,7 +1810,7 @@ async fn evaluate_handler(
     if let Err(err) = build_transport_envelope(HttpTransportEnvelopeInput {
         request_id: &header_request_id,
         timestamp_utc_ms: header_timestamp,
-        nonce: header_timestamp,
+        nonce: header_nonce,
         key_id: &key_used_id,
         signature: signature_header,
         payload_json: &payload_json,
@@ -2083,7 +2129,18 @@ pub fn compute_signature(
     timestamp_ms: u64,
     body: &[u8],
 ) -> String {
-    let msg = signing_message(key_id, request_id, timestamp_ms, body);
+    compute_signature_with_nonce(secret, key_id, request_id, timestamp_ms, timestamp_ms, body)
+}
+
+pub fn compute_signature_with_nonce(
+    secret: &str,
+    key_id: &str,
+    request_id: &str,
+    timestamp_ms: u64,
+    nonce: u64,
+    body: &[u8],
+) -> String {
+    let msg = signing_message(key_id, request_id, timestamp_ms, nonce, body);
     bytes_to_hex(&hmac_blake3(secret.as_bytes(), &msg))
 }
 
@@ -2107,6 +2164,26 @@ pub fn compute_client_signature_base64(
     timestamp_ms: u64,
     body: &[u8],
 ) -> String {
+    compute_client_signature_base64_with_nonce(
+        seed_b64,
+        client_id,
+        key_id,
+        request_id,
+        timestamp_ms,
+        timestamp_ms,
+        body,
+    )
+}
+
+pub fn compute_client_signature_base64_with_nonce(
+    seed_b64: &str,
+    client_id: &str,
+    key_id: &str,
+    request_id: &str,
+    timestamp_ms: u64,
+    nonce: u64,
+    body: &[u8],
+) -> String {
     let seed = base64::engine::general_purpose::STANDARD
         .decode(seed_b64)
         .unwrap_or_else(|_| panic!("invalid base64 seed"));
@@ -2115,7 +2192,7 @@ pub fn compute_client_signature_base64(
         .try_into()
         .unwrap_or_else(|_| panic!("client seed must be 32 bytes"));
     let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
-    let msg = client_signature_message(client_id, key_id, request_id, timestamp_ms, body);
+    let msg = client_signature_message(client_id, key_id, request_id, timestamp_ms, nonce, body);
     let sig = ed25519_dalek::Signer::sign(&signing, &msg);
     base64::engine::general_purpose::STANDARD.encode(sig.to_bytes())
 }
@@ -2146,11 +2223,21 @@ pub fn benchmark_security_check(
         HEADER_TIMESTAMP,
         timestamp_ms.to_string().parse().expect("timestamp header"),
     );
+    headers.insert(
+        HEADER_NONCE,
+        timestamp_ms.to_string().parse().expect("nonce header"),
+    );
     headers.insert(HEADER_KEY_ID, BENCH_KEY_ID.parse().expect("key id header"));
     validate_security_headers(state, &headers, body).is_ok()
 }
 
-fn signing_message(key_id: &str, request_id: &str, timestamp_ms: u64, body: &[u8]) -> Vec<u8> {
+fn signing_message(
+    key_id: &str,
+    request_id: &str,
+    timestamp_ms: u64,
+    nonce: u64,
+    body: &[u8],
+) -> Vec<u8> {
     fn push_part(buf: &mut Vec<u8>, part: &[u8]) {
         buf.extend_from_slice(&(part.len() as u32).to_le_bytes());
         buf.extend_from_slice(part);
@@ -2159,6 +2246,7 @@ fn signing_message(key_id: &str, request_id: &str, timestamp_ms: u64, body: &[u8
     push_part(&mut out, key_id.as_bytes());
     push_part(&mut out, request_id.as_bytes());
     push_part(&mut out, timestamp_ms.to_string().as_bytes());
+    push_part(&mut out, nonce.to_string().as_bytes());
     push_part(&mut out, body);
     out
 }
@@ -2168,6 +2256,7 @@ fn client_signature_message(
     key_id: &str,
     request_id: &str,
     timestamp_ms: u64,
+    nonce: u64,
     body: &[u8],
 ) -> Vec<u8> {
     fn push_part(buf: &mut Vec<u8>, part: &[u8]) {
@@ -2180,6 +2269,7 @@ fn client_signature_message(
     push_part(&mut out, key_id.as_bytes());
     push_part(&mut out, request_id.as_bytes());
     push_part(&mut out, timestamp_ms.to_string().as_bytes());
+    push_part(&mut out, nonce.to_string().as_bytes());
     push_part(&mut out, body);
     out
 }
@@ -2540,9 +2630,33 @@ mod tests {
         request_id: &str,
         timestamp_ms: u64,
     ) -> Request<Body> {
+        signed_request_with_nonce(
+            payload,
+            secret,
+            key_id,
+            request_id,
+            timestamp_ms,
+            timestamp_ms,
+        )
+    }
+
+    fn signed_request_with_nonce(
+        payload: serde_json::Value,
+        secret: &str,
+        key_id: &str,
+        request_id: &str,
+        timestamp_ms: u64,
+        nonce: u64,
+    ) -> Request<Body> {
         let body = payload.to_string();
-        let signature =
-            compute_signature(secret, key_id, request_id, timestamp_ms, body.as_bytes());
+        let signature = compute_signature_with_nonce(
+            secret,
+            key_id,
+            request_id,
+            timestamp_ms,
+            nonce,
+            body.as_bytes(),
+        );
         Request::builder()
             .method("POST")
             .uri("/evaluate")
@@ -2550,6 +2664,7 @@ mod tests {
             .header("x-signature", signature)
             .header("x-request-id", request_id)
             .header("x-timestamp", timestamp_ms.to_string())
+            .header("x-nonce", nonce.to_string())
             .header("x-key-id", key_id)
             .body(Body::from(body))
             .expect("request")
@@ -2563,9 +2678,35 @@ mod tests {
         timestamp_ms: u64,
         extra_headers: &[(&str, String)],
     ) -> Request<Body> {
+        signed_request_with_headers_and_nonce(
+            payload,
+            secret,
+            key_id,
+            request_id,
+            timestamp_ms,
+            timestamp_ms,
+            extra_headers,
+        )
+    }
+
+    fn signed_request_with_headers_and_nonce(
+        payload: serde_json::Value,
+        secret: &str,
+        key_id: &str,
+        request_id: &str,
+        timestamp_ms: u64,
+        nonce: u64,
+        extra_headers: &[(&str, String)],
+    ) -> Request<Body> {
         let body = payload.to_string();
-        let signature =
-            compute_signature(secret, key_id, request_id, timestamp_ms, body.as_bytes());
+        let signature = compute_signature_with_nonce(
+            secret,
+            key_id,
+            request_id,
+            timestamp_ms,
+            nonce,
+            body.as_bytes(),
+        );
         let mut req = Request::builder()
             .method("POST")
             .uri("/evaluate")
@@ -2573,6 +2714,7 @@ mod tests {
             .header("x-signature", signature)
             .header("x-request-id", request_id)
             .header("x-timestamp", timestamp_ms.to_string())
+            .header("x-nonce", nonce.to_string())
             .header("x-key-id", key_id);
         for (k, v) in extra_headers {
             req = req.header(*k, v);
@@ -3351,6 +3493,7 @@ mod tests {
             .header("content-type", "application/json")
             .header("x-request-id", "req-no-sig")
             .header("x-timestamp", now.to_string())
+            .header("x-nonce", now.to_string())
             .header("x-key-id", "active")
             .body(Body::from(
                 serde_json::json!({
@@ -3380,6 +3523,7 @@ mod tests {
             .header("x-signature", "deadbeef")
             .header("x-request-id", "req-wrong")
             .header("x-timestamp", now.to_string())
+            .header("x-nonce", now.to_string())
             .header("x-key-id", "active")
             .body(Body::from(
                 serde_json::json!({
@@ -3907,6 +4051,190 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn evaluate_http_valid_payload_with_explicit_nonce_returns_200() {
+        let app = app_with_state(test_state());
+        let now = now_utc_ms();
+        let nonce = now.saturating_add(17);
+        let request_id = "9d59ed1f-7e88-4f95-84c3-5242ac6fd94c";
+        let payload = serde_json::json!({
+            "user_id":"u_valid_nonce",
+            "amount_cents":55_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1200,
+            "ui_hash_valid":true,
+            "request_id": request_id
+        });
+        let req = signed_request_with_nonce(
+            payload,
+            "test_active_secret",
+            "active",
+            request_id,
+            now,
+            nonce,
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn evaluate_http_invalid_payload_returns_400() {
+        let app = app_with_state(test_state());
+        let now = now_utc_ms();
+        let nonce = now.saturating_add(31);
+        let request_id = "2fd8b499-c213-4d36-8731-0fbe3f6d4eaa";
+        let payload = serde_json::json!({
+            "user_id":"u_invalid_payload",
+            "amount_cents":"not-a-number",
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1200,
+            "ui_hash_valid":true,
+            "request_id": request_id
+        });
+        let req = signed_request_with_nonce(
+            payload,
+            "test_active_secret",
+            "active",
+            request_id,
+            now,
+            nonce,
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn evaluate_http_rejects_reused_nonce_for_same_origin() {
+        let app = app_with_state(test_state());
+        let now = now_utc_ms();
+        let nonce = now.saturating_add(37);
+        let payload_a = serde_json::json!({
+            "user_id":"u_nonce_once",
+            "amount_cents":51_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true,
+            "request_id":"46acd47c-08b0-4dc5-bd42-1d58991e4014"
+        });
+        let payload_b = serde_json::json!({
+            "user_id":"u_nonce_twice",
+            "amount_cents":52_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now.saturating_add(1),
+            "risk_bps":1000,
+            "ui_hash_valid":true,
+            "request_id":"9a65dc9b-a544-4a8d-98c7-6ba50f4fac6c"
+        });
+
+        let first = signed_request_with_nonce(
+            payload_a,
+            "test_active_secret",
+            "active",
+            "46acd47c-08b0-4dc5-bd42-1d58991e4014",
+            now,
+            nonce,
+        );
+        let second = signed_request_with_nonce(
+            payload_b,
+            "test_active_secret",
+            "active",
+            "9a65dc9b-a544-4a8d-98c7-6ba50f4fac6c",
+            now.saturating_add(1),
+            nonce,
+        );
+
+        let first_resp = app.clone().oneshot(first).await.expect("first response");
+        assert_eq!(first_resp.status(), StatusCode::OK);
+        let second_resp = app.oneshot(second).await.expect("second response");
+        assert_eq!(second_resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn evaluate_http_hash_mismatch_returns_401() {
+        let app = app_with_state(test_state());
+        let now = now_utc_ms();
+        let nonce = now.saturating_add(41);
+        let request_id = "8e81ccf1-b8cf-4bf2-b653-42d67d0fe9e6";
+        let signed_payload = serde_json::json!({
+            "user_id":"u_hash_mismatch",
+            "amount_cents":70_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true,
+            "request_id": request_id
+        });
+        let tampered_payload = serde_json::json!({
+            "user_id":"u_hash_mismatch",
+            "amount_cents":170_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true,
+            "request_id": request_id
+        });
+        let signed_body = signed_payload.to_string();
+        let signature = compute_signature_with_nonce(
+            "test_active_secret",
+            "active",
+            request_id,
+            now,
+            nonce,
+            signed_body.as_bytes(),
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri("/evaluate")
+            .header("content-type", "application/json")
+            .header("x-signature", signature)
+            .header("x-request-id", request_id)
+            .header("x-timestamp", now.to_string())
+            .header("x-nonce", nonce.to_string())
+            .header("x-key-id", "active")
+            .body(Body::from(tampered_payload.to_string()))
+            .expect("request");
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn evaluate_http_header_drift_request_id_mismatch_returns_400() {
+        let app = app_with_state(test_state());
+        let now = now_utc_ms();
+        let nonce = now.saturating_add(59);
+        let header_request_id = "49a09617-9e7b-428e-afad-dd0c2f32a437";
+        let body_request_id = "51431d98-a53f-4df8-8075-c08725aa3b79";
+        let payload = serde_json::json!({
+            "user_id":"u_header_drift",
+            "amount_cents":80_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1000,
+            "ui_hash_valid":true,
+            "request_id": body_request_id
+        });
+        let req = signed_request_with_nonce(
+            payload,
+            "test_active_secret",
+            "active",
+            header_request_id,
+            now,
+            nonce,
+        );
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn payload_adulterated_returns_401() {
         let app = app_with_state(test_state());
         let now = now_utc_ms();
@@ -3942,6 +4270,7 @@ mod tests {
             .header("x-signature", signature)
             .header("x-request-id", "5c316bd5-a0c2-4e6d-aed8-ed706734af08")
             .header("x-timestamp", now.to_string())
+            .header("x-nonce", now.to_string())
             .header("x-key-id", "active")
             .body(Body::from(body_tampered.to_string()))
             .expect("request");
@@ -4044,6 +4373,7 @@ mod tests {
             .header("x-signature", signature)
             .header("x-request-id", request_id)
             .header("x-timestamp", now.to_string())
+            .header("x-nonce", now.to_string())
             .header("x-key-id", "active")
             .body(Body::from(body))
             .expect("request");
@@ -4079,6 +4409,7 @@ mod tests {
             .header("x-signature", signature)
             .header("x-request-id", request_id)
             .header("x-timestamp", now.to_string())
+            .header("x-nonce", now.to_string())
             .header("x-key-id", "active")
             .body(Body::from(body))
             .expect("request");
@@ -4116,6 +4447,7 @@ mod tests {
             .header("x-signature", signature)
             .header("x-request-id", request_id)
             .header("x-timestamp", now.to_string())
+            .header("x-nonce", now.to_string())
             .header("x-key-id", "active")
             .body(Body::from(body))
             .expect("request");
@@ -4160,6 +4492,7 @@ mod tests {
             .header("x-signature", signature)
             .header("x-request-id", request_id)
             .header("x-timestamp", now.to_string())
+            .header("x-nonce", now.to_string())
             .header("x-key-id", "active")
             .body(Body::from(body))
             .expect("request");
@@ -4180,6 +4513,7 @@ mod tests {
             .header("x-signature", "deadbeef")
             .header("x-request-id", request_id)
             .header("x-timestamp", now.to_string())
+            .header("x-nonce", now.to_string())
             .header("x-key-id", "active")
             .body(Body::from(oversized))
             .expect("request");
@@ -4302,7 +4636,7 @@ mod tests {
             "test_active_secret",
             "active",
             "ccbdd4b3-4b9f-4d0a-8755-5cd2b5cba4d5",
-            now,
+            now.saturating_add(1),
             &[(HEADER_FORWARDED_FOR, "203.0.113.21".to_string())],
             remote,
         );
@@ -4487,7 +4821,8 @@ mod tests {
             "ui_hash_valid":true
         });
         let body = payload.to_string();
-        let msg = client_signature_message("client-a", "active", request_id, now, body.as_bytes());
+        let msg =
+            client_signature_message("client-a", "active", request_id, now, now, body.as_bytes());
         let sig = signing.sign(&msg);
         let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
 

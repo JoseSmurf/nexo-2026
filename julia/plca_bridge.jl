@@ -122,11 +122,18 @@ function u32le(n::UInt32)
     ]
 end
 
-function signing_message(key_id::String, request_id::String, timestamp_ms::UInt64, body::String)::Vector{UInt8}
+function signing_message(
+    key_id::String,
+    request_id::String,
+    timestamp_ms::UInt64,
+    nonce::UInt64,
+    body::String,
+)::Vector{UInt8}
     out = UInt8[]
     for part in (Vector{UInt8}(codeunits(key_id)),
                  Vector{UInt8}(codeunits(request_id)),
                  Vector{UInt8}(codeunits(string(timestamp_ms))),
+                 Vector{UInt8}(codeunits(string(nonce))),
                  Vector{UInt8}(codeunits(body)))
         append!(out, u32le(UInt32(length(part))))
         append!(out, part)
@@ -140,7 +147,14 @@ function blake3_digest(data::Vector{UInt8})::Vector{UInt8}
     digest(ctx)
 end
 
-function hmac_blake3(body::String, secret::String, key_id::String, request_id::String, timestamp_ms::UInt64)::String
+function hmac_blake3(
+    body::String,
+    secret::String,
+    key_id::String,
+    request_id::String,
+    timestamp_ms::UInt64,
+    nonce::UInt64=timestamp_ms,
+)::String
     block_size = 64
     key = Vector{UInt8}(codeunits(secret))
     if length(key) > block_size
@@ -153,7 +167,7 @@ function hmac_blake3(body::String, secret::String, key_id::String, request_id::S
     ipad = UInt8[(key[i] ⊻ 0x36) for i in 1:block_size]
     opad = UInt8[(key[i] ⊻ 0x5c) for i in 1:block_size]
 
-    msg = signing_message(key_id, request_id, timestamp_ms, body)
+    msg = signing_message(key_id, request_id, timestamp_ms, nonce, body)
     inner = blake3_digest(vcat(ipad, msg))
     outer = blake3_digest(vcat(opad, inner))
     bytes2hex(outer)
@@ -199,12 +213,14 @@ function post_evaluate(payload::Dict{String, Any}, request_id::String, timestamp
     secret = read_secret_value("NEXO_HMAC_SECRET")
     key_id = nexo_key_id()
     body = canonical_json(payload)
-    signature = hmac_blake3(body, secret, key_id, request_id, timestamp_ms)
+    nonce = timestamp_ms
+    signature = hmac_blake3(body, secret, key_id, request_id, timestamp_ms, nonce)
     headers = [
         "Content-Type" => "application/json",
         "X-Signature" => signature,
         "X-Request-Id" => request_id,
         "X-Timestamp" => string(timestamp_ms),
+        "X-Nonce" => string(nonce),
         "X-Key-Id" => key_id,
     ]
 

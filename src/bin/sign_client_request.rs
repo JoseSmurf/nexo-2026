@@ -2,9 +2,9 @@ use std::env;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() != 7 {
+    if args.len() != 7 && args.len() != 8 {
         eprintln!(
-            "usage: sign_client_request <seed_base64_32bytes> <client_id> <key_id> <request_id> <timestamp_ms> <json_body>"
+            "usage: sign_client_request <seed_base64_32bytes> <client_id> <key_id> <request_id> <timestamp_ms> <json_body> [nonce]"
         );
         std::process::exit(2);
     }
@@ -18,13 +18,22 @@ fn main() {
         std::process::exit(2);
     });
     let body = &args[6];
+    let nonce = if args.len() == 8 {
+        args[7].parse().unwrap_or_else(|_| {
+            eprintln!("invalid nonce: {}", args[7]);
+            std::process::exit(2);
+        })
+    } else {
+        timestamp_ms
+    };
 
-    let sig = syntax_engine::api::compute_client_signature_base64(
+    let sig = syntax_engine::api::compute_client_signature_base64_with_nonce(
         seed_b64,
         client_id,
         key_id,
         request_id,
         timestamp_ms,
+        nonce,
         body.as_bytes(),
     );
     println!("{sig}");
