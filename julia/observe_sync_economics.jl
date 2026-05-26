@@ -155,11 +155,13 @@ function read_two_snapshot_sync_economics_jsonl(path::AbstractString)
     isfile(path) || throw(ArgumentError("sync economics artifact not found: $(path)"))
 
     records = NamedTuple[]
-    for line in eachline(path)
-        stripped = strip(line)
-        isempty(stripped) && continue
-        parsed = JSON3.read(stripped)
-        push!(records, normalize_two_snapshot_sync_economics_record(parsed))
+    open(path, "r") do io
+        for line in eachline(io)
+            stripped = strip(line)
+            isempty(stripped) && continue
+            parsed = JSON3.read(stripped)
+            push!(records, normalize_two_snapshot_sync_economics_record(parsed))
+        end
     end
 
     isempty(records) && throw(ArgumentError("sync economics artifact is empty: $(path)"))
