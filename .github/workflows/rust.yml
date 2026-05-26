@@ -150,10 +150,10 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
           ${{ runner.os }}-cargo-
-    - name: Setup Zig 0.11.0 (offline audit verifier)
+    - name: Setup Zig 0.16.0 (offline audit verifier)
       uses: mlugg/setup-zig@v1
       with:
-        version: 0.11.0
+        version: 0.16.0
     - name: Setup Julia
       uses: julia-actions/setup-julia@v2
       with:
