@@ -5,36 +5,10 @@
   "key_id": "active",
   "signature": "contract-signature-v1",
   "expected_payload_hash": "c8b8ca5f45fce2891ad702b00a78a1ddc507c5806851bbfd582e090748b82509",
+  "expected_signing_message_hex": "1a0000006e65786f5f7472616e73706f72745f656e76656c6f70655f76312400000035363461373231382d313365352d343663392d383466362d6266346335336666353333660d000000313737323030303030303030300d00000031373732303030303030303030060000006163746976654000000063386238636135663435666365323839316164373032623030613738613164646335303763353830363835316262666435383265303930373438623832353039",
   "payloads": {
-    "android": {
-      "request_id": "564a7218-13e5-46c9-84f6-bf4c53ff533f",
-      "user_id": "contract_user",
-      "amount_cents": 150000,
-      "risk_bps": 1234,
-      "timestamp_utc_ms": 1772000000000,
-      "has_active_kyc": true,
-      "is_pep": false,
-      "ui_hash_valid": true
-    },
-    "ios": {
-      "amount_cents": 150000,
-      "has_active_kyc": true,
-      "is_pep": false,
-      "request_id": "564a7218-13e5-46c9-84f6-bf4c53ff533f",
-      "risk_bps": 1234,
-      "timestamp_utc_ms": 1772000000000,
-      "ui_hash_valid": true,
-      "user_id": "contract_user"
-    },
-    "cli": {
-      "risk_bps": 1234,
-      "timestamp_utc_ms": 1772000000000,
-      "ui_hash_valid": true,
-      "request_id": "564a7218-13e5-46c9-84f6-bf4c53ff533f",
-      "user_id": "contract_user",
-      "is_pep": false,
-      "has_active_kyc": true,
-      "amount_cents": 150000
-    }
+    "android": "{\"request_id\":\"564a7218-13e5-46c9-84f6-bf4c53ff533f\",\"user_id\":\"contract_user\",\"amount_cents\":150000,\"risk_bps\":1234,\"timestamp_utc_ms\":1772000000000,\"has_active_kyc\":true,\"is_pep\":false,\"ui_hash_valid\":true}",
+    "ios": "{\"amount_cents\":150000,\"has_active_kyc\":true,\"is_pep\":false,\"request_id\":\"564a7218-13e5-46c9-84f6-bf4c53ff533f\",\"risk_bps\":1234,\"timestamp_utc_ms\":1772000000000,\"ui_hash_valid\":true,\"user_id\":\"contract_user\"}",
+    "cli": "{\"risk_bps\":1234,\"timestamp_utc_ms\":1772000000000,\"ui_hash_valid\":true,\"request_id\":\"564a7218-13e5-46c9-84f6-bf4c53ff533f\",\"user_id\":\"contract_user\",\"is_pep\":false,\"has_active_kyc\":true,\"amount_cents\":150000}"
   }
 }

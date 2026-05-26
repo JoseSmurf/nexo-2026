@@ -45,18 +45,28 @@ mod tests {
         key_id: String,
         signature: String,
         expected_payload_hash: String,
+        expected_signing_message_hex: String,
         payloads: PayloadVariants,
     }
 
     #[derive(Debug, Deserialize)]
     struct PayloadVariants {
-        android: Value,
-        ios: Value,
-        cli: Value,
+        android: String,
+        ios: String,
+        cli: String,
     }
 
     fn load_fixture() -> CrossPlatformFixture {
         serde_json::from_str(FIXTURE).expect("fixture should be valid JSON")
+    }
+
+    fn bytes_to_hex(bytes: &[u8]) -> String {
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            use std::fmt::Write as _;
+            write!(&mut out, "{byte:02x}").expect("hex encoding should not fail");
+        }
+        out
     }
 
     #[test]
@@ -70,19 +80,26 @@ mod tests {
         ];
 
         let mut envelopes = Vec::with_capacity(variants.len());
-        for payload in variants {
+        for payload_json in variants {
+            let payload: Value =
+                serde_json::from_str(payload_json).expect("fixture payload should be valid JSON");
             let envelope = build_transport_envelope(HttpTransportEnvelopeInput {
                 request_id: &fixture.request_id,
                 timestamp_utc_ms: fixture.timestamp_utc_ms,
                 nonce: fixture.nonce,
                 key_id: &fixture.key_id,
                 signature: &fixture.signature,
-                payload_json: payload,
+                payload_json: &payload,
             })
             .expect("transport envelope should be built");
             assert_eq!(
                 envelope.payload_hash, fixture.expected_payload_hash,
                 "payload hash must match fixture contract"
+            );
+            assert_eq!(
+                bytes_to_hex(&envelope.signing_message_bytes()),
+                fixture.expected_signing_message_hex,
+                "signing message bytes must match fixture contract"
             );
             envelopes.push(envelope);
         }

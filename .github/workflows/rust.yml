@@ -166,6 +166,10 @@ jobs:
         version: '1.12'
     - name: Build
       run: cargo build --verbose
+    - name: Verify transport envelope fixture drift
+      run: |
+        cargo run --quiet --bin gen_transport_envelope_fixture
+        git diff --exit-code -- fixtures/transport_envelope_cross_platform.json
     - name: Trust core checks (Rust + Julia + Zig)
       run: |
         julia --project=./julia -e 'using Pkg; Pkg.instantiate()'
