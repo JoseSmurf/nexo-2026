@@ -83,8 +83,9 @@ fn append_artifact_jsonl(
 ) -> Result<(), anyhow::Error> {
     if let Some(parent) = log_path.parent() {
         if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create log directory at {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create log directory at {}", parent.display())
+            })?;
         }
     }
 
@@ -138,7 +139,9 @@ mod tests {
         let raw = fs::read_to_string(path).expect("artifact file should be readable");
         raw.lines()
             .filter(|line| !line.trim().is_empty())
-            .map(|line| serde_json::from_str::<ArtifactLine>(line).expect("line should be valid JSON"))
+            .map(|line| {
+                serde_json::from_str::<ArtifactLine>(line).expect("line should be valid JSON")
+            })
             .collect()
     }
 
@@ -174,12 +177,11 @@ mod tests {
     #[test]
     fn returns_error_for_empty_server_list() {
         let log_path = test_log_path("empty-list");
-        let err = orchestrate_with_path(Vec::new(), &log_path)
-            .expect_err("empty list must fail closed");
-        assert!(
-            err.to_string()
-                .contains("orchestrator requires at least one server metric")
-        );
+        let err =
+            orchestrate_with_path(Vec::new(), &log_path).expect_err("empty list must fail closed");
+        assert!(err
+            .to_string()
+            .contains("orchestrator requires at least one server metric"));
     }
 
     #[test]
