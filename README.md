@@ -409,10 +409,24 @@ Operationally, listener paths must:
 ## Testing commands
 
 ```bash
+bash scripts/run_trust_core_checks.sh
+
 cargo test -q
 cargo test --features network -q
 julia --project=./julia julia/test/runtests.jl
 cd tools/zig && zig build test
+```
+
+On Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_trust_core_checks.ps1
+```
+
+Local development shortcut when Zig is not yet installed:
+
+```bash
+NEXO_ALLOW_MISSING_ZIG=1 bash scripts/run_trust_core_checks.sh
 ```
 
 Fail-closed startup preflight coverage includes:
@@ -660,10 +674,10 @@ Use `.env.example` provider sections as the canonical reference for required var
   - `GET /audit/recent?limit=50` (admin-gated)
   - `GET /security/status` (admin-gated)
 - Rule profiles include 9 jurisdictions/currencies/regulators.
-- Rust tests: 388
+- Rust tests: 389
 - Julia tests: 126
 - Zig tests: 21
-- Total tests: 535
+- Total tests: 536
 - Tech stack:
   - Rust (core engine + API)
   - BLAKE3 + SHAKE256 (audit hash, with deterministic hybrid mode in INCIDENT)

@@ -537,4 +537,30 @@ mod tests {
             .to_string();
         verify_artifact_line(&line).expect("artifact line should verify");
     }
+
+    #[test]
+    fn rejects_tampered_artifact_line_fail_closed() {
+        let log_path = test_log_path("tamper");
+        let providers = vec![
+            sample_provider("a", 12, 2, 4, 10, true),
+            sample_provider("b", 13, 2, 4, 10, true),
+        ];
+        select_route_with_path(providers, &log_path, MODE_SCORE_MIN_V1, None, None, false)
+            .expect("selection should succeed");
+
+        let line = fs::read_to_string(&log_path)
+            .expect("artifact should exist")
+            .lines()
+            .last()
+            .expect("artifact line")
+            .to_string();
+
+        let mut parsed: serde_json::Value =
+            serde_json::from_str(&line).expect("artifact line should parse");
+        parsed["primary_id"] = serde_json::Value::String("tampered-primary".to_string());
+        let tampered = serde_json::to_string(&parsed).expect("tampered line should serialize");
+
+        let err = verify_artifact_line(&tampered).expect_err("tampered line must fail closed");
+        assert!(err.to_string().contains("hash mismatch"));
+    }
 }
