@@ -1,7 +1,29 @@
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$vsDevCmd = "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"
+
+function Resolve-VsDevCmd {
+    if ($env:VSDEVCMD_BAT -and (Test-Path $env:VSDEVCMD_BAT)) {
+        return $env:VSDEVCMD_BAT
+    }
+
+    $candidates = @(
+        "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat",
+        "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat",
+        "C:\Program Files\Microsoft Visual Studio\2022\Professional\Common7\Tools\VsDevCmd.bat",
+        "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat"
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
+$vsDevCmd = Resolve-VsDevCmd
 
 function Invoke-InRepo {
     param(
@@ -9,7 +31,7 @@ function Invoke-InRepo {
         [string]$Command
     )
 
-    if (Test-Path $vsDevCmd) {
+    if ($vsDevCmd -and (Test-Path $vsDevCmd)) {
         cmd /c "`"$vsDevCmd`" -arch=x64 -host_arch=x64 && cd /d `"$repoRoot`" && $Command"
     } else {
         Push-Location $repoRoot
@@ -19,6 +41,18 @@ function Invoke-InRepo {
             Pop-Location
         }
     }
+}
+
+if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+    throw "run_trust_core_checks(ps1): cargo not found in PATH. Install Rust toolchain first."
+}
+
+if (-not (Get-Command julia -ErrorAction SilentlyContinue)) {
+    throw "run_trust_core_checks(ps1): julia not found in PATH. Install Julia first."
+}
+
+if (-not $vsDevCmd) {
+    Write-Host "run_trust_core_checks(ps1): VsDevCmd not found (continuing with current shell environment)."
 }
 
 Write-Host "run_trust_core_checks(ps1): cargo test -q"
