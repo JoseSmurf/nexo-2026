@@ -1,0 +1,31 @@
+{
+  "providers": [
+    {
+      "id": "proton-us-east",
+      "latency_ms": 24,
+      "jitter_ms": 6,
+      "loss_bps": 12,
+      "cost_microunits": 400,
+      "region": "us-east",
+      "healthy": true
+    },
+    {
+      "id": "nostr-br-edge",
+      "latency_ms": 19,
+      "jitter_ms": 7,
+      "loss_bps": 20,
+      "cost_microunits": 150,
+      "region": "br-south",
+      "healthy": true
+    },
+    {
+      "id": "fallback-local",
+      "latency_ms": 31,
+      "jitter_ms": 5,
+      "loss_bps": 8,
+      "cost_microunits": 80,
+      "region": "local",
+      "healthy": true
+    }
+  ]
+}
