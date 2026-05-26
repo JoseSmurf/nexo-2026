@@ -37,6 +37,7 @@ use crate::message::CanonicalMessage;
 use crate::offline_store::OfflineStore;
 use crate::profile::{profile_from_env, RuleProfile};
 use crate::telemetry::{Metrics, MetricsSnapshot};
+use crate::transport::http_adapter::{build_transport_envelope, HttpTransportEnvelopeInput};
 use crate::{
     audit_hash_with_algo, evaluate_with_config, AuditHashAlgo, Decision, FinalDecision,
     TransactionIntent,
@@ -1731,7 +1732,7 @@ async fn evaluate_handler(
         }
     }
 
-    let req: EvaluateRequest = match serde_json::from_slice(&body) {
+    let payload_json: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(req) => req,
         Err(_) => {
             state
@@ -1742,6 +1743,59 @@ async fn evaluate_handler(
                 &state,
                 &header_request_id,
                 "invalid JSON payload",
+            );
+        }
+    };
+
+    let signature_header = match extract_header(&headers, HEADER_SIGNATURE) {
+        Some(value) => value,
+        None => {
+            state
+                .metrics
+                .observe_error(start.elapsed().as_nanos() as u64);
+            return auth_error_response(
+                &state,
+                header_request_id.clone(),
+                AuthError::Unauthorized("missing X-Signature header"),
+            );
+        }
+    };
+
+    if let Err(err) = build_transport_envelope(HttpTransportEnvelopeInput {
+        request_id: &header_request_id,
+        timestamp_utc_ms: header_timestamp,
+        nonce: header_timestamp,
+        key_id: &key_used_id,
+        signature: signature_header,
+        payload_json: &payload_json,
+    }) {
+        state
+            .metrics
+            .observe_error(start.elapsed().as_nanos() as u64);
+        warn!(
+            request_id = %header_request_id,
+            error = %err,
+            "evaluate rejected invalid transport envelope"
+        );
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            &state,
+            &header_request_id,
+            "invalid transport envelope",
+        );
+    }
+
+    let req: EvaluateRequest = match serde_json::from_value(payload_json) {
+        Ok(req) => req,
+        Err(_) => {
+            state
+                .metrics
+                .observe_error(start.elapsed().as_nanos() as u64);
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &state,
+                &header_request_id,
+                "invalid evaluate request payload",
             );
         }
     };

@@ -105,10 +105,10 @@ jobs:
         echo "Engine boundary check passed"
     - name: Engine determinism and trace-contract tests
       run: |
-        for test_name in aml_trace_contract_approved aml_trace_contract_flagged aml_trace_contract_blocked decision_trace_contract_is_stable_golden evaluate_reproducible_for_identical_input; do
+        for test_name in aml_trace_contract_approved aml_trace_contract_flagged aml_trace_contract_blocked decision_trace_contract_is_stable_golden evaluate_reproducible_for_identical_input transport_envelope_cross_platform_contract; do
           cargo test -q "$test_name"
         done
-        for test_name in aml_trace_contract_approved aml_trace_contract_flagged aml_trace_contract_blocked decision_trace_contract_is_stable_golden evaluate_reproducible_for_identical_input; do
+        for test_name in aml_trace_contract_approved aml_trace_contract_flagged aml_trace_contract_blocked decision_trace_contract_is_stable_golden evaluate_reproducible_for_identical_input transport_envelope_cross_platform_contract; do
           cargo test --features network -q "$test_name"
         done
 
