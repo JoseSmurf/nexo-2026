@@ -2394,6 +2394,7 @@ dependencies = [
 name = "syntax-engine"
 version = "1.6.1"
 dependencies = [
+ "anyhow",
  "aws-config",
  "aws-sdk-secretsmanager",
  "axum",
