@@ -20,12 +20,19 @@ pub const RequireChainState = struct {
 fn toHexLower(alloc: std.mem.Allocator, bytes: []const u8) ![]u8 {
     const out = try alloc.alloc(u8, bytes.len * 2);
     errdefer alloc.free(out);
-    _ = std.fmt.bufPrint(out, "{s}", .{std.fmt.fmtSliceHexLower(bytes)}) catch return error.FormatFailed;
+    const hex = "0123456789abcdef";
+    for (bytes, 0..) |byte, idx| {
+        out[idx * 2] = hex[byte >> 4];
+        out[idx * 2 + 1] = hex[byte & 0x0f];
+    }
     return out;
 }
 
 fn stringifyJsonMinifiedAlloc(alloc: std.mem.Allocator, v: std.json.Value) ![]const u8 {
-    return std.json.stringifyAlloc(alloc, v, .{ .whitespace = .minified });
+    if (@hasDecl(std.json, "stringifyAlloc")) {
+        return std.json.stringifyAlloc(alloc, v, .{ .whitespace = .minified });
+    }
+    return std.json.Stringify.valueAlloc(alloc, v, .{ .whitespace = .minified });
 }
 
 // Internal helper for record_hash validation:
@@ -367,8 +374,8 @@ const TRACE_FLAGGED_JSON =
 ;
 
 fn readFirstNonEmptyLine(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
-    const content = try std.fs.cwd().readFileAlloc(alloc, path, 1024 * 1024);
-    errdefer alloc.free(content);
+    const content = try readFileAllocCompat(alloc, path, 1024 * 1024);
+    defer alloc.free(content);
 
     var it = std.mem.splitScalar(u8, content, '\n');
     while (it.next()) |raw| {
@@ -377,6 +384,31 @@ fn readFirstNonEmptyLine(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
         return try alloc.dupe(u8, line);
     }
     return error.EmptyFixture;
+}
+
+fn readFileAllocCompat(alloc: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
+    if (@hasDecl(std.fs, "cwd")) {
+        return std.fs.cwd().readFileAlloc(alloc, path, max_bytes);
+    }
+
+    var io_instance: std.Io.Threaded = .init(alloc, .{});
+    defer io_instance.deinit();
+    const io = io_instance.io();
+    return std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(max_bytes));
+}
+
+fn objectMapPutCompat(
+    obj: *std.json.ObjectMap,
+    alloc: std.mem.Allocator,
+    key: []const u8,
+    value: std.json.Value,
+) !void {
+    const put_params_len = @typeInfo(@TypeOf(std.json.ObjectMap.put)).@"fn".params.len;
+    if (put_params_len >= 4) {
+        try obj.put(alloc, key, value);
+    } else {
+        try obj.put(key, value);
+    }
 }
 
 fn buildLineWithComputedHash(
@@ -452,13 +484,13 @@ test "verifyLine accepts known-good fixture line" {
         .object => |*o| o,
         else => return error.InvalidFixture,
     };
-    try with_obj.put("record_hash", std.json.Value{ .string = record_hex });
+    try objectMapPutCompat(with_obj, with_record_hash.arena.allocator(), "record_hash", std.json.Value{ .string = record_hex });
     const with_line = try stringifyJsonMinifiedAlloc(std.testing.allocator, with_record_hash.value);
     defer std.testing.allocator.free(with_line);
     const ok_with = verifyLine(std.testing.allocator, with_line);
     try std.testing.expectEqual(schema.VerifyResult.Ok, ok_with);
 
-    try with_obj.put("amount_cents", std.json.Value{ .integer = @as(i64, 150001) });
+    try objectMapPutCompat(with_obj, with_record_hash.arena.allocator(), "amount_cents", std.json.Value{ .integer = @as(i64, 150001) });
     const tampered_line = try stringifyJsonMinifiedAlloc(std.testing.allocator, with_record_hash.value);
     defer std.testing.allocator.free(tampered_line);
     const tampered = verifyLine(std.testing.allocator, tampered_line);
@@ -470,7 +502,7 @@ test "verifyLine accepts known-good fixture line" {
         .object => |*o| o,
         else => return error.InvalidFixture,
     };
-    try bad_obj.put("record_hash", std.json.Value{ .string = "ABC" });
+    try objectMapPutCompat(bad_obj, bad_record_hash.arena.allocator(), "record_hash", std.json.Value{ .string = "ABC" });
     const bad_line = try stringifyJsonMinifiedAlloc(std.testing.allocator, bad_record_hash.value);
     defer std.testing.allocator.free(bad_line);
     const bad = verifyLine(std.testing.allocator, bad_line);
@@ -494,7 +526,7 @@ test "verifyLine accepts known-good fixture line" {
         .object => |*o| o,
         else => return error.InvalidFixture,
     };
-    try line1_obj.put("record_hash", std.json.Value{ .string = record_hex });
+    try objectMapPutCompat(line1_obj, line1_record.arena.allocator(), "record_hash", std.json.Value{ .string = record_hex });
     const line1 = try stringifyJsonMinifiedAlloc(std.testing.allocator, line1_record.value);
     defer std.testing.allocator.free(line1);
 
@@ -504,11 +536,11 @@ test "verifyLine accepts known-good fixture line" {
         .object => |*o| o,
         else => return error.InvalidFixture,
     };
-    try line2_obj.put("request_id", std.json.Value{ .string = "known-request-002" });
-    try line2_obj.put("prev_record_hash", std.json.Value{ .string = record_hex });
+    try objectMapPutCompat(line2_obj, line2_record.arena.allocator(), "request_id", std.json.Value{ .string = "known-request-002" });
+    try objectMapPutCompat(line2_obj, line2_record.arena.allocator(), "prev_record_hash", std.json.Value{ .string = record_hex });
     const line2_record_hex = try computeRecordHashV2Hex(std.testing.allocator, line2_obj.*);
     defer std.testing.allocator.free(line2_record_hex);
-    try line2_obj.put("record_hash", std.json.Value{ .string = line2_record_hex });
+    try objectMapPutCompat(line2_obj, line2_record.arena.allocator(), "record_hash", std.json.Value{ .string = line2_record_hex });
     const line2 = try stringifyJsonMinifiedAlloc(std.testing.allocator, line2_record.value);
     defer std.testing.allocator.free(line2);
 
@@ -531,10 +563,10 @@ test "verifyLine accepts known-good fixture line" {
             else => return error.InvalidFixture,
         };
         // Keep record_hash consistent with this record; only continuity should fail.
-        try wrong_obj.put("prev_record_hash", std.json.Value{ .string = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
+        try objectMapPutCompat(wrong_obj, wrong_prev.arena.allocator(), "prev_record_hash", std.json.Value{ .string = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
         const recomputed = try computeRecordHashV2Hex(std.testing.allocator, wrong_obj.*);
         defer std.testing.allocator.free(recomputed);
-        try wrong_obj.put("record_hash", std.json.Value{ .string = recomputed });
+        try objectMapPutCompat(wrong_obj, wrong_prev.arena.allocator(), "record_hash", std.json.Value{ .string = recomputed });
         const wrong_line2 = try stringifyJsonMinifiedAlloc(std.testing.allocator, wrong_prev.value);
         defer std.testing.allocator.free(wrong_line2);
 
@@ -554,7 +586,7 @@ test "verifyLine accepts known-good fixture line" {
             .object => |*o| o,
             else => return error.InvalidFixture,
         };
-        try tamper_obj.put("amount_cents", std.json.Value{ .integer = @as(i64, 150002) });
+        try objectMapPutCompat(tamper_obj, tamper.arena.allocator(), "amount_cents", std.json.Value{ .integer = @as(i64, 150002) });
         const tamper_line2 = try stringifyJsonMinifiedAlloc(std.testing.allocator, tamper.value);
         defer std.testing.allocator.free(tamper_line2);
 
@@ -574,7 +606,7 @@ test "verifyLine accepts known-good fixture line" {
             .object => |*o| o,
             else => return error.InvalidFixture,
         };
-        try bad_prev_obj.put("prev_record_hash", std.json.Value{ .string = "ABC" });
+        try objectMapPutCompat(bad_prev_obj, bad_prev.arena.allocator(), "prev_record_hash", std.json.Value{ .string = "ABC" });
         const bad_prev_line2 = try stringifyJsonMinifiedAlloc(std.testing.allocator, bad_prev.value);
         defer std.testing.allocator.free(bad_prev_line2);
 
