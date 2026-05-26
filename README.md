@@ -421,6 +421,7 @@ On Windows PowerShell:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_trust_core_checks.ps1
+powershell -ExecutionPolicy Bypass -File scripts/check_readme_consistency.ps1
 ```
 
 Local development shortcut when Zig is not yet installed:
