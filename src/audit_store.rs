@@ -1,4 +1,4 @@
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -54,7 +54,7 @@ fn sync_parent_directory(path: &Path) -> io::Result<()> {
 
     #[cfg(unix)]
     {
-        let dir = File::open(parent)?;
+        let dir = std::fs::File::open(parent)?;
         dir.sync_all()?;
     }
 

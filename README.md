@@ -35,6 +35,7 @@ If you are reviewing NEXO, start with this evidence pack (reading map + contract
 - `docs/NEXO_THREAT_TO_TEST_MAP_V1.md` (threat -> control -> reproducible check map)
 - `docs/NEXO_EVIDENCE_PACK_DEMO_V1.md` (reviewer demo flow, including Quick Path (5 Commands))
 - `docs/NEXO_EXPERIMENTAL_PROMOTION_GATE_V1.md` (guardrail for experimental track promotion)
+- `docs/NEXO_MAP_GAPS_V1.md` (priority gaps map for next engineering cycles)
 - `docs/NEXO_PRODUCTION_HOSTILE_BASELINE_V1.md` (hostile baseline scope, required controls, non-claims)
 - `docs/NEXO_CORE_VALIDATION_GATE_V1.md` (required vs optional validation gates)
 
