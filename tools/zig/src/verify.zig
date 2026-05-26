@@ -403,8 +403,7 @@ fn objectMapPutCompat(
     key: []const u8,
     value: std.json.Value,
 ) !void {
-    const put_params_len = @typeInfo(@TypeOf(std.json.ObjectMap.put)).@"fn".params.len;
-    if (put_params_len >= 4) {
+    if (@hasDecl(std, "Io")) {
         try obj.put(alloc, key, value);
     } else {
         try obj.put(key, value);
