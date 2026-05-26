@@ -1,0 +1,114 @@
+{
+    "schema_version": "nexo_residual_signal_v1",
+    "classifier_version": "julia_residual_signal_classifier_v1",
+    "generated_at_ts_ms": 1772000000300,
+    "feature_order": [
+        "rtt_ms",
+        "jitter_ms",
+        "loss_pct",
+        "retransmission_pct",
+        "handoff_count",
+        "staleness_s"
+    ],
+    "weights": {
+        "rtt": 0.27,
+        "jitter": 0.21,
+        "loss": 0.2,
+        "retransmission": 0.16,
+        "handoff": 0.1,
+        "staleness": 0.06
+    },
+    "retain_threshold": 0.55,
+    "samples": [
+        {
+            "node_id": "node-d",
+            "network_type": "ethernet",
+            "timestamp_utc_ms": 1772000000000,
+            "rtt_ms": 25,
+            "jitter_ms": 2,
+            "loss_pct": 0,
+            "retransmission_pct": 0,
+            "handoff_count": 0,
+            "staleness_s": 0.3,
+            "robust_z": {
+                "rtt": -0.797125,
+                "jitter": -0.830142,
+                "loss": -0.786906,
+                "retransmission": -0.87287,
+                "handoff": -0.674491
+            },
+            "residual_value_score": 0.320006,
+            "residual_class": "discard"
+        },
+        {
+            "node_id": "node-a",
+            "network_type": "wifi",
+            "timestamp_utc_ms": 1772000000100,
+            "rtt_ms": 35,
+            "jitter_ms": 5,
+            "loss_pct": 0.2,
+            "retransmission_pct": 0.5,
+            "handoff_count": 0,
+            "staleness_s": 0.2,
+            "robust_z": {
+                "rtt": -0.551856,
+                "jitter": -0.518839,
+                "loss": -0.562076,
+                "retransmission": -0.476111,
+                "handoff": -0.674491
+            },
+            "residual_value_score": 0.374303,
+            "residual_class": "discard"
+        },
+        {
+            "node_id": "node-c",
+            "network_type": "wifi",
+            "timestamp_utc_ms": 1772000000200,
+            "rtt_ms": 80,
+            "jitter_ms": 15,
+            "loss_pct": 1.2,
+            "retransmission_pct": 1.7,
+            "handoff_count": 1,
+            "staleness_s": 0.1,
+            "robust_z": {
+                "rtt": 0.551856,
+                "jitter": 0.518839,
+                "loss": 0.562076,
+                "retransmission": 0.476111,
+                "handoff": 0.674491
+            },
+            "residual_value_score": 0.625767,
+            "residual_class": "retain"
+        },
+        {
+            "node_id": "node-b",
+            "network_type": "cellular",
+            "timestamp_utc_ms": 1772000000300,
+            "rtt_ms": 180,
+            "jitter_ms": 45,
+            "loss_pct": 3.4,
+            "retransmission_pct": 4.8,
+            "handoff_count": 3,
+            "staleness_s": 0,
+            "robust_z": {
+                "rtt": 3.00455,
+                "jitter": 3.631873,
+                "loss": 3.035208,
+                "retransmission": 2.936019,
+                "handoff": 3.372454
+            },
+            "residual_value_score": 0.952028,
+            "residual_class": "retain"
+        }
+    ],
+    "summary": {
+        "total_samples": 4,
+        "retained_samples": 2,
+        "discarded_samples": 2,
+        "retention_ratio": 0.5,
+        "mean_residual_value_score": 0.568026,
+        "is_runtime_authority": false,
+        "is_global_truth": false,
+        "reason": "Residual signal classifier is diagnostic-only and never runtime authority."
+    }
+}

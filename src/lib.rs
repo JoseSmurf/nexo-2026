@@ -27,6 +27,7 @@ pub mod provider_orchestrator;
 pub mod relay_client;
 #[cfg(feature = "network")]
 pub mod relay_registry;
+pub mod residual_signal_contract;
 pub mod telemetry;
 pub mod transport;
 
