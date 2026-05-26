@@ -22,6 +22,7 @@ pub mod orchestrator;
 #[cfg(feature = "crypto")]
 pub mod p2p_crypto;
 pub mod profile;
+pub mod provider_orchestrator;
 #[cfg(feature = "network")]
 pub mod relay_client;
 #[cfg(feature = "network")]
