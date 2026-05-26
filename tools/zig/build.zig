@@ -28,25 +28,12 @@ fn compatPath(b: *std.Build, p: []const u8) std.Build.LazyPath {
     return .{ .path = p };
 }
 
-fn createModuleCompat(
-    b: *std.Build,
-    root: []const u8,
-    target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-) *std.Build.Module {
-    return b.createModule(.{
-        .root_source_file = compatPath(b, root),
-        .target = target,
-        .optimize = optimize,
-    });
-}
-
 fn addExecutableCompat(
     b: *std.Build,
     name: []const u8,
     root: []const u8,
-    target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    target: anytype,
+    optimize: anytype,
 ) *std.Build.Step.Compile {
     if (@hasField(std.Build.ExecutableOptions, "root_source_file")) {
         return b.addExecutable(.{
@@ -59,15 +46,19 @@ fn addExecutableCompat(
 
     return b.addExecutable(.{
         .name = name,
-        .root_module = createModuleCompat(b, root, target, optimize),
+        .root_module = b.createModule(.{
+            .root_source_file = compatPath(b, root),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 }
 
 fn addTestCompat(
     b: *std.Build,
     root: []const u8,
-    target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    target: anytype,
+    optimize: anytype,
 ) *std.Build.Step.Compile {
     if (@hasField(std.Build.TestOptions, "root_source_file")) {
         return b.addTest(.{
@@ -78,6 +69,10 @@ fn addTestCompat(
     }
 
     return b.addTest(.{
-        .root_module = createModuleCompat(b, root, target, optimize),
+        .root_module = b.createModule(.{
+            .root_source_file = compatPath(b, root),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 }
