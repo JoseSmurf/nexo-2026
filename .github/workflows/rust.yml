@@ -150,10 +150,16 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
           ${{ runner.os }}-cargo-
-    - name: Setup Zig 0.16.0 (offline audit verifier)
-      uses: mlugg/setup-zig@v1
-      with:
-        version: 0.16.0
+    - name: Install Zig 0.16.0 (offline audit verifier)
+      run: |
+        set -euo pipefail
+        ZIG_VERSION="0.16.0"
+        ZIG_DIR="$RUNNER_TEMP/zig-${ZIG_VERSION}"
+        curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" -o "$RUNNER_TEMP/zig.tar.xz"
+        mkdir -p "$ZIG_DIR"
+        tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "$ZIG_DIR" --strip-components=1
+        echo "$ZIG_DIR" >> "$GITHUB_PATH"
+        "$ZIG_DIR/zig" version
     - name: Setup Julia
       uses: julia-actions/setup-julia@v2
       with:
