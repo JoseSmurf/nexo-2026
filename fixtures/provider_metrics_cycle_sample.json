@@ -1,0 +1,100 @@
+{
+  "cycles": [
+    {
+      "label": "window-1",
+      "providers": [
+        {
+          "id": "proton-us-east",
+          "latency_ms": 22,
+          "jitter_ms": 5,
+          "loss_bps": 10,
+          "cost_microunits": 400,
+          "region": "us-east",
+          "healthy": true
+        },
+        {
+          "id": "nostr-br-edge",
+          "latency_ms": 19,
+          "jitter_ms": 7,
+          "loss_bps": 20,
+          "cost_microunits": 150,
+          "region": "br-south",
+          "healthy": true
+        },
+        {
+          "id": "fallback-local",
+          "latency_ms": 30,
+          "jitter_ms": 4,
+          "loss_bps": 8,
+          "cost_microunits": 80,
+          "region": "local",
+          "healthy": true
+        }
+      ]
+    },
+    {
+      "label": "window-2",
+      "providers": [
+        {
+          "id": "proton-us-east",
+          "latency_ms": 45,
+          "jitter_ms": 11,
+          "loss_bps": 24,
+          "cost_microunits": 400,
+          "region": "us-east",
+          "healthy": true
+        },
+        {
+          "id": "nostr-br-edge",
+          "latency_ms": 21,
+          "jitter_ms": 6,
+          "loss_bps": 15,
+          "cost_microunits": 150,
+          "region": "br-south",
+          "healthy": true
+        },
+        {
+          "id": "fallback-local",
+          "latency_ms": 28,
+          "jitter_ms": 5,
+          "loss_bps": 10,
+          "cost_microunits": 80,
+          "region": "local",
+          "healthy": true
+        }
+      ]
+    },
+    {
+      "label": "window-3",
+      "providers": [
+        {
+          "id": "proton-us-east",
+          "latency_ms": 60,
+          "jitter_ms": 14,
+          "loss_bps": 30,
+          "cost_microunits": 400,
+          "region": "us-east",
+          "healthy": true
+        },
+        {
+          "id": "nostr-br-edge",
+          "latency_ms": 23,
+          "jitter_ms": 8,
+          "loss_bps": 19,
+          "cost_microunits": 150,
+          "region": "br-south",
+          "healthy": true
+        },
+        {
+          "id": "fallback-local",
+          "latency_ms": 27,
+          "jitter_ms": 5,
+          "loss_bps": 9,
+          "cost_microunits": 80,
+          "region": "local",
+          "healthy": true
+        }
+      ]
+    }
+  ]
+}

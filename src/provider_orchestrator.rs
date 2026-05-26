@@ -193,6 +193,20 @@ pub fn select_route_with_failover(
     previous_primary_id: Option<&str>,
     thresholds: FailoverThresholds,
 ) -> Result<ProviderSelection, anyhow::Error> {
+    select_route_with_failover_to_path(
+        providers,
+        previous_primary_id,
+        thresholds,
+        Path::new(PROVIDER_ORCHESTRATOR_LOG_PATH),
+    )
+}
+
+pub fn select_route_with_failover_to_path(
+    providers: Vec<ProviderMetric>,
+    previous_primary_id: Option<&str>,
+    thresholds: FailoverThresholds,
+    log_path: &Path,
+) -> Result<ProviderSelection, anyhow::Error> {
     if providers.is_empty() {
         return Err(anyhow!(
             "provider orchestrator requires at least one provider"
@@ -213,7 +227,7 @@ pub fn select_route_with_failover(
 
     select_route_with_path(
         filtered,
-        Path::new(PROVIDER_ORCHESTRATOR_LOG_PATH),
+        log_path,
         MODE_FAILOVER_THRESHOLD_V1,
         previous_primary_id.map(ToString::to_string),
         Some(thresholds),

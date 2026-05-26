@@ -52,6 +52,28 @@ Or with explicit file:
 bash scripts/run_provider_orch_shadow.sh fixtures/provider_metrics_sample.json
 ```
 
+## Continuous cycle runner (SLO report)
+
+```bash
+bash scripts/run_provider_orch_cycle.sh fixtures/provider_metrics_cycle_sample.json
+```
+
+Optional thresholds:
+
+- failover thresholds:
+  - `NEXO_PROVIDER_ORCH_MAX_LATENCY_MS`
+  - `NEXO_PROVIDER_ORCH_MAX_JITTER_MS`
+  - `NEXO_PROVIDER_ORCH_MAX_LOSS_BPS`
+- SLO thresholds:
+  - `NEXO_PROVIDER_ORCH_SLO_MAX_P95_LATENCY_MS`
+  - `NEXO_PROVIDER_ORCH_SLO_MAX_CHURN_PCT`
+  - `NEXO_PROVIDER_ORCH_SLO_MAX_INVALID_ARTIFACTS`
+
+Cycle runner outputs:
+
+- artifact JSONL (default): `logs/provider_orchestrator_cycle.jsonl`
+- report JSON (default): `logs/provider_orchestrator_cycle_report.json`
+
 ## Offline verification
 
 ```bash
