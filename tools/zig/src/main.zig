@@ -1,13 +1,9 @@
 const std = @import("std");
 const verify_mod = @import("verify.zig");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
-
-    const argv = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, argv);
+pub fn main(init: std.process.Init) !void {
+    const alloc = init.arena.allocator();
+    const argv = try init.minimal.args.toSlice(alloc);
 
     if (argv.len < 2) {
         usage();
@@ -24,7 +20,7 @@ pub fn main() !void {
             usage();
             std.process.exit(2);
         }
-        const code = verifyFile(alloc, argv[path_idx], require_chain) catch {
+        const code = verifyFile(alloc, init.minimal.environ, argv[path_idx], require_chain) catch {
             std.debug.print("io_error: failed to verify file: {s}\n", .{argv[path_idx]});
             std.process.exit(4);
         };
@@ -54,14 +50,15 @@ fn usage() void {
     , .{});
 }
 
-fn verifyFile(alloc: std.mem.Allocator, path: []const u8, require_chain: bool) !u8 {
-    const options = verifyOptionsFromEnv(alloc);
-
-    var file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-
-    var br = std.io.bufferedReader(file.reader());
-    const reader = br.reader();
+fn verifyFile(
+    alloc: std.mem.Allocator,
+    environ: std.process.Environ,
+    path: []const u8,
+    require_chain: bool,
+) !u8 {
+    const options = verifyOptionsFromEnv(environ, alloc);
+    const content = try readFileAllocCompat(alloc, path, 1024 * 1024 * 32);
+    defer alloc.free(content);
 
     var chain_state = verify_mod.RequireChainState{};
     defer chain_state.deinit(alloc);
@@ -72,13 +69,10 @@ fn verifyFile(alloc: std.mem.Allocator, path: []const u8, require_chain: bool) !
     var ok: usize = 0;
     var line_no: usize = 0;
 
-    while (true) {
-        const maybe_line = try reader.readUntilDelimiterOrEofAlloc(alloc, '\n', 1024 * 1024);
-        if (maybe_line == null) break;
-        defer alloc.free(maybe_line.?);
-
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
         line_no += 1;
-        const raw = std.mem.trim(u8, maybe_line.?, " \t\r\n");
+        const raw = std.mem.trim(u8, line, " \t\r\n");
         if (raw.len == 0) continue;
 
         total += 1;
@@ -109,9 +103,12 @@ fn verifyFile(alloc: std.mem.Allocator, path: []const u8, require_chain: bool) !
     return 0;
 }
 
-fn verifyOptionsFromEnv(alloc: std.mem.Allocator) verify_mod.VerifyOptions {
+fn verifyOptionsFromEnv(environ: std.process.Environ, alloc: std.mem.Allocator) verify_mod.VerifyOptions {
     var options = verify_mod.VerifyOptions{};
-    const raw = std.process.getEnvVarOwned(alloc, "NEXO_ZIG_LEGACY_SHA3_256") catch return options;
+    const raw = if (@hasDecl(std.process, "getEnvVarOwned"))
+        std.process.getEnvVarOwned(alloc, "NEXO_ZIG_LEGACY_SHA3_256") catch return options
+    else
+        environ.getAlloc(alloc, "NEXO_ZIG_LEGACY_SHA3_256") catch return options;
     defer alloc.free(raw);
 
     if (std.ascii.eqlIgnoreCase(raw, "1") or
@@ -121,4 +118,15 @@ fn verifyOptionsFromEnv(alloc: std.mem.Allocator) verify_mod.VerifyOptions {
         options.allow_legacy_sha3_256 = true;
     }
     return options;
+}
+
+fn readFileAllocCompat(alloc: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
+    if (@hasDecl(std.fs, "cwd")) {
+        return std.fs.cwd().readFileAlloc(alloc, path, max_bytes);
+    }
+
+    var io_instance: std.Io.Threaded = .init(alloc, .{});
+    defer io_instance.deinit();
+    const io = io_instance.io();
+    return std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(max_bytes));
 }
