@@ -33,10 +33,16 @@ function Invoke-InRepo {
 
     if ($vsDevCmd -and (Test-Path $vsDevCmd)) {
         cmd /c "`"$vsDevCmd`" -arch=x64 -host_arch=x64 && cd /d `"$repoRoot`" && $Command"
+        if ($LASTEXITCODE -ne 0) {
+            throw "run_trust_core_checks(ps1): command failed (exit=$LASTEXITCODE): $Command"
+        }
     } else {
         Push-Location $repoRoot
         try {
             Invoke-Expression $Command
+            if ($LASTEXITCODE -ne 0) {
+                throw "run_trust_core_checks(ps1): command failed (exit=$LASTEXITCODE): $Command"
+            }
         } finally {
             Pop-Location
         }

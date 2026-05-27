@@ -33,10 +33,16 @@ function Invoke-InRepo {
 
     if ($vsDevCmd -and (Test-Path $vsDevCmd)) {
         cmd /c "`"$vsDevCmd`" -arch=x64 -host_arch=x64 && cd /d `"$repoRoot`" && $Command"
+        if ($LASTEXITCODE -ne 0) {
+            throw "run_release_gate(ps1): command failed (exit=$LASTEXITCODE): $Command"
+        }
     } else {
         Push-Location $repoRoot
         try {
             Invoke-Expression $Command
+            if ($LASTEXITCODE -ne 0) {
+                throw "run_release_gate(ps1): command failed (exit=$LASTEXITCODE): $Command"
+            }
         } finally {
             Pop-Location
         }
@@ -57,6 +63,12 @@ if (-not $vsDevCmd) {
 
 if (-not (Get-Command bash -ErrorAction SilentlyContinue)) {
     throw "run_release_gate(ps1): bash not found in PATH. Install Git Bash (or WSL) to run shell validation scripts."
+}
+
+try {
+    Invoke-InRepo -Command "cargo deny --version >nul 2>&1"
+} catch {
+    throw "run_release_gate(ps1): cargo-deny not found. Install with: cargo install --locked cargo-deny"
 }
 
 Write-Host "run_release_gate(ps1): cargo fmt --check"
