@@ -411,6 +411,7 @@ Operationally, listener paths must:
 ```bash
 cargo run --features devtools --bin trust_core_validate
 
+bash scripts/run_release_gate.sh
 bash scripts/run_trust_core_checks.sh
 
 cargo test -q
@@ -424,6 +425,7 @@ On Windows PowerShell:
 ```powershell
 cargo run --features devtools --bin trust_core_validate
 
+powershell -ExecutionPolicy Bypass -File scripts/run_release_gate.ps1
 powershell -ExecutionPolicy Bypass -File scripts/run_trust_core_checks.ps1
 powershell -ExecutionPolicy Bypass -File scripts/check_readme_consistency.ps1
 ```

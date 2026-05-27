@@ -48,6 +48,7 @@ Notes:
 
 Only commands defensible from the current repository surfaces are listed here.
 
+- `bash scripts/run_release_gate.sh` (local one-command wrapper for the current release gate sequence)
 - `cargo test`
 - `cargo test --features network`
 - `cargo test -q engine_modules_do_not_import_or_use_forbidden_dependencies`

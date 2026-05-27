@@ -122,6 +122,22 @@ ruby nexo_ui/test/core_adapter_test.rb
 ruby nexo_ui/test/app_config_test.rb
 ```
 
+## Single-Command Local Gate Helpers
+
+When operators want one command that runs the full local release gate sequence:
+
+```bash
+bash scripts/run_release_gate.sh
+```
+
+On Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_release_gate.ps1
+```
+
+These wrappers execute the same required classes of checks (format, lint, tests, docs consistency, supply-chain checks, and offline verifier checks) and are intended to reduce operator drift.
+
 ## Release / Checkpoint Gate
 
 Use this gate to produce reviewer-facing smoke evidence and offline artifact verification:
