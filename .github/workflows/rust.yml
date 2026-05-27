@@ -189,6 +189,52 @@ jobs:
         cd tools/zig
         zig build run -- verify "$tmp_audit"
 
+  residual_signal_classifier_contract:
+    runs-on: ubuntu-latest
+    env:
+      RESIDUAL_ARTIFACT: artifacts/residual_signal_classifier/generated_from_julia.json
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup Julia
+      uses: julia-actions/setup-julia@v2
+      with:
+        version: '1.12'
+    - name: Install Zig 0.16.0
+      run: |
+        set -euo pipefail
+        ZIG_VERSION="0.16.0"
+        ZIG_DIR="$RUNNER_TEMP/zig-${ZIG_VERSION}"
+        curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o "$RUNNER_TEMP/zig.tar.xz"
+        mkdir -p "$ZIG_DIR"
+        tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "$ZIG_DIR" --strip-components=1
+        echo "$ZIG_DIR" >> "$GITHUB_PATH"
+        "$ZIG_DIR/zig" version
+    - name: Generate artifact with Julia classifier
+      run: |
+        julia --project=./julia -e 'using Pkg; Pkg.instantiate()'
+        julia --project=./julia julia/generate_residual_signal_artifact.jl "$RESIDUAL_ARTIFACT"
+    - name: Validate artifact contract with Rust
+      run: |
+        set -euo pipefail
+        residual_hash="$(cargo run --quiet --bin residual_signal_hash -- "$RESIDUAL_ARTIFACT")"
+        echo "RESIDUAL_HASH=$residual_hash" >> "$GITHUB_ENV"
+        echo "residual_hash=$residual_hash"
+    - name: Verify residual artifact hash with Zig
+      run: |
+        set -euo pipefail
+        zig run tools/zig/src/hash_file.zig -- "$RESIDUAL_ARTIFACT" "$RESIDUAL_HASH"
+
+  windows_smoke:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Cargo check (Windows smoke)
+      shell: pwsh
+      run: cargo check --all-targets --all-features
+    - name: Envelope contract smoke test (Windows)
+      shell: pwsh
+      run: cargo test -q transport_envelope_cross_platform_contract
+
   bench:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     needs: [build]

@@ -45,6 +45,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_shared_key_hex_rejects_invalid_hex() {
+        let err = parse_shared_key_hex("not-hex").expect_err("invalid hex must fail closed");
+        assert_eq!(err, "REJECTED: invalid shared key hex");
+    }
+
+    #[test]
+    fn parse_shared_key_hex_rejects_invalid_length() {
+        let err = parse_shared_key_hex("abcd").expect_err("short key must fail closed");
+        assert_eq!(err, "REJECTED: shared key must be 32 bytes (64 hex)");
+    }
+
+    #[test]
+    fn random_aead_nonce_returns_24_bytes() {
+        let nonce = random_aead_nonce().expect("nonce generation should work");
+        assert_eq!(nonce.len(), 24);
+    }
+
+    #[test]
     fn encrypt_decrypt_roundtrip_ok() {
         let key = [11u8; 32];
         let nonce = [22u8; 24];
@@ -53,5 +71,31 @@ mod tests {
         assert_ne!(ciphertext, plaintext);
         let recovered = decrypt_content(&ciphertext, &key, &nonce).expect("dec");
         assert_eq!(recovered, plaintext);
+    }
+
+    #[test]
+    fn decrypt_fails_closed_for_tampered_ciphertext() {
+        let key = [11u8; 32];
+        let nonce = [22u8; 24];
+        let plaintext = b"hello-crypto";
+        let mut ciphertext = encrypt_content(plaintext, &key, &nonce).expect("enc");
+        ciphertext[0] ^= 0x01;
+
+        let err = decrypt_content(&ciphertext, &key, &nonce).expect_err("tamper must fail closed");
+        assert_eq!(err, "REJECTED: decrypt failed");
+    }
+
+    #[test]
+    fn decrypt_fails_closed_for_wrong_nonce() {
+        let key = [11u8; 32];
+        let nonce = [22u8; 24];
+        let mut wrong_nonce = nonce;
+        wrong_nonce[0] ^= 0x01;
+        let plaintext = b"hello-crypto";
+        let ciphertext = encrypt_content(plaintext, &key, &nonce).expect("enc");
+
+        let err = decrypt_content(&ciphertext, &key, &wrong_nonce)
+            .expect_err("wrong nonce must fail closed");
+        assert_eq!(err, "REJECTED: decrypt failed");
     }
 }

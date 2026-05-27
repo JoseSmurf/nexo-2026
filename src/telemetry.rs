@@ -132,3 +132,59 @@ pub struct MetricsSnapshot {
     pub p95_latency_ns: f64,
     pub p99_latency_ns: f64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::FinalDecision;
+
+    #[test]
+    fn observe_success_updates_decision_counters_and_latency() {
+        let metrics = Metrics::default();
+        metrics.observe_success(FinalDecision::Approved, 100);
+        metrics.observe_success(FinalDecision::Flagged, 200);
+        metrics.observe_success(FinalDecision::Blocked, 300);
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.requests_total, 3);
+        assert_eq!(snapshot.requests_error, 0);
+        assert_eq!(snapshot.approved_total, 1);
+        assert_eq!(snapshot.flagged_total, 1);
+        assert_eq!(snapshot.blocked_total, 1);
+        assert_eq!(snapshot.avg_latency_ns, 200.0);
+        assert_eq!(snapshot.p95_latency_ns, 300.0);
+        assert_eq!(snapshot.p99_latency_ns, 300.0);
+    }
+
+    #[test]
+    fn observe_error_and_status_track_security_counters() {
+        let metrics = Metrics::default();
+        metrics.observe_error(900);
+        metrics.observe_http_status(401);
+        metrics.observe_http_status(408);
+        metrics.observe_http_status(409);
+        metrics.observe_http_status(429);
+        metrics.observe_http_status(200);
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.requests_total, 1);
+        assert_eq!(snapshot.requests_error, 1);
+        assert_eq!(snapshot.unauthorized_total, 1);
+        assert_eq!(snapshot.request_timeout_total, 1);
+        assert_eq!(snapshot.conflict_total, 1);
+        assert_eq!(snapshot.too_many_requests_total, 1);
+    }
+
+    #[test]
+    fn latency_sample_cap_keeps_recent_percentiles() {
+        let metrics = Metrics::default();
+        for i in 0..(LATENCY_SAMPLE_CAP + 400) {
+            metrics.observe_success(FinalDecision::Approved, i as u64);
+        }
+        let snapshot = metrics.snapshot();
+
+        assert_eq!(snapshot.requests_total, (LATENCY_SAMPLE_CAP + 400) as u64);
+        assert!(snapshot.p95_latency_ns > 0.0);
+        assert!(snapshot.p99_latency_ns >= snapshot.p95_latency_ns);
+    }
+}

@@ -197,3 +197,154 @@ fn verify_client_signature(
         .map_err(|_| AuthError::Unauthorized("invalid client signature"))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::{BENCH_HMAC_SECRET, BENCH_KEY_ID};
+    use axum::http::{HeaderMap, HeaderValue};
+    use serde_json::json;
+    use uuid::Uuid;
+
+    fn signed_input(
+        state: &AppState,
+        request_id: &str,
+        timestamp_ms: u64,
+        nonce: u64,
+    ) -> (Vec<u8>, HeaderMap) {
+        let body = json!({
+            "user_id": "auth_test_user",
+            "amount_cents": 150_000,
+            "is_pep": false,
+            "has_active_kyc": true,
+            "timestamp_utc_ms": timestamp_ms,
+            "risk_bps": 1200,
+            "ui_hash_valid": true,
+            "request_id": request_id
+        })
+        .to_string()
+        .into_bytes();
+
+        let key_id = state.auth.active.id.clone();
+        let signature = super::super::compute_signature_with_nonce(
+            BENCH_HMAC_SECRET,
+            &key_id,
+            request_id,
+            timestamp_ms,
+            nonce,
+            &body,
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HEADER_SIGNATURE,
+            HeaderValue::from_str(&signature).expect("signature header"),
+        );
+        headers.insert(
+            HEADER_REQUEST_ID,
+            HeaderValue::from_str(request_id).expect("request id header"),
+        );
+        headers.insert(
+            HEADER_TIMESTAMP,
+            HeaderValue::from_str(&timestamp_ms.to_string()).expect("timestamp header"),
+        );
+        headers.insert(
+            HEADER_NONCE,
+            HeaderValue::from_str(&nonce.to_string()).expect("nonce header"),
+        );
+        headers.insert(
+            HEADER_KEY_ID,
+            HeaderValue::from_str(&key_id).expect("key id header"),
+        );
+
+        (body, headers)
+    }
+
+    #[test]
+    fn valid_signed_headers_are_accepted_and_key_usage_is_recorded() {
+        let state = AppState::for_bench();
+        let request_id = Uuid::new_v4().to_string();
+        let timestamp = now_utc_ms();
+        let nonce = timestamp.saturating_add(111);
+        let (body, headers) = signed_input(&state, &request_id, timestamp, nonce);
+
+        let (parsed_request_id, parsed_timestamp, parsed_nonce, used_key_id) =
+            validate_security_headers(&state, &headers, &body).expect("valid headers");
+
+        assert_eq!(parsed_request_id, request_id);
+        assert_eq!(parsed_timestamp, timestamp);
+        assert_eq!(parsed_nonce, nonce);
+        assert_eq!(used_key_id, BENCH_KEY_ID);
+        assert_eq!(
+            state.key_usage.get(BENCH_KEY_ID).map(|v| *v.value()),
+            Some(1),
+            "key usage should be tracked on successful auth"
+        );
+    }
+
+    #[test]
+    fn duplicate_signature_header_is_rejected_fail_closed() {
+        let state = AppState::for_bench();
+        let request_id = Uuid::new_v4().to_string();
+        let timestamp = now_utc_ms();
+        let nonce = timestamp.saturating_add(222);
+        let (body, mut headers) = signed_input(&state, &request_id, timestamp, nonce);
+        headers.append(HEADER_SIGNATURE, HeaderValue::from_static("00"));
+
+        let err = validate_security_headers(&state, &headers, &body).expect_err("must fail");
+        assert!(matches!(
+            err,
+            AuthError::Unauthorized("duplicate X-Signature header")
+        ));
+    }
+
+    #[test]
+    fn zero_nonce_is_rejected_fail_closed() {
+        let state = AppState::for_bench();
+        let request_id = Uuid::new_v4().to_string();
+        let timestamp = now_utc_ms();
+        let (body, headers) = signed_input(&state, &request_id, timestamp, 0);
+
+        let err = validate_security_headers(&state, &headers, &body).expect_err("must fail");
+        assert!(matches!(
+            err,
+            AuthError::Unauthorized("invalid X-Nonce header")
+        ));
+    }
+
+    #[test]
+    fn stale_timestamp_is_rejected_with_timeout() {
+        let state = AppState::for_bench();
+        let request_id = Uuid::new_v4().to_string();
+        let now = now_utc_ms();
+        let stale_timestamp = now.saturating_sub(state.auth_window_ms.saturating_add(1));
+        let nonce = stale_timestamp.saturating_add(333);
+        let (body, headers) = signed_input(&state, &request_id, stale_timestamp, nonce);
+
+        let err = validate_security_headers(&state, &headers, &body).expect_err("must fail");
+        assert!(matches!(
+            err,
+            AuthError::RequestTimeout("timestamp outside configured security window")
+        ));
+    }
+
+    #[test]
+    fn nonce_reuse_for_same_sender_is_rejected_fail_closed() {
+        let state = AppState::for_bench();
+        let timestamp = now_utc_ms();
+        let nonce = timestamp.saturating_add(444);
+
+        let request_id_a = Uuid::new_v4().to_string();
+        let (body_a, headers_a) = signed_input(&state, &request_id_a, timestamp, nonce);
+        validate_security_headers(&state, &headers_a, &body_a).expect("first request should pass");
+
+        let request_id_b = Uuid::new_v4().to_string();
+        let (body_b, headers_b) = signed_input(&state, &request_id_b, timestamp, nonce);
+        let err =
+            validate_security_headers(&state, &headers_b, &body_b).expect_err("must reject reuse");
+        assert!(matches!(
+            err,
+            AuthError::Conflict("replay detected: X-Nonce already used for sender")
+        ));
+    }
+}
