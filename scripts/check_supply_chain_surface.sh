@@ -29,6 +29,14 @@ elif command -v rg.exe >/dev/null 2>&1; then
   RG_BIN="$(command -v rg.exe)"
 elif [[ -x "$HOME/.cargo/bin/rg.exe" ]]; then
   RG_BIN="$HOME/.cargo/bin/rg.exe"
+elif [[ "$ROOT_DIR" == /mnt/c/Users/* ]]; then
+  # WSL environments may not inherit Windows PATH entries; recover rg.exe from the repo owner's Cargo home.
+  wsl_owner="${ROOT_DIR#/mnt/c/Users/}"
+  wsl_owner="${wsl_owner%%/*}"
+  wsl_rg="/mnt/c/Users/${wsl_owner}/.cargo/bin/rg.exe"
+  if [[ -x "$wsl_rg" ]]; then
+    RG_BIN="$wsl_rg"
+  fi
 fi
 
 if [[ -z "$RG_BIN" ]]; then
