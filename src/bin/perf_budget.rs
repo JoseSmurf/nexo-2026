@@ -44,9 +44,10 @@ fn main() {
 
     let http_start = Instant::now();
     rt.block_on(async {
-        for _ in 0..http_iterations {
+        for i in 0..http_iterations {
             let timestamp = now_ms();
             let request_id = Uuid::new_v4().to_string();
+            let nonce = timestamp.saturating_mul(1_000).saturating_add(i as u64);
             let req_body = serde_json::json!({
                 "user_id": "perf_user",
                 "amount_cents": 50_000,
@@ -58,11 +59,12 @@ fn main() {
                 "request_id": request_id
             });
             let body_str = req_body.to_string();
-            let signature = syntax_engine::api::compute_signature(
+            let signature = syntax_engine::api::compute_signature_with_nonce(
                 syntax_engine::api::BENCH_HMAC_SECRET,
                 syntax_engine::api::BENCH_KEY_ID,
                 &request_id,
                 timestamp,
+                nonce,
                 body_str.as_bytes(),
             );
             let req = Request::builder()
@@ -72,7 +74,7 @@ fn main() {
                 .header("x-signature", signature)
                 .header("x-request-id", request_id)
                 .header("x-timestamp", timestamp.to_string())
-                .header("x-nonce", timestamp.to_string())
+                .header("x-nonce", nonce.to_string())
                 .header("x-key-id", syntax_engine::api::BENCH_KEY_ID)
                 .body(Body::from(body_str))
                 .expect("request");

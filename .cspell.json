@@ -3,6 +3,8 @@
     "chacha",
     "ciphertext",
     "xchacha",
-    "poly"
+    "poly",
+    "pathlib",
+    "isinstance"
   ]
 }

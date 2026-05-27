@@ -62,6 +62,7 @@ async fn main() {
             idx += 1;
             let req_id = Uuid::new_v4().to_string();
             let timestamp = chrono_like_now_ms();
+            let nonce = timestamp.saturating_mul(1_000).saturating_add(idx as u64);
             let req_body = json!({
                 "user_id": "load_user",
                 "amount_cents": 50_000,
@@ -73,11 +74,12 @@ async fn main() {
                 "request_id": req_id
             });
             let body_str = req_body.to_string();
-            let signature = syntax_engine::api::compute_signature(
+            let signature = syntax_engine::api::compute_signature_with_nonce(
                 syntax_engine::api::BENCH_HMAC_SECRET,
                 syntax_engine::api::BENCH_KEY_ID,
                 &req_id,
                 timestamp,
+                nonce,
                 body_str.as_bytes(),
             );
             let app_clone = app.clone();
@@ -89,7 +91,7 @@ async fn main() {
                     .header("x-signature", signature)
                     .header("x-request-id", req_id)
                     .header("x-timestamp", timestamp.to_string())
-                    .header("x-nonce", timestamp.to_string())
+                    .header("x-nonce", nonce.to_string())
                     .header("x-key-id", syntax_engine::api::BENCH_KEY_ID)
                     .body(Body::from(body_str))
                     .expect("request");
