@@ -5,6 +5,9 @@
     "xchacha",
     "poly",
     "pathlib",
-    "isinstance"
+    "isinstance",
+    "uuidgen",
+    "HMAC",
+    "rjson"
   ]
 }
