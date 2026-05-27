@@ -16,6 +16,7 @@ default = []
 network = ["dep:rusqlite"]
 julia = []
 crypto = ["dep:chacha20poly1305", "dep:hex"]
+devtools = []
 
 [dependencies]
 anyhow = "1"
@@ -57,6 +58,11 @@ harness = false
 [[bench]]
 name = "security_bench"
 harness = false
+
+[[bin]]
+name = "trust_core_validate"
+path = "src/bin/trust_core_validate.rs"
+required-features = ["devtools"]
 
 [profile.release]
 opt-level = 3

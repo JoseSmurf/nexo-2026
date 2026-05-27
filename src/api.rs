@@ -2591,6 +2591,7 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
+    use std::process::Command;
     use std::sync::{Mutex, OnceLock};
     use tower::util::ServiceExt;
 
@@ -2608,6 +2609,46 @@ mod tests {
         let mut os = path.as_os_str().to_os_string();
         os.push(".lock");
         PathBuf::from(os)
+    }
+
+    fn find_zig_executable() -> Option<&'static str> {
+        for binary in ["zig", "zig.exe"] {
+            let probe = Command::new(binary).arg("version").output();
+            if probe.is_ok_and(|out| out.status.success()) {
+                return Some(binary);
+            }
+        }
+        None
+    }
+
+    fn verify_with_zig_offline(audit_path: &std::path::Path) -> Result<String, String> {
+        let Some(zig_bin) = find_zig_executable() else {
+            return Err("zig not found in PATH".to_string());
+        };
+
+        let zig_workdir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tools")
+            .join("zig");
+        let output = Command::new(zig_bin)
+            .current_dir(&zig_workdir)
+            .arg("build")
+            .arg("run")
+            .arg("--")
+            .arg("verify")
+            .arg(audit_path)
+            .output()
+            .map_err(|err| format!("failed to execute zig verifier: {err}"))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let combined = format!("{stdout}{stderr}");
+        if !output.status.success() {
+            return Err(format!(
+                "zig verifier failed with status {}: {}",
+                output.status, combined
+            ));
+        }
+        Ok(combined)
     }
 
     fn env_lock() -> &'static Mutex<()> {
@@ -3883,6 +3924,53 @@ mod tests {
         assert_eq!(record["prev_record_hash"], Value::Null);
         let record_hash = record["record_hash"].as_str().expect("record_hash string");
         assert_eq!(record_hash.len(), 64);
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&lock_path);
+    }
+
+    #[tokio::test]
+    async fn evaluate_success_artifact_is_verified_by_zig_e2e() {
+        let path =
+            std::env::temp_dir().join(format!("nexo_api_zig_e2e_verify_{}.jsonl", Uuid::new_v4()));
+        let lock_path = lock_path_for_test(&path);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&lock_path);
+
+        let app = app_with_state(AppState::for_tests(path.clone()));
+        let now = now_utc_ms();
+        let request_id = "4f9b5d77-10df-4a72-9c64-2f982c06a4dd";
+        let req_body = serde_json::json!({
+            "user_id":"zig_e2e_user",
+            "amount_cents":175_000,
+            "is_pep":false,
+            "has_active_kyc":true,
+            "timestamp_utc_ms":now,
+            "risk_bps":1200,
+            "ui_hash_valid":true
+        });
+        let req = signed_request(req_body, "test_active_secret", "active", request_id, now);
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let persisted = fs::read_to_string(&path).expect("read persisted audit artifact");
+        let lines: Vec<&str> = persisted
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        assert_eq!(lines.len(), 1, "expected exactly one persisted record");
+
+        if find_zig_executable().is_none() {
+            eprintln!("skipping zig verification in test: zig not found in PATH");
+        } else {
+            let verify_output = verify_with_zig_offline(&path)
+                .expect("zig verifier must accept persisted runtime artifact");
+            assert!(
+                verify_output.contains("ok=1"),
+                "unexpected zig verifier output: {verify_output}"
+            );
+        }
 
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(&lock_path);

@@ -409,6 +409,8 @@ Operationally, listener paths must:
 ## Testing commands
 
 ```bash
+cargo run --features devtools --bin trust_core_validate
+
 bash scripts/run_trust_core_checks.sh
 
 cargo test -q
@@ -420,6 +422,8 @@ cd tools/zig && zig build test
 On Windows PowerShell:
 
 ```powershell
+cargo run --features devtools --bin trust_core_validate
+
 powershell -ExecutionPolicy Bypass -File scripts/run_trust_core_checks.ps1
 powershell -ExecutionPolicy Bypass -File scripts/check_readme_consistency.ps1
 ```
@@ -675,10 +679,10 @@ Use `.env.example` provider sections as the canonical reference for required var
   - `GET /audit/recent?limit=50` (admin-gated)
   - `GET /security/status` (admin-gated)
 - Rule profiles include 9 jurisdictions/currencies/regulators.
-- Rust tests: 420
+- Rust tests: 421
 - Julia tests: 126
 - Zig tests: 21
-- Total tests: 567
+- Total tests: 568
 - Tech stack:
   - Rust (core engine + API)
   - BLAKE3 + SHAKE256 (audit hash, with deterministic hybrid mode in INCIDENT)
