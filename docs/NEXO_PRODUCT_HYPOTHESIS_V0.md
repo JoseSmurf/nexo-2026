@@ -81,6 +81,27 @@ O metodo de trabalho do NEXO e "evidence-guided":
 
 Esse metodo reduz risco de overclaim e de acoplamento prematuro.
 
+### Lente conceitual: pesquisa sobre Bitcoin Core
+
+Leitura util para o NEXO (sem equivalencia de mineracao):
+
+- a pesquisa nao ensina "como achar o hash";
+- ela ajuda a separar trabalho inevitavel de desperdicio operacional evitavel;
+- ela reforca contratos entre quem prepara trabalho e quem executa trabalho caro;
+- ela reforca exigencia de sinais locais minimos antes de aumentar custo ou interpretacao.
+
+No NEXO, essa lente deve ser aplicada como disciplina operacional de mapa:
+
+- estrutura -> comparabilidade -> freshness -> actionability.
+
+Essa lente NAO autoriza afirmar:
+
+- verdade global;
+- consenso;
+- autoridade de runtime;
+- otimizacao criptografica;
+- sync automatico.
+
 ## 8. Relacao entre Rust, Julia e a arquitetura
 
 - Rust e a fonte de verdade de contrato e artefato canonico.
